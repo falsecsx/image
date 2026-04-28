@@ -62,4 +62,4 @@ http://127.0.0.1:8080/
 
 ## 许可证
 
-本项目当前使用 [MIT License](./LICENSE)。
+本项目当前使用 [Apache License 2.0](./LICENSE)。

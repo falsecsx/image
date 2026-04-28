@@ -178,22 +178,15 @@
 
       const apiKeyInput = document.getElementById('api-key');
       const rememberApiKeyInput = document.getElementById('remember-api-key');
-      const API_KEY_STORAGE_KEY = 'ai_image_workbench_api_key';
-      const LEGACY_API_KEY_STORAGE_KEY = 'gemini_api_key';
-      const API_KEY_REMEMBER_KEY = 'ai_image_workbench_api_key_remember';
-      const LEGACY_API_KEY_REMEMBER_KEY = 'gemini_api_key_remember';
-      const PROMPT_ADMIN_TOKEN_STORAGE_KEY = 'ai_image_workbench_prompt_admin_token';
+      const API_KEY_STORAGE_KEY = 'gemini_api_key';
+      const API_KEY_REMEMBER_KEY = 'gemini_api_key_remember';
+      const PROMPT_ADMIN_TOKEN_STORAGE_KEY = 'prompt_admin_token';
       let apiKeyValue = '';
 
       function loadStoredApiKey() {
-        const sessionKey = sessionStorage.getItem(API_KEY_STORAGE_KEY)
-          || sessionStorage.getItem(LEGACY_API_KEY_STORAGE_KEY)
-          || '';
-        const localKey = localStorage.getItem(API_KEY_STORAGE_KEY)
-          || localStorage.getItem(LEGACY_API_KEY_STORAGE_KEY)
-          || '';
-        const remember = localStorage.getItem(API_KEY_REMEMBER_KEY) === '1'
-          || localStorage.getItem(LEGACY_API_KEY_REMEMBER_KEY) === '1';
+        const sessionKey = sessionStorage.getItem(API_KEY_STORAGE_KEY) || '';
+        const localKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+        const remember = localStorage.getItem(API_KEY_REMEMBER_KEY) === '1';
         return {
           key: sessionKey || localKey,
           remember
@@ -203,24 +196,19 @@
       function persistApiKey(key, remember) {
         const value = (key || '').trim();
         sessionStorage.removeItem(API_KEY_STORAGE_KEY);
-        sessionStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
         localStorage.removeItem(API_KEY_STORAGE_KEY);
-        localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
 
         if (!value) {
           localStorage.removeItem(API_KEY_REMEMBER_KEY);
-          localStorage.removeItem(LEGACY_API_KEY_REMEMBER_KEY);
           return;
         }
 
         if (remember) {
           localStorage.setItem(API_KEY_STORAGE_KEY, value);
           localStorage.setItem(API_KEY_REMEMBER_KEY, '1');
-          localStorage.removeItem(LEGACY_API_KEY_REMEMBER_KEY);
         } else {
           sessionStorage.setItem(API_KEY_STORAGE_KEY, value);
           localStorage.removeItem(API_KEY_REMEMBER_KEY);
-          localStorage.removeItem(LEGACY_API_KEY_REMEMBER_KEY);
         }
       }
 
@@ -300,6 +288,9 @@
       const preview = document.getElementById('upload-preview');
       const resultsEl = document.getElementById('results');
       const resultCountEl = document.getElementById('result-count');
+      const announcementBtn = document.getElementById('announcement-btn');
+      const announcementModal = document.getElementById('announcement-modal');
+      const announcementCloseBtn = document.getElementById('announcement-close');
 
       const state = { images: [] };
       let timeoutHandle = null;
@@ -329,6 +320,18 @@
         document.body.style.overflow = '';
       }
 
+      function openAnnouncementModal() {
+        if (!announcementModal) return;
+        announcementModal.classList.add('active');
+        announcementModal.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeAnnouncementModal() {
+        if (!announcementModal) return;
+        announcementModal.classList.remove('active');
+        announcementModal.setAttribute('aria-hidden', 'true');
+      }
+
       // Lightbox 事件监听
       lightboxClose.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -344,6 +347,17 @@
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && lightbox.classList.contains('show')) {
           closeLightbox();
+        }
+        if (e.key === 'Escape' && announcementModal?.classList.contains('active')) {
+          closeAnnouncementModal();
+        }
+      });
+
+      announcementBtn?.addEventListener('click', openAnnouncementModal);
+      announcementCloseBtn?.addEventListener('click', closeAnnouncementModal);
+      announcementModal?.addEventListener('click', (e) => {
+        if (e.target === announcementModal) {
+          closeAnnouncementModal();
         }
       });
 
@@ -371,6 +385,7 @@
       let historyCurrentPage = 1;
       let historyLastPageSize = 0;
       let historyResizeTimer = null;
+
 
       // 文件夹句柄
       let folderHandle = null;
@@ -1062,6 +1077,7 @@
                 <div class="prompt-container">
                   <div class="prompt" title="点击复制提示词">${escapeHtml(record.prompt || '无提示词')}</div>
                 </div>
+                ${record.runtimeMs ? `<div class="history-time muted">生成耗时：${formatDurationMs(record.runtimeMs)}</div>` : ''}
                 <div class="meta">
                   <span>${formatDate(record.timestamp)}</span>
                   <div class="history-actions">
@@ -1303,6 +1319,12 @@
         const hour = String(date.getHours()).padStart(2, '0');
         const minute = String(date.getMinutes()).padStart(2, '0');
         return `${month}-${day} ${hour}:${minute}`;
+      }
+
+      function formatDurationMs(durationMs) {
+        const ms = Number(durationMs);
+        if (!Number.isFinite(ms) || ms <= 0) return '--';
+        return `${(ms / 1000).toFixed(2)}s`;
       }
 
       async function copyTextToClipboard(text) {
@@ -2944,6 +2966,11 @@
         }
 
         const data = await res.json();
+        const apiErrorMessage = extractApiErrorMessage(data);
+        if (apiErrorMessage) {
+          console.error('[callTextAPI] error payload:', data);
+          throw new Error(apiErrorMessage);
+        }
 
         // 提取文本：兼容 Gemini 和 OpenAI 格式
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text
@@ -3842,7 +3869,8 @@ ${chinesePrompt}
               prompt: meta?.prompt || '',
               aspect: meta?.aspect || '',
               resolution: meta?.resolution || '',
-              timestamp: Date.now()
+              timestamp: Date.now(),
+              runtimeMs: meta?.runtimeMs || 0
             };
             if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentImgSrc;
             await saveHistory(historyRecord);
@@ -3970,7 +3998,8 @@ ${chinesePrompt}
               prompt: meta?.prompt || '',
               aspect: meta?.aspect || '',
               resolution: meta?.resolution || '',
-              timestamp: Date.now()
+              timestamp: Date.now(),
+              runtimeMs: meta?.runtimeMs || 0
             };
             if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentImgSrc;
             await saveHistory(historyRecord);
@@ -4883,6 +4912,7 @@ ${chinesePrompt}
             const originalText = retryBtn.textContent;
             retryBtn.disabled = true;
             retryBtn.textContent = '生成中...';
+            const startedAt = performance.now();
 
             try {
               // 重新生成
@@ -4905,7 +4935,8 @@ ${chinesePrompt}
                 prompt: angleName,
                 aspect: aspectSelect.value,
                 resolution: resolutionSelect.value,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                runtimeMs: performance.now() - startedAt
               };
               if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentNewImgSrc;
               await saveHistory(historyRecord);
@@ -4939,7 +4970,8 @@ ${chinesePrompt}
             prompt: angleName,
             aspect: aspectSelect.value,
             resolution: resolutionSelect.value,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            runtimeMs: actualElapsedMs || 0
           };
           if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentImgSrc;
           await saveHistory(historyRecord);

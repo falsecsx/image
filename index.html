@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh">
 
 <head>
@@ -7,7 +7,8 @@
   <meta name="referrer" content="no-referrer-when-downgrade">
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
-  <title>AI 绘图工作台</title>
+  <title>Ai 绘图助手</title>
+
   <script>
     window.APP_CONFIG = window.APP_CONFIG || {
       // 默认使用 https://api.openai.com；用户也可以在页面里改成自己的 API 中转地址。
@@ -15,26 +16,30 @@
       apiHomeUrl: 'https://api.openai.com',
       // 纯静态公共提示词库：编辑 data/prompts.json 即可更新所有用户可见的提示词。
       promptApiUrl: false,
-      promptStaticUrl: 'data/prompts.json?v=20260428-2',
+      promptStaticUrl: 'data/prompts.json?v=20260428-3',
       forceDefaultBaseUrl: false,
       apiProxyEndpoint: 'api-proxy.php'
     };
   </script>
 
-    <link rel="stylesheet" href="assets/css/main.css?v=20260428-2">
+    <link rel="stylesheet" href="assets/css/main.css?v=20260428-3">
 </head>
 
 <body>
   <div class="app">
     <div class="panel workspace-panel">
-      <div class="hero-badges">
-        <span class="hero-badge">Text to Image</span>
-        <span class="hero-badge">Image to Image</span>
-        <span class="hero-badge warm">Mobile Ready</span>
+      <div class="workspace-hero-top">
+        <div class="hero-badges">
+          <span class="hero-badge">Text to Image</span>
+          <span class="hero-badge">Image to Image</span>
+          <span class="hero-badge warm">Mobile Ready</span>
+        </div>
+        <div class="workspace-hero-tools">
+          <button class="announcement-trigger" id="announcement-btn" type="button" aria-haspopup="dialog" aria-controls="announcement-modal">公告</button>
+        </div>
       </div>
-      <h1>AI 绘图工作台</h1>
+      <h1>Ai绘图</h1>
       <p class="sub">文生图 / 图生图（数据仅本地存储）</p>
-      <p class="deploy-note">支持 OpenAI Images / Chat 兼容接口和 Gemini 原生接口，可选 PHP 代理模式以兼容部分跨域场景。</p>
 
       <div class="config-row surface-block">
         <div class="config-field" style="flex: 1.5;">
@@ -51,9 +56,8 @@
         <div class="config-field" style="flex: 2;">
           <label for="api-key">
             API Key
-            <a id="api-link" href="https://platform.openai.com" target="_blank"
-              rel="noopener noreferrer"
-              style="font-size: 12px; color: var(--accent); text-decoration: none; font-weight: 500; margin-left: 8px;">打开服务商页面
+            <a id="api-link" href="https://api.openai.com" target="_blank" 
+              style="font-size: 12px; color: var(--accent); text-decoration: none; font-weight: 500; margin-left: 8px;">前往获取
               →</a>
           </label>
           <input id="api-key" type="text" placeholder="输入 API Key..." autocomplete="off">
@@ -105,34 +109,6 @@
         </div>
       </div>
 
-      <!-- 保存位置设置（可选） -->
-      <div class="save-settings" style="margin-top:12px;">
-        <div class="save-location-controls">
-          <span class="path-label">📁 保存位置：</span>
-          <span class="path-value" id="save-path">未选择</span>
-          <button class="mini-btn" id="select-folder">选择文件夹</button>
-          <button class="mini-btn" id="reset-folder" style="display:none;">重置</button>
-        </div>
-        <div class="history-retention-control">
-          <span class="history-retention-label">🖼️ 历史图片保留：</span>
-          <div id="history-image-retention" class="history-retention-options" role="group" aria-label="历史图片保留">
-            <button type="button" class="history-retention-option active" data-value="original" aria-pressed="true" title="历史记录保存原图，可直接从历史下载原图，占用空间较多。">原图</button>
-            <button type="button" class="history-retention-option" data-value="thumbnail" aria-pressed="false" title="历史记录保存预览图，占用空间小；如果没有选择保存文件夹，就不能下载原图。">缩略图</button>
-          </div>
-        </div>
-      </div>
-
-      <label for="prompt">提示词（必填）</label>
-      <textarea id="prompt" placeholder="例如：生成你认为日系二次元DeepSeek拟人角色海报 比例3:4竖版"></textarea>
-      <div class="prompt-buttons-container">
-        <button class="save-prompt-from-input-btn" id="save-prompt-from-input" title="保存当前提示词到库">
-          💾 保存到提示词库
-        </button>
-        <button class="optimize-prompt-btn" id="optimize-prompt-btn" title="使用AI优化提示词">
-          ✨ 优化提示词
-        </button>
-      </div>
-
       <!-- 提示词库 -->
       <div class="prompt-library-panel collapsed" id="prompt-library-panel">
         <button class="prompt-library-heading" id="prompt-library-toggle" type="button" aria-expanded="false">
@@ -149,6 +125,17 @@
           <div class="prompt-library-empty">暂无保存的提示词</div>
           <div class="prompt-library-list"></div>
         </div>
+      </div>
+
+      <label for="prompt">提示词（必填）</label>
+      <textarea id="prompt" placeholder="例如：生成你认为日系二次元DeepSeek拟人角色海报 比例3:4竖版"></textarea>
+      <div class="prompt-buttons-container">
+        <button class="save-prompt-from-input-btn" id="save-prompt-from-input" title="保存当前提示词到库">
+          💾 保存到提示词库
+        </button>
+        <button class="optimize-prompt-btn" id="optimize-prompt-btn" title="使用AI优化提示词">
+          ✨ 优化提示词
+        </button>
       </div>
 
       <div class="row">
@@ -205,6 +192,23 @@
           <button class="btn" id="run" style="width:100%; margin-top:10px;">发送请求</button>
         </div>
       </div>
+
+      <!-- 保存位置设置（可选） -->
+      <div class="save-settings">
+        <div class="save-location-controls">
+          <span class="path-label">📁 保存位置：</span>
+          <span class="path-value" id="save-path">未选择</span>
+          <button class="mini-btn" id="select-folder">选择文件夹</button>
+          <button class="mini-btn" id="reset-folder" style="display:none;">重置</button>
+        </div>
+        <div class="history-retention-control">
+          <span class="history-retention-label">🖼️ 历史图片保留：</span>
+          <div id="history-image-retention" class="history-retention-options" role="group" aria-label="历史图片保留">
+            <button type="button" class="history-retention-option active" data-value="original" aria-pressed="true" title="历史记录保存原图，可直接从历史下载原图，占用空间较多。">原图</button>
+            <button type="button" class="history-retention-option" data-value="thumbnail" aria-pressed="false" title="历史记录保存预览图，占用空间小；如果没有选择保存文件夹，就不能下载原图。">缩略图</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="panel results-panel">
@@ -230,6 +234,20 @@
         <button class="history-page-btn" id="history-prev" type="button">上一页</button>
         <div class="history-page-meta" id="history-page-meta">第 1 / 1 页</div>
         <button class="history-page-btn" id="history-next" type="button">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dialog-overlay" id="announcement-modal" aria-hidden="true">
+    <div class="dialog-content announcement-dialog" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
+      <div class="dialog-title" id="announcement-title">公告</div>
+      <div class="announcement-copy">
+        <p>项目已开源，帮忙去github上点点<a href="https://github.com/falsecsx/image" target="_blank" rel="noopener noreferrer"><code>Starred</code></a>吧~</p>
+		<p>交流群：<a href="https://qm.qq.com/q/8kDSNHC6go" target="_blank" rel="noopener noreferrer"><code>771289757</code></a></p>
+        <p>图片生成时间可能较长，如果没有报错，可以稍等一会。</p>
+      </div>
+      <div class="dialog-actions">
+        <button class="dialog-btn dialog-btn-cancel" id="announcement-close" type="button">关闭</button>
       </div>
     </div>
   </div>
@@ -303,7 +321,8 @@
       </div>
     </div>
   </div>
-  <script src="assets/js/app.js?v=20260428-2"></script>
+  <script src="assets/js/app.js?v=20260428-3"></script>
 </body>
 
 </html>
+

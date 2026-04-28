@@ -97,14 +97,6 @@
       gap: 16px;
     }
 
-    .workspace-panel > .site-stats {
-      margin-bottom: 0;
-    }
-
-    .workspace-panel > .deploy-note {
-      margin-bottom: 0;
-    }
-
     .results-panel,
     .history-panel {
       padding-top: 22px;
@@ -131,11 +123,52 @@
       min-width: 0;
     }
 
+    .workspace-hero-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
     .hero-badges {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       margin-bottom: 14px;
+    }
+
+    .workspace-hero-tools {
+      display: flex;
+      justify-content: flex-end;
+      flex: 0 0 auto;
+    }
+
+    .announcement-trigger {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 14px;
+      border: 1px solid rgba(94, 234, 212, 0.26);
+      border-radius: 999px;
+      background: rgba(7, 19, 26, 0.62);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .announcement-trigger:hover {
+      border-color: rgba(94, 234, 212, 0.44);
+      background: rgba(14, 116, 144, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .announcement-trigger:focus-visible {
+      outline: 2px solid rgba(94, 234, 212, 0.5);
+      outline-offset: 2px;
     }
 
     .hero-badge {
@@ -206,33 +239,6 @@
 
     .deploy-note a:hover {
       text-decoration: underline;
-    }
-
-    .site-stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      justify-content: flex-start;
-    }
-
-    .site-stat-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-height: 36px;
-      padding: 7px 12px;
-      border: 1px solid rgba(148, 163, 184, 0.14);
-      border-radius: 999px;
-      background: rgba(7, 19, 26, 0.56);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-    }
-
-    .site-stat-item strong {
-      color: var(--accent);
-      font-size: 14px;
     }
 
     .panel h2 {
@@ -978,7 +984,7 @@
       background: linear-gradient(180deg, rgba(15, 31, 42, 0.95), rgba(10, 24, 33, 0.88));
       border: 1px solid var(--border);
       border-radius: 18px;
-      margin-bottom: 12px;
+      margin-bottom: 0;
       box-shadow: var(--shadow-card);
     }
 
@@ -1555,11 +1561,48 @@
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     }
 
+    .announcement-dialog {
+      max-width: 480px;
+    }
+
     .dialog-title {
       font-size: 16px;
       font-weight: 600;
       color: var(--text);
       margin-bottom: 16px;
+    }
+
+    .announcement-copy {
+      margin: 0 0 18px;
+      padding: 14px 16px;
+      border: 1px solid rgba(94, 234, 212, 0.22);
+      border-radius: 16px;
+      background: linear-gradient(135deg, rgba(94, 234, 212, 0.12), rgba(245, 158, 11, 0.08));
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .announcement-copy p {
+      margin: 0;
+    }
+
+    .announcement-copy p + p {
+      margin-top: 10px;
+    }
+
+    .announcement-copy code {
+      color: var(--accent);
+    }
+
+    .announcement-copy a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .announcement-copy a:hover {
+      text-decoration: underline;
     }
 
     .dialog-desc {
@@ -1994,10 +2037,6 @@
         justify-items: start;
       }
 
-      .site-stats {
-        justify-content: flex-start;
-      }
-
       .row {
         grid-template-columns: 1fr;
       }
@@ -2042,8 +2081,23 @@
         line-height: 1.15;
       }
 
+      .workspace-hero-top {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+      }
+
       .hero-badges {
         gap: 8px;
+        margin-bottom: 0;
+      }
+
+      .workspace-hero-tools {
+        justify-content: flex-start;
+      }
+
+      .announcement-trigger {
+        align-self: flex-start;
       }
 
       .hero-badge {
@@ -2294,9 +2348,9 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
-      .site-stats {
-        display: grid;
-        grid-template-columns: 1fr;
+      .announcement-trigger {
+        width: 100%;
+        justify-content: center;
       }
 
       .history-grid {
