@@ -1221,6 +1221,15 @@
       background: rgba(250, 204, 21, 0.28);
     }
 
+    .history-card .params-btn {
+      background: rgba(45, 212, 191, 0.16);
+      color: #5eead4;
+    }
+
+    .history-card .params-btn:hover {
+      background: rgba(45, 212, 191, 0.28);
+    }
+
     .history-card .add-btn {
       background: rgba(52, 211, 153, 0.2);
       border: none;
@@ -1563,6 +1572,36 @@
 
     .announcement-dialog {
       max-width: 480px;
+    }
+
+    .history-params-dialog {
+      max-width: 520px;
+    }
+
+    .history-param-grid {
+      display: grid;
+      grid-template-columns: minmax(86px, 0.7fr) minmax(0, 1.3fr);
+      gap: 10px;
+      margin-top: 14px;
+      padding: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 14px;
+      background: rgba(7, 19, 26, 0.44);
+    }
+
+    .history-param-label {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .history-param-value {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 600;
+      word-break: break-word;
+      text-align: right;
     }
 
     .dialog-title {
@@ -2317,6 +2356,16 @@
         padding: 18px;
         max-height: min(88vh, 920px);
         overflow-y: auto;
+      }
+
+      .history-param-grid {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      .history-param-value {
+        text-align: left;
+        margin-bottom: 6px;
       }
 
       .dialog-actions {

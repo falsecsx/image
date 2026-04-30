@@ -109,6 +109,16 @@
         return proxyUrl.toString();
       }
 
+      function buildApiProxyUrlForTarget(targetUrl) {
+        const proxyUrl = new URL(apiProxyEndpoint, window.location.href);
+        proxyUrl.searchParams.set('target', targetUrl);
+        return proxyUrl.toString();
+      }
+
+      function canProxyImageUrl(src) {
+        return isApiProxyEnabled() && /^https:\/\//i.test(src || '');
+      }
+
       // 当 Base URL 变化时，同步更新"前往获取"链接
       baseUrlInput.addEventListener('input', () => {
         const url = getBaseUrl();
@@ -1077,7 +1087,6 @@
                 <div class="prompt-container">
                   <div class="prompt" title="点击复制提示词">${escapeHtml(record.prompt || '无提示词')}</div>
                 </div>
-                ${record.runtimeMs ? `<div class="history-time muted">生成耗时：${formatDurationMs(record.runtimeMs)}</div>` : ''}
                 <div class="meta">
                   <span>${formatDate(record.timestamp)}</span>
                   <div class="history-actions">
@@ -1085,6 +1094,7 @@
                     ${hasFilename ? '<button class="action-btn hd-btn" title="从文件夹加载高清图"><span class="action-icon">🔍</span><span class="action-text">高清</span></button>' : ''}
                     <button class="action-btn download-btn" title="下载历史图片"><span class="action-icon">⬇️</span><span class="action-text">下载</span></button>
                     <button class="action-btn save-prompt-btn" title="保存提示词到库"><span class="action-icon">💾</span><span class="action-text">存词</span></button>
+                    <button class="action-btn params-btn" title="查看本次生图参数"><span class="action-icon">⚙️</span><span class="action-text">参数</span></button>
                     <button class="action-btn delete-btn" data-id="${record.id}" title="删除历史记录"><span class="action-icon">🗑️</span><span class="action-text">删除</span></button>
                   </div>
                 </div>
@@ -1233,6 +1243,14 @@
               });
             }
 
+            const paramsBtn = card.querySelector('.params-btn');
+            if (paramsBtn) {
+              paramsBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                showHistoryParamsDialog(record);
+              });
+            }
+
             // 长提示词 tooltip
             const promptContainer = card.querySelector('.prompt-container');
             if (promptContainer) {
@@ -1357,6 +1375,75 @@
       function setHistoryActionButtonContent(button, icon, text) {
         if (!button) return;
         button.innerHTML = `<span class="action-icon">${icon}</span><span class="action-text">${text}</span>`;
+      }
+
+      function getCurrentGenerationParams(overrides = {}) {
+        return {
+          aspect: aspectSelect?.value || '',
+          resolution: resolutionSelect?.value || '',
+          quality: imageQualitySelect?.value || '',
+          model: getImageModel(),
+          protocol: getProtocol(),
+          ...overrides
+        };
+      }
+
+      function formatGenerationParamValue(key, value) {
+        if (value === undefined || value === null || value === '') return '';
+        const normalized = String(value);
+        const maps = {
+          aspect: { auto: 'auto[自动]' },
+          quality: { auto: 'auto[自动]', low: 'low[低]', medium: 'medium[中]', high: 'high[高]', standard: 'standard[标准]', hd: 'hd[高清]' },
+          protocol: { gemini: 'Gemini 原生', 'openai-chat': 'OpenAI Chat', 'openai-images': 'OpenAI Images' }
+        };
+        return maps[key]?.[normalized] || normalized;
+      }
+
+      function getHistoryParamRows(record) {
+        return [
+          ['图片比例', 'aspect', record.aspect],
+          ['清晰度', 'resolution', record.resolution],
+          ['质量', 'quality', record.quality],
+          ['生图模型', 'model', record.model],
+          ['API 协议', 'protocol', record.protocol],
+          ['生成耗时', 'runtimeMs', record.runtimeMs ? formatDurationMs(record.runtimeMs) : '']
+        ]
+          .map(([label, key, value]) => [label, formatGenerationParamValue(key, value)])
+          .filter(([, value]) => value);
+      }
+
+      function showHistoryParamsDialog(record) {
+        const rows = getHistoryParamRows(record);
+        const dialogOverlay = document.createElement('div');
+        dialogOverlay.className = 'dialog-overlay active';
+        dialogOverlay.innerHTML = `
+          <div class="dialog-content history-params-dialog">
+            <div class="dialog-title">⚙️ 生图参数</div>
+            ${rows.length ? `
+              <div class="history-param-grid">
+                ${rows.map(([label, value]) => `
+                  <div class="history-param-label">${escapeHtml(label)}</div>
+                  <div class="history-param-value">${escapeHtml(value)}</div>
+                `).join('')}
+              </div>
+            ` : '<div class="dialog-desc">这条历史记录没有保存参数信息，新的生成记录会自动保存。</div>'}
+            <div class="dialog-actions">
+              <button class="dialog-btn dialog-btn-cancel" type="button">关闭</button>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(dialogOverlay);
+        const closeDialog = () => dialogOverlay.remove();
+        dialogOverlay.querySelector('.dialog-btn-cancel')?.addEventListener('click', closeDialog);
+        dialogOverlay.addEventListener('click', (e) => {
+          if (e.target === dialogOverlay) closeDialog();
+        });
+        dialogOverlay.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') closeDialog();
+        });
+        dialogOverlay.tabIndex = -1;
+        dialogOverlay.focus();
       }
 
       // ========== 提示词库 UI 交互 ==========
@@ -2898,18 +2985,38 @@
         if (!src) throw new Error('图片地址为空');
         if (/^data:/i.test(src)) return src;
 
-        const response = await fetch(src, { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`图片下载失败: HTTP ${response.status}`);
-        }
-
-        const blob = await response.blob();
+        const blob = await fetchImageAsBlob(src);
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
           reader.onerror = () => reject(new Error('图片转为本地数据失败'));
           reader.readAsDataURL(blob);
         });
+      }
+
+      async function fetchImageAsBlob(src) {
+        if (!src) throw new Error('图片地址为空');
+
+        async function fetchBlob(url) {
+          const response = await fetch(url, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`图片下载失败: HTTP ${response.status}`);
+          }
+          return response.blob();
+        }
+
+        try {
+          return await fetchBlob(src);
+        } catch (err) {
+          if (!canProxyImageUrl(src)) throw err;
+
+          console.warn('图片直连读取失败，尝试通过代理读取:', err);
+          try {
+            return await fetchBlob(buildApiProxyUrlForTarget(src));
+          } catch (proxyErr) {
+            throw new Error(`图片读取失败，直连和代理都不可用：${proxyErr.message || proxyErr}`);
+          }
+        }
       }
 
       // 判断 result 是否包含图片
@@ -3494,8 +3601,7 @@ ${chinesePrompt}
             applyOpenAIImageOptions(formData, imageModel, true);
             const imageFieldName = getOpenAIImageFieldName(imgs.length);
             for (const img of imgs) {
-              const resp = await fetch(img.dataUrl);
-              const blob = await resp.blob();
+              const blob = await fetchImageAsBlob(img.dataUrl);
               const ext = getExtensionFromMime(img.mime || blob.type || 'image/png');
               formData.append(imageFieldName, blob, `ref.${ext}`);
             }
@@ -3790,12 +3896,6 @@ ${chinesePrompt}
           const actions = document.createElement('div');
           actions.className = 'actions';
 
-          // 显示生成耗时（使用卡片自己的实际耗时）
-          const timeLabel = document.createElement('span');
-          timeLabel.className = 'time-label';
-          timeLabel.textContent = `⏱️ ${(actualElapsedMs / 1000).toFixed(2)}s`;
-          actions.appendChild(timeLabel);
-
           // 下载按钮
           const downloadLink = document.createElement('a');
           downloadLink.className = 'mini-btn';
@@ -3869,6 +3969,9 @@ ${chinesePrompt}
               prompt: meta?.prompt || '',
               aspect: meta?.aspect || '',
               resolution: meta?.resolution || '',
+              quality: meta?.quality || '',
+              model: meta?.model || '',
+              protocol: meta?.protocol || '',
               timestamp: Date.now(),
               runtimeMs: meta?.runtimeMs || 0
             };
@@ -3899,14 +4002,6 @@ ${chinesePrompt}
           // 操作按钮区域
           const actions = document.createElement('div');
           actions.className = 'actions';
-
-          // 显示生成耗时
-          if (meta && meta.runtimeMs) {
-            const timeLabel = document.createElement('span');
-            timeLabel.className = 'time-label';
-            timeLabel.textContent = `⏱️ ${(meta.runtimeMs / 1000).toFixed(2)}s`;
-            actions.appendChild(timeLabel);
-          }
 
           // 下载按钮
           const downloadLink = document.createElement('a');
@@ -3998,6 +4093,9 @@ ${chinesePrompt}
               prompt: meta?.prompt || '',
               aspect: meta?.aspect || '',
               resolution: meta?.resolution || '',
+              quality: meta?.quality || '',
+              model: meta?.model || '',
+              protocol: meta?.protocol || '',
               timestamp: Date.now(),
               runtimeMs: meta?.runtimeMs || 0
             };
@@ -4039,14 +4137,18 @@ ${chinesePrompt}
         flashStatus('基于图片生成中...', '');
 
         try {
-          const mimeType = imageSrc.match(/data:([^;]+);/)?.[1] || 'image/png';
-          const refImage = { dataUrl: imageSrc, mime: mimeType };
+          const referenceSrc = await getPersistentImageSource(imageSrc);
+          const mimeType = referenceSrc.match(/data:([^;]+);/)?.[1] || 'image/png';
+          const refImage = { dataUrl: referenceSrc, mime: mimeType };
           const result = await callImageAPI(prompt, [refImage]);
           if (!hasResultImage(result)) {
             throw new Error(result.text || '未返回图片，请调整提示词后重试');
           }
           const elapsed = performance.now() - startTime;
-          appendResult(result, { prompt, runtimeMs: elapsed });
+          appendResult(result, getCurrentGenerationParams({
+            prompt,
+            runtimeMs: elapsed
+          }));
           flashStatus(`基于图片生成完成！耗时 ${(elapsed / 1000).toFixed(2)}s`, 'success');
         } catch (err) {
           console.error('基于图片生成失败:', err);
@@ -4106,12 +4208,10 @@ ${chinesePrompt}
             const durationMs = performance.now() - startedAt;
 
             // 替换占位符为真实结果
-            await replaceCardWithResult(placeholderCard, result, {
+            await replaceCardWithResult(placeholderCard, result, getCurrentGenerationParams({
               prompt,
-              aspect: aspectSelect.value,
-              resolution: resolutionSelect.value,
               runtimeMs: durationMs
-            });
+            }));
             completed++;
             updateRunProgress();
           } catch (err) {
@@ -4874,14 +4974,6 @@ ${chinesePrompt}
         const actions = document.createElement('div');
         actions.className = 'actions';
 
-        // 显示实际耗时（如果有）
-        if (actualElapsedMs > 0) {
-          const timeLabel = document.createElement('span');
-          timeLabel.className = 'time-label';
-          timeLabel.textContent = `⏱️ ${(actualElapsedMs / 1000).toFixed(2)}s`;
-          actions.appendChild(timeLabel);
-        }
-
         // 角度标签
         const angleLabel = document.createElement('span');
         angleLabel.className = 'time-label';
@@ -4935,6 +5027,9 @@ ${chinesePrompt}
                 prompt: angleName,
                 aspect: aspectSelect.value,
                 resolution: resolutionSelect.value,
+                quality: imageQualitySelect?.value || '',
+                model: getImageModel(),
+                protocol: getProtocol(),
                 timestamp: Date.now(),
                 runtimeMs: performance.now() - startedAt
               };
@@ -4970,6 +5065,9 @@ ${chinesePrompt}
             prompt: angleName,
             aspect: aspectSelect.value,
             resolution: resolutionSelect.value,
+            quality: imageQualitySelect?.value || '',
+            model: getImageModel(),
+            protocol: getProtocol(),
             timestamp: Date.now(),
             runtimeMs: actualElapsedMs || 0
           };
