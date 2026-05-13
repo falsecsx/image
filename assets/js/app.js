@@ -11,6 +11,10 @@
       const API_PROXY_MODE_KEY = 'api_proxy_mode';
       const THREE_JS_CDN = 'https://cdn.jsdelivr.net/npm/three@0.140.0/build/three.min.js';
       const ORBIT_CONTROLS_CDN = 'https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/controls/OrbitControls.js';
+      const debugEnabled = appConfig.debug === true || new URLSearchParams(window.location.search).get('debug') === '1';
+      const debugLog = (...args) => {
+        if (debugEnabled) console.log(...args);
+      };
       let threeJsLoadPromise = null;
 
       function loadExternalScript(src) {
@@ -188,10 +192,13 @@
 
       const apiKeyInput = document.getElementById('api-key');
       const rememberApiKeyInput = document.getElementById('remember-api-key');
+      const setTextKeyBtn = document.getElementById('set-text-key-btn');
       const API_KEY_STORAGE_KEY = 'gemini_api_key';
       const API_KEY_REMEMBER_KEY = 'gemini_api_key_remember';
+      const TEXT_API_KEY_STORAGE_KEY = 'text_api_key_override';
       const PROMPT_ADMIN_TOKEN_STORAGE_KEY = 'prompt_admin_token';
       let apiKeyValue = '';
+      let textApiKeyValue = '';
 
       function loadStoredApiKey() {
         const sessionKey = sessionStorage.getItem(API_KEY_STORAGE_KEY) || '';
@@ -222,6 +229,21 @@
         }
       }
 
+      function loadStoredTextApiKey() {
+        return localStorage.getItem(TEXT_API_KEY_STORAGE_KEY) || '';
+      }
+
+      function persistTextApiKey(key) {
+        const value = (key || '').trim();
+        textApiKeyValue = value;
+        if (value) {
+          localStorage.setItem(TEXT_API_KEY_STORAGE_KEY, value);
+        } else {
+          localStorage.removeItem(TEXT_API_KEY_STORAGE_KEY);
+        }
+        updateTextKeyButtonState();
+      }
+
       function maskApiKey(key) {
         const value = (key || '').trim();
         if (!value) return '';
@@ -250,6 +272,97 @@
 
         apiKeyValue = shownValue;
         return apiKeyValue;
+      }
+
+      function getTextApiKey() {
+        return (textApiKeyValue || '').trim() || getApiKey();
+      }
+
+      function updateTextKeyButtonState() {
+        if (!setTextKeyBtn) return;
+        setTextKeyBtn.title = textApiKeyValue
+          ? '已设置文本模型专用 Key，留空保存可恢复使用上方默认 Key'
+          : '留空时默认使用上方 API Key';
+      }
+
+      function showTextKeyDialog() {
+        let dialogKeyValue = textApiKeyValue || '';
+        const dialogOverlay = document.createElement('div');
+        dialogOverlay.className = 'dialog-overlay active';
+        dialogOverlay.innerHTML = `
+          <div class="dialog-content">
+            <div class="dialog-title">设置文本模型专用 Key</div>
+            <div class="dialog-desc">仅用于文本优化、翻译、分镜分析等文本模型请求。留空后保存，则默认使用上方 API Key。</div>
+            <input class="dialog-input" id="text-key-input" type="text" placeholder="留空则使用上方 API Key" autocomplete="off" />
+            <div class="dialog-actions">
+              <button class="dialog-btn dialog-btn-cancel" type="button">取消</button>
+              <button class="dialog-btn dialog-btn-confirm" type="button">保存</button>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(dialogOverlay);
+
+        const textKeyInput = dialogOverlay.querySelector('#text-key-input');
+        const cancelBtn = dialogOverlay.querySelector('.dialog-btn-cancel');
+        const confirmBtn = dialogOverlay.querySelector('.dialog-btn-confirm');
+
+        textKeyInput.value = maskApiKey(dialogKeyValue);
+
+        const closeDialog = () => dialogOverlay.remove();
+        const confirmSave = () => {
+          const shownValue = textKeyInput.value.trim();
+          if (!shownValue) {
+            dialogKeyValue = '';
+          } else if (!(shownValue.includes('*') && dialogKeyValue)) {
+            dialogKeyValue = shownValue;
+          }
+
+          persistTextApiKey(dialogKeyValue);
+          closeDialog();
+          flashStatus(
+            dialogKeyValue
+              ? '已保存文本模型专用 Key'
+              : '已清除文本模型专用 Key，文本请求将默认使用上方 API Key',
+            'success'
+          );
+        };
+
+        textKeyInput.addEventListener('paste', (event) => {
+          const pastedText = event.clipboardData?.getData('text')?.trim();
+          if (!pastedText) return;
+
+          event.preventDefault();
+          dialogKeyValue = pastedText;
+          textKeyInput.value = maskApiKey(dialogKeyValue);
+        });
+
+        textKeyInput.addEventListener('input', () => {
+          const shownValue = textKeyInput.value.trim();
+          if (!shownValue) {
+            dialogKeyValue = '';
+            return;
+          }
+
+          if (shownValue.includes('*') && dialogKeyValue) {
+            textKeyInput.value = maskApiKey(dialogKeyValue);
+            return;
+          }
+
+          dialogKeyValue = shownValue;
+        });
+
+        cancelBtn.addEventListener('click', closeDialog);
+        confirmBtn.addEventListener('click', confirmSave);
+        textKeyInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') confirmSave();
+          if (e.key === 'Escape') closeDialog();
+        });
+        dialogOverlay.addEventListener('click', (e) => {
+          if (e.target === dialogOverlay) closeDialog();
+        });
+
+        setTimeout(() => textKeyInput.focus(), 80);
       }
 
       apiKeyInput.addEventListener('paste', (event) => {
@@ -590,18 +703,9 @@
       async function restoreFolderHandle() {
         if (!db) await initDB();
 
-        // 检查 File System Access API 是否可用
         if (!('showDirectoryPicker' in window)) {
-          console.log('File System Access API 不可用');
+          debugLog('File System Access API unavailable');
           return false;
-        }
-
-        // 检查是否已有持久化权限
-        if (navigator.storage && navigator.storage.persist) {
-          const isPersisted = await navigator.storage.persist();
-          if (!isPersisted) {
-            console.log('无法获取持久化存储权限');
-          }
         }
 
         return new Promise((resolve) => {
@@ -617,47 +721,92 @@
             }
 
             try {
-              // 尝试请求权限恢复句柄
-              const permission = await result.handle.queryPermission({ mode: 'readwrite' });
-              if (permission === 'granted') {
-                folderHandle = result.handle;
-                savePathEl.textContent = folderHandle.name;
-                resetFolderBtn.style.display = 'inline-block';
-                resolve(true);
-              } else if (permission === 'prompt') {
-                // 尝试请求权限
-                const newPermission = await result.handle.requestPermission({ mode: 'readwrite' });
-                if (newPermission === 'granted') {
-                  folderHandle = result.handle;
-                  savePathEl.textContent = folderHandle.name;
-                  resetFolderBtn.style.display = 'inline-block';
-                  resolve(true);
-                } else {
-                  // 权限被拒绝，删除保存的句柄
-                  await clearSavedFolderHandle();
-                  resolve(false);
-                }
-              } else {
-                // 权限被拒绝，删除保存的句柄
-                await clearSavedFolderHandle();
-                resolve(false);
-              }
+              folderHandle = result.handle;
+              savePathEl.textContent = folderHandle.name;
+              resetFolderBtn.style.display = 'inline-block';
+              resolve(true);
             } catch (err) {
-              console.error('恢复文件夹句柄失败:', err);
-              // handle 可能已失效，删除保存的记录
+              console.error('Restore saved folder failed:', err);
               await clearSavedFolderHandle();
               resolve(false);
             }
           };
 
           request.onerror = () => {
-            console.error('读取保存的文件夹句柄失败');
+            console.error('Read saved folder handle failed');
             resolve(false);
           };
         });
       }
 
-      // 清除保存的文件夹句柄
+      async function ensureFolderPermission(handle, mode = 'readwrite', requestIfNeeded = false) {
+        if (!handle || typeof handle.queryPermission !== 'function') {
+          return false;
+        }
+
+        try {
+          const permission = await handle.queryPermission({ mode });
+          if (permission === 'granted') {
+            return true;
+          }
+
+          if (!requestIfNeeded || typeof handle.requestPermission !== 'function') {
+            return false;
+          }
+
+          const requested = await handle.requestPermission({ mode });
+          return requested === 'granted';
+        } catch (err) {
+          console.error('Check folder permission failed:', err);
+          return false;
+        }
+      }
+
+      async function ensureWritableFolderHandle(options = {}) {
+        const { autoReselect = true } = options;
+
+        if (isMobileDevice()) {
+          return { ok: false, reason: 'not_configured' };
+        }
+
+        if (!('showDirectoryPicker' in window)) {
+          return { ok: false, reason: 'folder_unavailable' };
+        }
+
+        if (!folderHandle) {
+          return { ok: false, reason: 'not_configured' };
+        }
+
+        try {
+          const hasPermission = await ensureFolderPermission(folderHandle, 'readwrite', false);
+          if (hasPermission) {
+            return { ok: true, handle: folderHandle, reselected: false };
+          }
+
+          if (!autoReselect) {
+            return { ok: false, reason: 'permission_denied' };
+          }
+
+          const reselectedHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+          const reselectedPermission = await ensureFolderPermission(reselectedHandle, 'readwrite', true);
+          if (!reselectedPermission) {
+            return { ok: false, reason: 'permission_denied' };
+          }
+
+          folderHandle = reselectedHandle;
+          savePathEl.textContent = folderHandle.name;
+          resetFolderBtn.style.display = 'inline-block';
+          await saveFolderHandle(folderHandle);
+          return { ok: true, handle: folderHandle, reselected: true };
+        } catch (err) {
+          if (err?.name === 'AbortError') {
+            return { ok: false, reason: 'permission_denied' };
+          }
+          console.error('恢复文件夹写入权限失败:', err);
+          return { ok: false, reason: 'folder_unavailable', error: err };
+        }
+      }
+
       async function clearSavedFolderHandle() {
         if (!db) await initDB();
 
@@ -670,8 +819,7 @@
         });
       }
 
-      // ========== 提示词库模块 ==========
-
+      // ========== ????????? ==========
       function isPromptBackendEnabled() {
         return appConfig.promptApiUrl !== false && /^https?:$/.test(window.location.protocol);
       }
@@ -1823,35 +1971,60 @@
         flashStatus('已重置保存位置，之后会保存到历史记录', 'success');
       }
 
+
       // 已选择文件夹时自动保存原图；未选择时仅写入历史记录
       async function saveImageFile(base64Src, filename) {
         if (isMobileDevice()) {
-          return false;
+          return { status: 'not_configured' };
         }
 
         // 转换 base64 为 Blob
         const response = await fetch(base64Src);
         const blob = await response.blob();
 
-        console.log(`保存文件: ${filename}, 大小: ${(blob.size / 1024 / 1024).toFixed(2)}MB`);
+        debugLog(`保存文件: ${filename}, 大小: ${(blob.size / 1024 / 1024).toFixed(2)}MB`);
 
-        if (folderHandle) {
-          try {
-            const fileHandle = await folderHandle.getFileHandle(filename, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            console.log(`图片已保存到文件夹: ${filename}`);
-            return true;
-          } catch (err) {
-            console.error('保存到文件夹失败:', err);
-            return false;
-          }
+        if (!folderHandle) {
+          // 未选择文件夹时不自动下载，用户可手动点击下载按钮
+          debugLog('未选择保存文件夹，跳过自动保存:', filename);
+          return { status: 'not_configured' };
         }
 
-        // 未选择文件夹时不自动下载，用户可手动点击下载按钮
-        console.log('未选择保存文件夹，跳过自动保存:', filename);
-        return false;
+        const folderState = await ensureWritableFolderHandle({ autoReselect: true });
+        if (!folderState.ok) {
+          return { status: folderState.reason || 'save_failed' };
+        }
+
+        try {
+          const targetHandle = folderState.handle || folderHandle;
+          const fileHandle = await targetHandle.getFileHandle(filename, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          debugLog(`图片已保存到文件夹: ${filename}`);
+          return { status: folderState.reselected ? 'reselected_and_saved' : 'saved_to_folder' };
+        } catch (err) {
+          console.error('保存到文件夹失败:', err);
+          return { status: 'save_failed', error: err };
+        }
+      }
+
+      function getSaveImageResultMessage(saveResult) {
+        switch (saveResult?.status) {
+          case 'saved_to_folder':
+            return { type: 'success', text: '历史记录已保存，原图已写入所选文件夹' };
+          case 'reselected_and_saved':
+            return { type: 'success', text: '已重新授权保存文件夹，历史记录和原图都已保存' };
+          case 'permission_denied':
+            return { type: 'danger', text: '历史记录已保存，但未获得文件夹写入权限，原图没有保存到所选文件夹' };
+          case 'folder_unavailable':
+            return { type: 'danger', text: '历史记录已保存，但当前文件夹不可用，原图没有保存到所选文件夹' };
+          case 'save_failed':
+            return { type: 'danger', text: '历史记录已保存，但写入文件夹失败，原图没有保存到所选文件夹' };
+          case 'not_configured':
+          default:
+            return { type: 'success', text: '历史记录已保存，未配置自动保存文件夹' };
+        }
       }
 
       async function handleSaveToAlbum(base64Src, filename) {
@@ -2104,7 +2277,16 @@
           for (const endpoint of endpoints) {
             try {
               const res = await fetch(endpoint, { headers });
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              if (!res.ok) {
+                let detail = '';
+                try {
+                  const raw = await res.text();
+                  detail = raw ? ` ${raw.slice(0, 240)}` : '';
+                } catch (_) {
+                  detail = '';
+                }
+                throw new Error(`HTTP ${res.status}${detail}`);
+              }
               data = await res.json();
               break;
             } catch (err) {
@@ -2154,7 +2336,7 @@
           flashStatus(`已获取 ${models.length} 个模型`, 'success');
         } catch (err) {
           console.error('拉取模型列表失败:', err);
-          flashStatus('拉取模型列表失败: ' + err.message, 'danger');
+          flashStatus(getModelListErrorMessage(err), 'danger');
         } finally {
           fetchModelsBtn.disabled = false;
           fetchModelsBtn.textContent = '拉取列表';
@@ -2165,6 +2347,7 @@
       addModelsBtn.addEventListener('click', showAddModelsDialog);
       deleteImageModelBtn.addEventListener('click', () => deleteCurrentModel('image'));
       deleteTextModelBtn.addEventListener('click', () => deleteCurrentModel('text'));
+      setTextKeyBtn?.addEventListener('click', showTextKeyDialog);
 
       function restoreSelectValue(selectEl, value) {
         if (!selectEl || value === null) return;
@@ -2176,10 +2359,12 @@
       function loadSettings() {
         const storedApiKey = loadStoredApiKey();
         apiKeyValue = storedApiKey.key || '';
+        textApiKeyValue = loadStoredTextApiKey();
         if (rememberApiKeyInput) {
           rememberApiKeyInput.checked = storedApiKey.remember;
         }
         renderApiKeyMask();
+        updateTextKeyButtonState();
         const savedBaseUrl = localStorage.getItem('gemini_base_url');
         if (appConfig.forceDefaultBaseUrl || !savedBaseUrl) {
           baseUrlInput.value = defaultBaseUrl;
@@ -2233,6 +2418,7 @@
         const apiKey = getApiKey();
         const rememberApiKey = !!rememberApiKeyInput?.checked;
         persistApiKey(apiKey, rememberApiKey);
+        persistTextApiKey(textApiKeyValue);
         localStorage.setItem('gemini_base_url', getBaseUrl());
         localStorage.setItem(API_PROXY_MODE_KEY, proxyModeInput?.checked ? '1' : '0');
         localStorage.setItem('image_model', imageModelSelect.value);
@@ -2330,8 +2516,8 @@
         if (!msg) return '未知错误';
 
         const translations = {
-          'error code: 524': '请求超时：代理服务器或 CDN 等待上游生图接口返回太久。请关闭 CDN 代理、提高宝塔/PHP 超时，或换用响应更快/支持直连的中转站',
-          'HTTP 524': '请求超时：代理服务器或 CDN 等待上游生图接口返回太久。请关闭 CDN 代理、提高宝塔/PHP 超时，或换用响应更快/支持直连的中转站',
+          'error code: 524': '请求超时：代理服务器或 CDN 等待上游生图接口返回太久。请关闭 CDN 代理、或换用响应更快/支持直连的中转站',
+          'HTTP 524': '请求超时：代理服务器或 CDN 等待上游生图接口返回太久。请关闭 CDN 代理、或换用响应更快/支持直连的中转站',
           'no image generated': '上游接口没有生成图片，请尝试切换 API 协议、模型或换一个提示词',
           'token quota is not enough': 'Token 配额不足',
           'remain quota': '剩余配额',
@@ -2376,6 +2562,23 @@
         }
 
         return '';
+      }
+
+      function getModelListErrorMessage(error) {
+        const message = String(error?.message || '').trim();
+        if (/HTTP 401/i.test(message)) {
+          return '拉取模型列表失败：认证未通过，请检查 API Key、协议类型和请求头配置';
+        }
+        if (/HTTP 403/i.test(message)) {
+          return '拉取模型列表失败：当前接口禁止列出模型（HTTP 403）。很多中转站不开放 /models，请改用“手动添加”填写模型名';
+        }
+        if (/HTTP 404/i.test(message)) {
+          return '拉取模型列表失败：当前接口没有提供模型列表端点（HTTP 404），请改用“手动添加”填写模型名';
+        }
+        if (/Failed to fetch|NetworkError/i.test(message)) {
+          return '拉取模型列表失败：网络连接失败，或目标接口未放行浏览器跨域';
+        }
+        return '拉取模型列表失败: ' + (parseApiError(message) || message || '未知错误');
       }
 
       function renderUploads() {
@@ -2498,7 +2701,7 @@
 
             // 如果原图已经 ≤ 9MB，直接使用原图，不压缩
             if (file.size <= MAX_IMAGE_SIZE) {
-              console.log(
+              debugLog(
                 `图片无需压缩: ${file.name}\n` +
                 `  尺寸: ${originalWidth}x${originalHeight}\n` +
                 `  大小: ${originalSizeKB.toFixed(1)}KB (${(file.size / 1024 / 1024).toFixed(2)}MB)`
@@ -2555,22 +2758,22 @@
             let finalLevel = 0;
 
             // 调试：输出压缩级别数组长度
-            console.log(`压缩级别总数: ${compressionLevels.length}`);
+            debugLog(`压缩级别总数: ${compressionLevels.length}`);
 
             // 尝试各级压缩，目标是找到 5-9MB 之间的结果
             for (let i = 0; i < compressionLevels.length; i++) {
               const [maxW, maxH, quality, mimeType] = compressionLevels[i];
-              console.log(`尝试压缩级别 ${i + 1}/${compressionLevels.length}: ${mimeType}, 质量=${quality}, 尺寸=${maxW}x${maxH}`);
+              debugLog(`尝试压缩级别 ${i + 1}/${compressionLevels.length}: ${mimeType}, 质量=${quality}, 尺寸=${maxW}x${maxH}`);
 
               result = compressImageOnce(img, maxW, maxH, quality, mimeType);
               finalLevel = i + 1;
 
               const resultSizeMB = (result.size / 1024 / 1024).toFixed(2);
-              console.log(`  结果: ${resultSizeMB}MB (${result.width}x${result.height})`);
+              debugLog(`  结果: ${resultSizeMB}MB (${result.width}x${result.height})`);
 
               // 如果结果在 5-9MB 之间，完美！
               if (result.size >= MIN_IMAGE_SIZE && result.size <= MAX_IMAGE_SIZE) {
-                console.log(`  ✓ 在目标范围内，停止压缩`);
+                debugLog(`  ✓ 在目标范围内，停止压缩`);
                 break;
               }
 
@@ -2580,20 +2783,20 @@
 
                 if (result.size >= toleranceSize) {
                   // 在容忍范围内（4-5MB），接受这个结果
-                  console.log(`  ✓ 在容忍范围内 (4-5MB)，接受结果`);
+                  debugLog(`  ✓ 在容忍范围内 (4-5MB)，接受结果`);
                   break;
                 } else {
                   // < 4MB，压缩过度
-                  console.log(`  ⚠ 压缩过度 (<4MB)`);
+                  debugLog(`  ⚠ 压缩过度 (<4MB)`);
 
                   // 如果有上一级结果，且上一级在合理范围内（<= 9MB），才回退
                   if (previousResult && previousResult.size <= MAX_IMAGE_SIZE) {
                     result = previousResult;
                     finalLevel = i; // 回退到上一级
-                    console.log(`  → 回退到上一级`);
+                    debugLog(`  → 回退到上一级`);
                   } else if (previousResult) {
                     // 上一级超出9MB，当前级虽然<4MB，但比超出范围的结果好
-                    console.log(`  → 上一级超出范围，保持当前结果`);
+                    debugLog(`  → 上一级超出范围，保持当前结果`);
                   }
                   // 否则使用当前结果（第一级就 < 4MB 的情况）
                   break;
@@ -2601,7 +2804,7 @@
               }
 
               // 如果结果 > 9MB，继续尝试下一级
-              console.log(`  → 继续尝试下一级`);
+              debugLog(`  → 继续尝试下一级`);
               previousResult = result;
             }
 
@@ -2619,7 +2822,7 @@
             const compressionRatio = ((1 - result.size / file.size) * 100).toFixed(1);
             const inTargetRange = result.size >= MIN_IMAGE_SIZE && result.size <= MAX_IMAGE_SIZE;
 
-            console.log(
+            debugLog(
               `图片压缩完成: ${file.name}\n` +
               `  原始: ${originalWidth}x${originalHeight}, ${originalSizeKB.toFixed(1)}KB (${(file.size / 1024 / 1024).toFixed(2)}MB)\n` +
               `  压缩后: ${result.width}x${result.height}, ${finalSizeKB.toFixed(1)}KB (${finalSizeMB}MB)\n` +
@@ -2651,11 +2854,11 @@
         const fileSizeKB = fileSizeBytes / 1024;
         const fileSizeMB = fileSizeKB / 1024;
 
-        console.log(`处理图片: ${file.name}, 原始大小: ${fileSizeMB.toFixed(2)}MB`);
+        debugLog(`处理图片: ${file.name}, 原始大小: ${fileSizeMB.toFixed(2)}MB`);
 
         // 如果图片已经小于 10MB，直接读取
         if (fileSizeKB <= 10240) {
-          console.log(`图片较小，无需压缩: ${file.name}`);
+          debugLog(`图片较小，无需压缩: ${file.name}`);
           return await readFileAsDataUrl(file);
         }
 
@@ -2840,6 +3043,95 @@
           setImageOption(target, 'output_format', outputFormatSelect?.value || '', asFormData);
           setImageOption(target, 'background', imageBackgroundSelect?.value || '', asFormData);
         }
+      }
+
+      async function buildOpenAIImageEditsRequest(prompt, imgs, imageModel, key) {
+        const endpoint = buildApiUrl('/v1/images/edits');
+        const formData = new FormData();
+        formData.append('model', imageModel);
+        formData.append('prompt', prompt);
+        applyOpenAIImageOptions(formData, imageModel, true);
+        const imageFieldName = getOpenAIImageFieldName(imgs.length);
+        for (const img of imgs) {
+          const blob = await fetchImageAsBlob(img.dataUrl);
+          const ext = getExtensionFromMime(img.mime || blob.type || 'image/png');
+          formData.append(imageFieldName, blob, `ref.${ext}`);
+        }
+        return {
+          endpoint,
+          headers: { 'Authorization': `Bearer ${key}` },
+          body: formData
+        };
+      }
+
+      function buildOpenAIImageRelayGenerationsRequest(prompt, imgs, imageModel, key) {
+        const endpoint = buildApiUrl('/v1/images/generations');
+        const payload = {
+          model: imageModel,
+          prompt,
+          image: imgs.map(img => img.dataUrl).filter(Boolean)
+        };
+        applyOpenAIImageOptions(payload, imageModel);
+        return {
+          endpoint,
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify(payload)
+        };
+      }
+
+      function shouldRetryOpenAIImageWithRelay(status, errorText = '') {
+        if ([401, 403, 429].includes(status) || status >= 500) return false;
+        if ([400, 404, 415, 422].includes(status)) return true;
+
+        const text = String(errorText || '').toLowerCase();
+        if (!text) return false;
+
+        const retryPatterns = [
+          /\/v1\/images\/edits/,
+          /\/images\/edits/,
+          /unsupported media type/,
+          /unknown endpoint/,
+          /not found/,
+          /invalid image/,
+          /image.*(must|should).*(array|string)/,
+          /generations/
+        ];
+
+        return retryPatterns.some(pattern => pattern.test(text));
+      }
+
+      async function sendImageRequest(request, label = 'default') {
+        debugLog('[callImageAPI] request:', {
+          label,
+          endpoint: request.endpoint,
+          contentType: request.headers?.['Content-Type'] || '(multipart)',
+          hasBody: !!request.body
+        });
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 600000); // 10分钟超时
+        let res;
+        try {
+          res = await fetch(request.endpoint, {
+            method: 'POST',
+            headers: request.headers,
+            body: request.body,
+            signal: controller.signal
+          });
+        } catch (fetchErr) {
+          clearTimeout(timeoutId);
+          if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
+          throw fetchErr;
+        }
+        clearTimeout(timeoutId);
+
+        const raw = await res.text();
+        debugLog(`[callImageAPI] raw response (${label}):`, raw.slice(0, 2000));
+
+        let data;
+        try { data = JSON.parse(raw); } catch(_) { data = raw; }
+
+        return { ok: res.ok, status: res.status, raw, data };
       }
 
       function guessMimeFromUrl(url) {
@@ -3038,7 +3330,7 @@
 
       // 统一的文本API调用：根据协议自动构建请求和解析响应
       async function callTextAPI(promptText, options = {}) {
-        const key = getApiKey();
+        const key = getTextApiKey();
         if (!key) throw new Error('请先配置 API Key');
 
         const protocol = getProtocol();
@@ -3589,81 +3881,75 @@ ${chinesePrompt}
         const protocol = getProtocol();
         const imageModel = getImageModel();
         const imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
-        let endpoint, fetchHeaders, fetchBody;
+        let response;
 
         if (protocol === 'openai-images') {
           if (imgs.length > 0) {
-            // 有参考图 → 走 /v1/images/edits，multipart/form-data
-            endpoint = buildApiUrl('/v1/images/edits');
-            const formData = new FormData();
-            formData.append('model', imageModel);
-            formData.append('prompt', prompt);
-            applyOpenAIImageOptions(formData, imageModel, true);
-            const imageFieldName = getOpenAIImageFieldName(imgs.length);
-            for (const img of imgs) {
-              const blob = await fetchImageAsBlob(img.dataUrl);
-              const ext = getExtensionFromMime(img.mime || blob.type || 'image/png');
-              formData.append(imageFieldName, blob, `ref.${ext}`);
+            const editsRequest = await buildOpenAIImageEditsRequest(prompt, imgs, imageModel, key);
+            debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', editsRequest.endpoint, 'hasImages:', true);
+            response = await sendImageRequest(editsRequest, 'openai-images-edits');
+
+            if (!response.ok) {
+              const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
+              console.error('[callImageAPI] error response:', response.raw);
+
+              if (shouldRetryOpenAIImageWithRelay(response.status, errorText)) {
+                const relayRequest = buildOpenAIImageRelayGenerationsRequest(prompt, imgs, imageModel, key);
+                debugLog('[callImageAPI] retrying with relay generations endpoint');
+                response = await sendImageRequest(relayRequest, 'openai-images-relay-generations');
+              } else {
+                throw new Error(errorText || `API 错误: ${response.status}`);
+              }
             }
-            fetchHeaders = { 'Authorization': `Bearer ${key}` };
-            fetchBody = formData;
           } else {
-            // 纯文生图 → 走 /v1/images/generations，JSON
-            endpoint = buildApiUrl('/v1/images/generations');
             const payload = {
               model: imageModel,
-              prompt: prompt
+              prompt
             };
             applyOpenAIImageOptions(payload, imageModel);
-            fetchHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` };
-            fetchBody = JSON.stringify(payload);
+            const request = {
+              endpoint: buildApiUrl('/v1/images/generations'),
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+              body: JSON.stringify(payload)
+            };
+            debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', false);
+            response = await sendImageRequest(request, 'openai-images-generations');
           }
         } else if (protocol === 'openai-chat') {
-          endpoint = getEndpoint();
           const payload = buildOpenAIChatImagePayload(prompt, imgs, imageModel);
-          fetchHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` };
-          fetchBody = JSON.stringify(payload);
+          const request = {
+            endpoint: getEndpoint(),
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+            body: JSON.stringify(payload)
+          };
+          debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
+          response = await sendImageRequest(request, 'openai-chat');
         } else {
           // Gemini 原生
-          endpoint = getEndpoint();
           const payload = buildGeminiImagePayload(prompt, imgs);
-          fetchHeaders = buildRequestHeaders(key, protocol);
-          fetchBody = JSON.stringify(payload);
+          const request = {
+            endpoint: getEndpoint(),
+            headers: buildRequestHeaders(key, protocol),
+            body: JSON.stringify(payload)
+          };
+          debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
+          response = await sendImageRequest(request, 'gemini');
         }
 
-        console.log('[callImageAPI] protocol:', protocol, 'endpoint:', endpoint, 'hasImages:', imgs.length > 0);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 600000); // 10分钟超时
-        let res;
-        try {
-          res = await fetch(endpoint, {
-            method: 'POST',
-            headers: fetchHeaders,
-            body: fetchBody,
-            signal: controller.signal
-          });
-        } catch (fetchErr) {
-          clearTimeout(timeoutId);
-          if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
-          throw fetchErr;
+        if (!response.ok) {
+          const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
+          console.error('[callImageAPI] error response:', response.raw);
+          throw new Error(errorText || `API 错误: ${response.status}`);
         }
-        clearTimeout(timeoutId);
-        if (!res.ok) {
-          const errBody = await res.text();
-          console.error('[callImageAPI] error response:', errBody);
-          throw new Error(errBody || `API 错误: ${res.status}`);
-        }
-        const raw = await res.text();
-        console.log('[callImageAPI] raw response:', raw.slice(0, 2000));
-        let data;
-        try { data = JSON.parse(raw); } catch(_) { data = raw; }
-        const apiErrorMessage = extractApiErrorMessage(data);
+
+        const apiErrorMessage = extractApiErrorMessage(response.data);
         if (apiErrorMessage) {
-          console.error('[callImageAPI] error payload:', data);
+          console.error('[callImageAPI] error payload:', response.data);
           throw new Error(apiErrorMessage);
         }
-        const result = extractResult(data);
-        console.log('[callImageAPI] extractResult:', { text: result.text?.slice(0,200), imageBase64: !!result.imageBase64, imageUrl: result.imageUrl });
+
+        const result = extractResult(response.data);
+        debugLog('[callImageAPI] extractResult:', { text: result.text?.slice(0,200), imageBase64: !!result.imageBase64, imageUrl: result.imageUrl });
         if (!result.imageBase64 && !result.imageUrl && !result.text) {
           throw new Error('接口未返回可用图片');
         }
@@ -3978,9 +4264,10 @@ ${chinesePrompt}
             if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentImgSrc;
             await saveHistory(historyRecord);
             await renderHistory();
-            await saveImageFile(persistentImgSrc, filename);
-
-            console.log('图片已自动保存并添加到历史记录:', filename);
+            const saveResult = await saveImageFile(persistentImgSrc, filename);
+            const feedback = getSaveImageResultMessage(saveResult);
+            flashStatus(feedback.text, feedback.type);
+            debugLog('图片历史记录已保存:', filename, saveResult);
           } catch (err) {
             console.error('保存历史记录或图片失败:', err);
           }
@@ -4074,13 +4361,13 @@ ${chinesePrompt}
             const fileSize = Math.round(base64Size * 0.75); // base64 转实际字节数
             const mimeType = persistentImgSrc.match(/data:([^;]+);/)?.[1] || 'unknown';
 
-            console.log('========== 图片详细信息 ==========');
-            console.log(`分辨率: ${imgInfo.width}×${imgInfo.height} (${(imgInfo.width * imgInfo.height / 1000000).toFixed(2)}M像素)`);
-            console.log(`MIME类型: ${mimeType}`);
-            console.log(`Base64长度: ${base64Size.toLocaleString()} 字符`);
-            console.log(`实际文件大小: ${(fileSize / 1024 / 1024).toFixed(2)}MB (${fileSize.toLocaleString()} 字节)`);
-            console.log(`平均每像素: ${(fileSize / (imgInfo.width * imgInfo.height)).toFixed(2)} 字节`);
-            console.log('===================================');
+            debugLog('========== 图片详细信息 ==========');
+            debugLog(`分辨率: ${imgInfo.width}×${imgInfo.height} (${(imgInfo.width * imgInfo.height / 1000000).toFixed(2)}M像素)`);
+            debugLog(`MIME类型: ${mimeType}`);
+            debugLog(`Base64长度: ${base64Size.toLocaleString()} 字符`);
+            debugLog(`实际文件大小: ${(fileSize / 1024 / 1024).toFixed(2)}MB (${fileSize.toLocaleString()} 字节)`);
+            debugLog(`平均每像素: ${(fileSize / (imgInfo.width * imgInfo.height)).toFixed(2)} 字节`);
+            debugLog('===================================');
 
             // 根据API返回的MIME类型生成文件名
             const fileExt = getExtensionFromMime(mimeType);
@@ -4105,10 +4392,10 @@ ${chinesePrompt}
             // 刷新历史记录显示
             await renderHistory();
 
-            // 自动保存原图到文件夹或下载
-            await saveImageFile(persistentImgSrc, filename);
-
-            console.log('图片已自动保存并添加到历史记录:', filename);
+            const saveResult = await saveImageFile(persistentImgSrc, filename);
+            const feedback = getSaveImageResultMessage(saveResult);
+            flashStatus(feedback.text, feedback.type);
+            debugLog('图片历史记录已保存:', filename, saveResult);
           } catch (err) {
             console.error('保存历史记录或图片失败:', err);
           }
@@ -5035,10 +5322,11 @@ ${chinesePrompt}
               };
               if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentNewImgSrc;
               await saveHistory(historyRecord);
-              await saveImageFile(persistentNewImgSrc, filename);
+              const saveResult = await saveImageFile(persistentNewImgSrc, filename);
               await renderHistory();
 
-              flashStatus(`${angleName} 重新生成成功`, 'success');
+              const feedback = getSaveImageResultMessage(saveResult);
+              flashStatus(`${angleName} 重新生成成功。${feedback.text}`, feedback.type);
             } catch (error) {
               console.error('重试失败:', error);
               flashStatus(`${angleName} 重试失败: ${parseApiError(error.message)}`, 'danger');
@@ -5074,10 +5362,12 @@ ${chinesePrompt}
           if (shouldSaveHistoryOriginal()) historyRecord.imageSrc = persistentImgSrc;
           await saveHistory(historyRecord);
 
-          await saveImageFile(persistentImgSrc, filename);
+          const saveResult = await saveImageFile(persistentImgSrc, filename);
 
           // 刷新历史记录显示
           await renderHistory();
+          const feedback = getSaveImageResultMessage(saveResult);
+          flashStatus(`${angleName} 已生成。${feedback.text}`, feedback.type);
         } catch (err) {
           console.error('保存失败:', err);
         }
@@ -5260,7 +5550,7 @@ ${chinesePrompt}
         // 尝试恢复保存的文件夹句柄
         restoreFolderHandle().then(restored => {
           if (restored) {
-            console.log('已恢复保存的文件夹选择');
+            debugLog('已恢复保存的文件夹选择');
           }
         });
 
