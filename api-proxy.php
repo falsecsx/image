@@ -75,8 +75,21 @@ function validate_target(string $target): array
         send_json(400, ['error' => '不允许代理本机地址']);
     }
 
-    if (!preg_match('#^/(v1|v1beta)(/|$)#', $path)) {
-        send_json(400, ['error' => '代理模式只允许 /v1 或 /v1beta API 路径']);
+    $allowedPathPatterns = [
+        '#/(v1|v1beta)(/|$)#',
+        '#/compatible-mode/v1(/|$)#',
+        '#/api/v1(/|$)#',
+        '#/api/v3(/|$)#',
+    ];
+    $pathAllowed = false;
+    foreach ($allowedPathPatterns as $pattern) {
+        if (preg_match($pattern, $path)) {
+            $pathAllowed = true;
+            break;
+        }
+    }
+    if (!$pathAllowed) {
+        send_json(400, ['error' => '代理模式只允许常见 AI API 路径']);
     }
 
     if (filter_var($host, FILTER_VALIDATE_IP) && is_private_ip($host)) {

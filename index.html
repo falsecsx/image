@@ -1,0 +1,507 @@
+﻿<!doctype html>
+<html lang="zh">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer-when-downgrade">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <title>Ai 绘图助手</title>
+
+  <script>
+    window.APP_CONFIG = window.APP_CONFIG || {
+      // 默认使用 https://api.openai.com；用户也可以在页面里改成自己的 API 中转地址。
+      defaultBaseUrl: 'https://api.openai.com',
+      apiHomeUrl: 'https://api.openai.com',
+      // 纯静态公共提示词库：编辑 data/prompts.json 即可更新所有用户可见的提示词。
+      promptApiUrl: false,
+      promptStaticUrl: 'data/prompts.json?v=20260428-4',
+      forceDefaultBaseUrl: false,
+      apiProxyEndpoint: 'api-proxy.php'
+    };
+  </script>
+
+    <link rel="stylesheet" href="assets/css/main.css?v=20260526-30">
+</head>
+
+<body>
+  <div class="app studio-layout">
+    <div class="creation-studio">
+      <div class="panel workspace-panel">
+        <div class="workspace-hero-top studio-hero">
+          <div class="studio-hero-copy">
+            <h1>AI 创作工作台</h1>
+          </div>
+          <div class="studio-hero-meta">
+            <div class="studio-status-card">
+              <span class="studio-status-label">当前平台</span>
+              <strong id="provider-current-name">OpenAI</strong>
+              <div class="studio-status-tags">
+                <span class="studio-status-tag" id="provider-current-protocol">OpenAI Images</span>
+                <span class="studio-status-tag" id="provider-current-route">直连</span>
+                <span class="studio-status-tag" id="provider-current-model">gpt-image-2</span>
+              </div>
+            </div>
+            <div class="workspace-hero-tools">
+              <button class="settings-open-btn" id="settings-open-btn" type="button" aria-haspopup="dialog" aria-controls="settings-drawer">⚙ 设置</button>
+              <button class="announcement-trigger" id="announcement-btn" type="button" aria-haspopup="dialog" aria-controls="announcement-modal">🔔 公告</button>
+            </div>
+          </div>
+        </div>
+
+        <section class="surface-block prompt-studio-block">
+          <div class="studio-section-heading compact">
+            <div>
+              <span class="section-kicker">Prompt Studio</span>
+              <h2>提示词创作区</h2>
+            </div>
+            <button class="prompt-library-open-btn" id="prompt-library-open-btn" type="button" aria-haspopup="dialog" aria-controls="prompt-library-dialog">📚 提示词库</button>
+          </div>
+
+          <div class="prompt-studio-grid">
+            <div class="prompt-editor-pane">
+              <label for="prompt">提示词（必填）</label>
+              <div class="prompt-platform-hint" id="prompt-platform-hint"></div>
+              <textarea id="prompt" placeholder="例如：生成你认为日系二次元 DeepSeek 拟人角色海报，比 3:4 竖版，保留科技感与舞台灯光。"></textarea>
+              <div class="prompt-buttons-container">
+                <button class="save-prompt-from-input-btn" id="save-prompt-from-input" title="保存当前提示词到库">💾 保存到提示词库</button>
+                <button class="optimize-prompt-btn" id="optimize-prompt-btn" title="使用AI优化提示词">✨ 优化提示词</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="row generation-controls">
+          <section class="surface-block upload-stage">
+            <div class="studio-section-heading compact">
+              <div>
+                <span class="section-kicker">Reference</span>
+                <h2>参考图</h2>
+              </div>
+            </div>
+            <label for="image">上传参考图（最多 4 张，可拖拽/粘贴）</label>
+            <input id="image" type="file" accept="image/png,image/jpeg" multiple>
+            <div class="uploads" id="upload-preview"></div>
+          </section>
+
+          <section class="surface-block settings-stage">
+            <div class="studio-section-heading compact">
+              <div>
+                <span class="section-kicker">Generation</span>
+                <h2>平台参数</h2>
+              </div>
+              <p id="platform-params-summary"></p>
+            </div>
+
+            <div class="platform-params-grid">
+              <div class="platform-param-field" id="aspect-field">
+                <label for="aspect" id="aspect-label">图片比例</label>
+                <select id="aspect">
+                  <option value="auto" selected>auto[自动]</option>
+                  <option value="1:1">1:1</option>
+                  <option value="2:3">2:3</option>
+                  <option value="3:4">3:4</option>
+                  <option value="4:5">4:5</option>
+                  <option value="5:4">5:4</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:2">3:2</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                  <option value="21:9">21:9</option>
+                </select>
+              </div>
+
+              <div class="platform-param-field" id="resolution-field">
+                <label for="resolution" id="resolution-label">清晰度</label>
+                <select id="resolution">
+                  <option value="1K">1K</option>
+                  <option value="2K" selected>2K</option>
+                  <option value="4K">4K</option>
+                </select>
+              </div>
+
+              <div class="platform-param-field" id="image-quality-field">
+                <label for="image-quality" id="image-quality-label">质量（可选）</label>
+                <select id="image-quality">
+                  <option value="auto" selected>auto[自动]</option>
+                  <option value="low">low[低]</option>
+                  <option value="medium">medium[中]</option>
+                  <option value="high">high[高]</option>
+                </select>
+              </div>
+
+              <div class="platform-param-field" id="output-format-field">
+                <label for="output-format" id="output-format-label">输出格式（可选）</label>
+                <select id="output-format">
+                  <option value="" selected>auto[自动]</option>
+                  <option value="png">png</option>
+                  <option value="jpeg">jpeg</option>
+                  <option value="webp">webp</option>
+                </select>
+              </div>
+
+              <div class="platform-param-field" id="image-background-field">
+                <label for="image-background" id="image-background-label">背景（可选）</label>
+                <select id="image-background">
+                  <option value="auto" selected>auto[自动]</option>
+                  <option value="transparent">transparent[透明]</option>
+                  <option value="opaque">opaque[不透明]</option>
+                </select>
+              </div>
+
+              <div class="platform-param-field" id="count-field">
+                <label for="count" id="count-label">生成张数</label>
+                <input id="count" type="number" min="1" max="10" value="1" />
+                <div class="muted" id="count-help">每次调用会循环生成多张（最多 10 张）。</div>
+              </div>
+
+              <div class="platform-param-field" id="video-duration-field" hidden>
+                <label for="video-duration" id="video-duration-label">视频时长</label>
+                <select id="video-duration">
+                  <option value="4">4 秒</option>
+                  <option value="8">8 秒</option>
+                  <option value="10" selected>10 秒</option>
+                  <option value="12">12 秒</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="platform-extra-fields" id="platform-extra-fields"></div>
+            <div class="platform-pending-box" id="platform-pending-box" hidden>当前平台协议暂未接入，暂不可发起请求。</div>
+            <div class="status" id="status">待发送...</div>
+            <button class="btn studio-run-btn" id="run">发送请求</button>
+          </section>
+        </div>
+
+        <section class="surface-block advanced-tools collapsed" id="advanced-tools-panel">
+          <button class="advanced-tools-heading" id="advanced-tools-toggle" type="button" aria-expanded="false">
+            <span>
+              <span class="section-kicker">Advanced</span>
+              <strong>高级能力</strong>
+            </span>
+            <span class="prompt-library-toggle-icon" aria-hidden="true">▼</span>
+          </button>
+          <div class="advanced-tools-body">
+            <p class="advanced-tools-copy">把分镜生成、角度控制等进阶能力集中收纳，主界面先聚焦基础生图流程。</p>
+            <div class="advanced-tools-grid">
+              <button class="advanced-tool-btn" id="storyboard-tool-btn" type="button">
+                <span class="advanced-tool-icon">🎬</span>
+                <span>
+                  <strong>分镜生成</strong>
+                  <small>从脚本中识别分镜并批量出图</small>
+                </span>
+              </button>
+              <button class="advanced-tool-btn" id="angle-tool-btn" type="button">
+                <span class="advanced-tool-icon">📐</span>
+                <span>
+                  <strong>产品角度</strong>
+                  <small>使用 3D 角度工具生成镜头提示词</small>
+                </span>
+              </button>
+              <button class="advanced-tool-btn" id="reverse-prompt-tool-btn" type="button">
+                <span class="advanced-tool-icon">🔎</span>
+                <span>
+                  <strong>反推提示词</strong>
+                  <small>根据当前参考图生成提示词</small>
+                </span>
+              </button>
+              <div class="advanced-tool-placeholder">
+                <strong>平台专属参数</strong>
+                <small>按平台放置专属参数与预设入口</small>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <aside class="output-rail">
+      <div class="panel results-panel">
+        <div class="config-row output-panel-head">
+          <div class="output-panel-copy">
+            <span class="section-kicker">Output</span>
+            <h2>当前输出</h2>
+          </div>
+          <span class="muted" id="result-count">0 条</span>
+          <button class="btn output-clear-btn" id="clear-results">清空结果</button>
+        </div>
+        <div class="results" id="results"></div>
+      </div>
+
+      <div class="panel history-panel">
+        <div class="history-header">
+          <div class="output-panel-copy">
+            <span class="section-kicker">History</span>
+            <h2>历史记录</h2>
+          </div>
+          <span class="muted" id="history-count">0 条</span>
+          <button class="btn output-clear-btn" id="clear-history" hidden>清空历史</button>
+        </div>
+        <div class="history-grid" id="history-grid">
+          <div class="history-empty">暂无历史记录</div>
+        </div>
+        <div class="history-pagination" id="history-pagination" hidden>
+          <button class="history-page-btn" id="history-prev" type="button">上一页</button>
+          <div class="history-page-meta" id="history-page-meta">第 1 / 1 页</div>
+          <button class="history-page-btn" id="history-next" type="button">下一页</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="dialog-overlay prompt-library-dialog-overlay" id="prompt-library-dialog" aria-hidden="true">
+    <div class="dialog-content prompt-library-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-library-dialog-title">
+      <div class="prompt-library-dialog-head">
+        <div>
+          <span class="section-kicker">Prompt Library</span>
+          <div class="dialog-title" id="prompt-library-dialog-title">提示词库</div>
+        </div>
+        <button class="settings-close-btn" id="prompt-library-close-btn" type="button" aria-label="关闭提示词库">✕</button>
+      </div>
+      <div class="prompt-library-panel collapsed" id="prompt-library-panel">
+        <button class="prompt-library-heading" id="prompt-library-toggle" type="button" aria-expanded="false">
+          <span>📚 提示词库</span>
+          <span class="prompt-library-toggle-icon" aria-hidden="true">▼</span>
+        </button>
+        <div class="prompt-library-container">
+          <div class="prompt-library-tools">
+            <input id="prompt-library-search" type="text" placeholder="搜索标题或内容" autocomplete="off">
+            <button class="prompt-lib-btn" id="import-prompts-btn" type="button" title="导入 txt、md、csv 或 json 提示词文件">📥 导入提示词</button>
+            <button class="prompt-lib-btn" id="export-local-prompts-btn" type="button" title="仅导出本地">📦 导出本地</button>
+            <input id="import-prompts-file" type="file" accept=".txt,.md,.csv,.json,application/json,text/plain,text/markdown,text/csv" multiple hidden>
+          </div>
+          <div class="prompt-library-empty">暂无保存的提示词</div>
+          <div class="prompt-library-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-drawer-overlay" id="settings-drawer-overlay" aria-hidden="true"></div>
+  <aside class="settings-drawer" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true">
+    <div class="settings-drawer-head">
+      <div>
+        <span class="section-kicker">Settings</span>
+        <h2 id="settings-drawer-title">工作台设置</h2>
+      </div>
+      <button class="settings-close-btn" id="settings-close-btn" type="button" aria-label="关闭设置">✕</button>
+    </div>
+
+    <div class="settings-drawer-body">
+      <section class="settings-section provider-hub">
+        <div class="settings-section-heading">
+          <div>
+            <span class="section-kicker">Platform</span>
+            <h3>平台与模型</h3>
+          </div>
+          <div class="platform-kind-toggle" role="tablist" aria-label="平台类型">
+            <button type="button" class="platform-kind-btn active" data-platform-kind="image" aria-selected="true">图片</button>
+            <button type="button" class="platform-kind-btn" data-platform-kind="video" aria-selected="false">视频</button>
+          </div>
+        </div>
+
+        <div class="platform-switcher" id="platform-switcher" role="tablist" aria-label="平台选择"></div>
+
+        <div class="platform-meta-strip">
+          <div class="platform-meta-main">
+            <strong id="platform-title">OpenAI</strong>
+            <span class="platform-type-badge" id="platform-type-badge">图片平台</span>
+          </div>
+          <div class="platform-meta-note" id="platform-meta-note"></div>
+        </div>
+
+        <div class="platform-template-panel">
+          <p id="platform-template-hint"></p>
+          <div class="platform-support-note" id="platform-support-note"></div>
+        </div>
+
+        <div class="config-row runtime-config-row">
+          <div id="image-model-field" style="flex:1.5;">
+            <label for="image-model">
+              生图模型
+              <button id="fetch-models-btn" class="label-action-btn fetch" type="button">拉取列表</button>
+              <button id="add-models-btn" class="label-action-btn add" type="button">手动添加</button>
+            </label>
+            <div class="model-select-wrap">
+              <select id="image-model">
+                <option value="gpt-image-2" selected>gpt-image-2</option>
+              </select>
+              <button id="delete-image-model-btn" class="delete-model-btn" title="删除当前生图模型" type="button">×</button>
+            </div>
+          </div>
+          <div id="text-model-field" style="flex:1.5;">
+            <label for="text-model">
+              文本优化模型
+              <button id="set-text-key-btn" class="label-action-btn fetch" type="button">设置key</button>
+            </label>
+            <div class="model-select-wrap">
+              <select id="text-model">
+                <option value="gpt-5.4-mini" selected>gpt-5.4-mini</option>
+              </select>
+              <button id="delete-text-model-btn" class="delete-model-btn" title="删除当前文本优化模型" type="button">×</button>
+            </div>
+          </div>
+          <div id="api-protocol-field" style="flex:1;">
+            <label for="api-protocol">API 协议</label>
+            <select id="api-protocol">
+              <option value="gemini">Gemini 原生</option>
+              <option value="openai-chat">OpenAI Chat</option>
+              <option value="openai-images" selected>OpenAI Images</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <div>
+            <span class="section-kicker">Access</span>
+            <h3>接入密钥</h3>
+          </div>
+        </div>
+
+        <div class="config-row provider-config-row">
+          <div class="config-field" id="base-url-field" style="flex: 1.5;">
+            <label for="base-url">Base URL</label>
+            <input id="base-url" type="text" placeholder="https://api.openai.com" value="https://api.openai.com" autocomplete="off">
+            <label class="inline-setting-toggle" title="遇到 Failed to fetch 或 CORS 报错时开启，由本站服务器转发请求">
+              <input id="proxy-mode" type="checkbox">
+              <span class="remember-api-key-switch" aria-hidden="true"></span>
+              <span class="remember-api-key-text">兼容代理模式</span>
+            </label>
+          </div>
+
+          <div class="config-field" id="api-key-field" style="flex: 2;">
+            <label for="api-key">
+              API Key
+              <a id="api-link" href="https://api.openai.com" target="_blank" class="api-link-inline">前往获取 →</a>
+            </label>
+            <input id="api-key" type="text" placeholder="输入 API Key..." autocomplete="off">
+            <label class="remember-api-key">
+              <input id="remember-api-key" type="checkbox">
+              <span class="remember-api-key-switch" aria-hidden="true"></span>
+              <span class="remember-api-key-text">记住 API Key</span>
+            </label>
+          </div>
+
+          <div class="config-actions provider-actions">
+            <button class="btn" id="save-key">保存设置</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section save-settings studio-save-settings">
+        <div class="settings-section-heading">
+          <div>
+            <span class="section-kicker">Storage</span>
+            <h3>存储与历史</h3>
+          </div>
+        </div>
+
+        <div class="save-location-controls">
+          <span class="path-label">📁 保存位置：</span>
+          <span class="path-value" id="save-path">未选择</span>
+          <button class="mini-btn" id="select-folder">选择文件夹</button>
+          <button class="mini-btn" id="reset-folder" style="display:none;">重置</button>
+        </div>
+        <div class="history-retention-control">
+          <span class="history-retention-label">🖼️ 历史图片保留：</span>
+          <div id="history-image-retention" class="history-retention-options" role="group" aria-label="历史图片保留">
+            <button type="button" class="history-retention-option active" data-value="original" aria-pressed="true" title="历史记录保存原图，可直接从历史下载原图，占用空间较多。">原图</button>
+            <button type="button" class="history-retention-option" data-value="thumbnail" aria-pressed="false" title="历史记录保存预览图，占用空间小；如果没有选择保存文件夹，就不能下载原图。">缩略图</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <div class="dialog-overlay" id="announcement-modal" aria-hidden="true">
+    <div class="dialog-content announcement-dialog" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
+      <div class="dialog-title" id="announcement-title">公告</div>
+      <div class="announcement-copy">
+        <p>项目已开源，帮忙去github上点点<a href="https://github.com/falsecsx/image" target="_blank" rel="noopener noreferrer"><code>Starred</code></a>吧~</p>
+		<p>交流群：<a href="https://qm.qq.com/q/8kDSNHC6go" target="_blank" rel="noopener noreferrer"><code>771289757</code></a></p>
+        <p>图片生成时间可能较长，如果没有报错，可以稍等一会。</p>
+      </div>
+      <div class="dialog-actions">
+        <button class="dialog-btn dialog-btn-cancel" id="announcement-close" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片放大模态框 -->
+  <div class="lightbox" id="lightbox">
+    <button class="close-btn" id="lightbox-close">✕</button>
+    <img src="" alt="放大图片" id="lightbox-img">
+  </div>
+
+  <!-- 角度调整弹窗 -->
+  <div class="angle-modal-overlay" id="angle-modal">
+    <div class="angle-modal">
+      <div class="angle-modal-header">
+        <div class="angle-modal-title">📐 自定义产品角度</div>
+        <button class="angle-modal-close" id="angle-modal-close">✕</button>
+      </div>
+      <div class="angle-modal-body">
+        <!-- 主要内容区域：左侧参考图片 + 中央3D画布 -->
+        <div class="angle-modal-main">
+          <!-- 左侧参考图片区域 -->
+          <div class="angle-reference-panel">
+            <div class="angle-reference-title">参考图片</div>
+            <div class="angle-reference-image" id="angle-reference-image">
+              <div class="angle-reference-placeholder">未选择参考图片</div>
+            </div>
+          </div>
+
+          <!-- 中央3D画布区域 -->
+          <div class="angle-canvas-container">
+            <div class="angle-canvas-hint">左键：旋转 | 右键：平移 | 滚轮：缩放</div>
+            <canvas id="angle-canvas"></canvas>
+
+            <!-- 底部滑块控制区域（浮动面板） -->
+            <div class="angle-controls-panel">
+              <div class="angle-controls-title">镜头参数</div>
+
+              <!-- 方位角滑块 -->
+              <div class="angle-control-group">
+                <div class="angle-control-label">
+                  <span>方位角（旋转）</span>
+                  <span class="angle-control-value" id="azimuth-value">0°</span>
+                </div>
+                <input type="range" class="angle-slider" id="azimuth-slider" min="0" max="360" value="0" step="1">
+              </div>
+
+              <!-- 俯仰角滑块 -->
+              <div class="angle-control-group">
+                <div class="angle-control-label">
+                  <span>俯仰角（Pitch）</span>
+                  <span class="angle-control-value" id="pitch-value">0°</span>
+                </div>
+                <input type="range" class="angle-slider" id="pitch-slider" min="-90" max="90" value="0" step="1">
+              </div>
+
+              <!-- 缩放滑块 -->
+              <div class="angle-control-group">
+                <div class="angle-control-label">
+                  <span>缩放（距离）</span>
+                  <span class="angle-control-value" id="zoom-value">1.0x</span>
+                </div>
+                <input type="range" class="angle-slider" id="zoom-slider" min="0.5" max="3.0" value="1.0" step="0.1">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="angle-modal-footer">
+        <button class="angle-modal-btn angle-modal-btn-cancel" id="angle-modal-cancel">取消</button>
+        <button class="angle-modal-btn angle-modal-btn-confirm" id="angle-modal-confirm">确定</button>
+      </div>
+    </div>
+  </div>
+  <script src="assets/js/app.js?v=20260526-45"></script>
+</body>
+
+</html>
+
