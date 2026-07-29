@@ -1,5 +1,48 @@
 
     (() => {
+      // --- Agent bridge (DO NOT REMOVE) ---
+      window.AgentBridge = {
+        getApiKey: () => typeof getApiKey === 'function' ? getApiKey() : '',
+        getTextModel: () => typeof getTextModel === 'function' ? getTextModel() : 'gpt-5.4-mini',
+        setTextModel: (value) => typeof setTextModel === 'function' ? setTextModel(value) : false,
+        getTextModelOptions: () => typeof getTextModelOptions === 'function' ? getTextModelOptions() : [],
+        getBaseUrl: () => typeof getBaseUrl === 'function' ? getBaseUrl() : '',
+        buildApiUrl: (path) => typeof buildApiUrl === 'function' ? buildApiUrl(path) : path,
+        sendImageRequest: (req, kind) => typeof sendImageRequest === 'function' ? sendImageRequest(req, kind) : Promise.reject(new Error('sendImageRequest not available')),
+        appendResult: (item, params) => typeof appendResult === 'function' ? appendResult(item, params) : null,
+        flashStatus: (msg, type) => typeof flashStatus === 'function' ? flashStatus(msg, type) : console.log(msg),
+        getStateImages: () => Array.isArray(state?.images) ? state.images : [],
+        getHistoryMeta: () => typeof loadHistory === 'function' ? loadHistory() : [],
+        loadHistoryEntries: () => typeof loadHistory === 'function' ? loadHistory() : [],
+        getCurrentGenerationParams: (overrides = {}) => typeof getCurrentGenerationParams === 'function' ? getCurrentGenerationParams(overrides) : { ...overrides },
+        getGenerationOptions: (mediaType = 'image') => typeof getGenerationOptions === 'function' ? getGenerationOptions(mediaType) : {},
+        runAgentGeneration: (mediaType, prompt, options = {}) => typeof runAgentGeneration === 'function' ? runAgentGeneration(mediaType, prompt, options) : Promise.reject(new Error('runAgentGeneration not available')),
+        getPromptLibraryTitles: async () => (await loadAllPrompts()).map(p => p?.title || p?.content || '').filter(Boolean)
+      };
+
+      window.CanvasBridge = {
+        getUploadPreviewImageSources: () => getCanvasUploadPreviewImageSources(),
+        getResultImageSources: () => collectResultImageSources(),
+        getHistoryGridImageSources: () => getCanvasHistoryGridImageSources(),
+        loadHistoryEntries: () => typeof loadHistory === 'function' ? loadHistory() : [],
+        runGeneration: (mediaType, prompt, options = {}) => typeof runAgentGeneration === 'function'
+          ? runAgentGeneration(mediaType, prompt, options)
+          : Promise.reject(new Error('runAgentGeneration not available')),
+        flashStatus: (message, tone) => typeof flashStatus === 'function' ? flashStatus(message, tone) : undefined,
+        getPromptLibraryTitles: async () => (await loadAllPrompts()).map(p => p?.title || p?.content || '').filter(Boolean)
+      };
+
+      const _appScriptSrc = document.currentScript?.src || '';
+      const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
+
+      document.getElementById('agent-tool-btn')?.addEventListener('click', () => {
+        const agentUrl = new URL('agent/agent-ui.js?v=20260715-3', _appBase).href;
+        import(agentUrl).then(m => m.openAgentWorkspace()).catch(err => {
+          console.error('agent load failed', err);
+          alert('Agent 模块加载失败：' + err.message);
+        });
+      });
+
       // 获取用户配置的 Base URL
       const baseUrlInput = document.getElementById('base-url');
       const proxyModeInput = document.getElementById('proxy-mode');
@@ -576,7 +619,15 @@
           proxyModeInput.checked = typeof settings.proxyMode === 'boolean' ? settings.proxyMode : proxyModeInput.checked;
         }
 
-        restoreSelectValue(aspectSelect, settings.aspect ?? aspectSelect.value);
+        if (settings.aspect) {
+          applyCompatibleRetryLayout({
+            aspect: settings.aspect,
+            resolution: settings.resolution,
+            model: settings.imageModel || getImageModel()
+          });
+        } else {
+          restoreSelectValue(aspectSelect, aspectSelect.value);
+        }
         restoreSelectValue(resolutionSelect, settings.resolution ?? resolutionSelect.value);
         restoreSelectValue(imageQualitySelect, settings.imageQuality ?? imageQualitySelect.value);
         restoreSelectValue(outputFormatSelect, settings.outputFormat ?? outputFormatSelect.value);
@@ -851,10 +902,16 @@
         const platformConfig = getActivePlatformConfig();
         const isSupported = !!platformConfig.supported;
         if (runBtn) {
-          runBtn.disabled = !isSupported;
-          runBtn.textContent = isSupported ? '发送请求' : '平台待接入';
+          if (!generationInFlight) {
+            runBtn.disabled = !isSupported;
+            runBtn.textContent = isSupported ? '发送请求' : '平台待接入';
+            runBtn.removeAttribute('aria-busy');
+          } else {
+            runBtn.disabled = true;
+          }
         }
-        if (fetchModelsBtn) fetchModelsBtn.disabled = !isSupported;
+        if (fetchModelsBtn) fetchModelsBtn.disabled = !isSupported || generationInFlight;
+        syncMobileGenerateBar();
       }
       function persistActivePlatformSnapshot() {
         savePlatformSettings(activePlatformId);
@@ -1229,6 +1286,33 @@
       const statusEl = document.getElementById('status');
       const saveKeyBtn = document.getElementById('save-key');
       const runBtn = document.getElementById('run');
+      let generationInFlight = false;
+      const mobileGenerateBar = document.getElementById('mobile-generate-bar');
+      const mobileGenerateBtn = document.getElementById('mobile-generate-btn');
+      const mobileGenerateMeta = document.getElementById('mobile-generate-meta');
+
+      function syncMobileGenerateBar(options = {}) {
+        if (!mobileGenerateBtn && !mobileGenerateMeta) return;
+        const count = Math.max(1, Math.min(10, parseInt(countInput?.value, 10) || 1));
+        const platformConfig = typeof getActivePlatformConfig === 'function' ? getActivePlatformConfig() : null;
+        const isSupported = platformConfig ? !!platformConfig.supported : !runBtn?.disabled;
+        const busy = !!generationInFlight || options.busy === true;
+        const statusText = options.statusText
+          || (busy ? (options.progressText || '生成中...') : (isSupported ? `${count} 张` : '平台待接入'));
+        if (mobileGenerateMeta) mobileGenerateMeta.textContent = statusText;
+        if (mobileGenerateBtn) {
+          mobileGenerateBtn.disabled = busy || !isSupported;
+          mobileGenerateBtn.setAttribute('aria-busy', busy ? 'true' : 'false');
+          mobileGenerateBtn.textContent = busy
+            ? (options.buttonText || '生成中...')
+            : (isSupported ? (runBtn?.textContent || '发送请求') : '平台待接入');
+        }
+        if (mobileGenerateBar) {
+          mobileGenerateBar.dataset.busy = busy ? 'true' : 'false';
+          mobileGenerateBar.hidden = document.body.classList.contains('agent-mode-open');
+        }
+      }
+
       const preview = document.getElementById('upload-preview');
       const resultsEl = document.getElementById('results');
       const resultCountEl = document.getElementById('result-count');
@@ -1373,6 +1457,9 @@
       const historyGrid = document.getElementById('history-grid');
       const historyCountEl = document.getElementById('history-count');
       const clearHistoryBtn = document.getElementById('clear-history');
+      const exportHistoryBtn = document.getElementById('export-history');
+      const importHistoryBtn = document.getElementById('import-history');
+      const historyImportFileInput = document.getElementById('history-import-file');
       const historyPaginationEl = document.getElementById('history-pagination');
       const historyPrevBtn = document.getElementById('history-prev');
       const historyNextBtn = document.getElementById('history-next');
@@ -1436,6 +1523,125 @@
           };
           request.onerror = () => reject(request.error);
         });
+      }
+
+      function createHistoryDedupKey(record) {
+        return [
+          record.mediaType || 'image',
+          record.timestamp || '',
+          record.filename || '',
+          record.imageUrl || record.videoUrl || record.imageSrc || record.videoSrc || '',
+          record.prompt || ''
+        ].map(value => String(value).trim()).join('|');
+      }
+
+      function normalizeImportedHistoryRecord(record) {
+        if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+        const normalized = { ...record };
+        delete normalized.id;
+        normalized.timestamp = Number(normalized.timestamp) || Date.now();
+        if (!normalized.mediaType && (normalized.videoUrl || normalized.videoSrc)) {
+          normalized.mediaType = 'video';
+        }
+        if (!normalized.thumbnail && !normalized.imageSrc && !normalized.imageUrl && !normalized.videoUrl && !normalized.videoSrc) {
+          return null;
+        }
+        return normalized;
+      }
+
+      function parseHistoryImportPayload(payload) {
+        const records = Array.isArray(payload)
+          ? payload
+          : (Array.isArray(payload?.records) ? payload.records : (Array.isArray(payload?.history) ? payload.history : []));
+        return records.map(normalizeImportedHistoryRecord).filter(Boolean);
+      }
+
+      async function importHistoryRecords(records) {
+        if (!db) await initDB();
+        const existingRecords = await loadHistory();
+        const existingKeys = new Set(existingRecords.map(createHistoryDedupKey));
+        const uniqueRecords = [];
+        let skipped = 0;
+
+        records.forEach(record => {
+          const key = createHistoryDedupKey(record);
+          if (existingKeys.has(key)) {
+            skipped++;
+            return;
+          }
+          existingKeys.add(key);
+          uniqueRecords.push(record);
+        });
+
+        if (!uniqueRecords.length) return { imported: 0, skipped };
+
+        await new Promise((resolve, reject) => {
+          const transaction = db.transaction([STORE_NAME], 'readwrite');
+          const store = transaction.objectStore(STORE_NAME);
+          uniqueRecords.forEach(record => store.add(record));
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error || new Error('导入历史记录失败'));
+        });
+
+        await trimHistory();
+        return { imported: uniqueRecords.length, skipped };
+      }
+
+      async function exportHistoryRecords() {
+        const records = await loadHistory();
+        if (!records.length) {
+          flashStatus('当前没有可导出的历史记录', 'danger');
+          return;
+        }
+
+        const payload = {
+          type: 'ai-image-history',
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          count: records.length,
+          records
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        link.href = url;
+        link.download = `ai-image-history-${stamp}.json`;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        flashStatus(`已导出 ${records.length} 条历史记录`, 'success');
+      }
+
+      function readHistoryImportFile(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              resolve(JSON.parse(reader.result));
+            } catch (err) {
+              reject(new Error('历史记录文件不是有效 JSON'));
+            }
+          };
+          reader.onerror = () => reject(new Error('读取历史记录文件失败'));
+          reader.readAsText(file);
+        });
+      }
+
+      async function handleHistoryImportFile(file) {
+        if (!file) return;
+        const payload = await readHistoryImportFile(file);
+        const records = parseHistoryImportPayload(payload);
+        if (!records.length) {
+          throw new Error('没有找到可导入的历史记录');
+        }
+        const result = await importHistoryRecords(records);
+        historyCurrentPage = 1;
+        await renderHistory();
+        flashStatus(`已导入 ${result.imported} 条历史记录${result.skipped ? `，跳过 ${result.skipped} 条重复记录` : ''}`, 'success');
       }
 
       // 限制历史记录数量
@@ -1755,13 +1961,21 @@
 
         const response = await fetch(getPromptApiUrl(options.params || {}), fetchOptions);
         const text = await response.text();
-        const data = text ? JSON.parse(text) : {};
+        let data = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (error) {
+            // 网关/代理可能返回 HTML 错误页，直接 JSON.parse 会抛出难以理解的语法错误
+            throw new Error(`提示词库接口返回了非 JSON 响应（${response.status}）`);
+          }
+        }
 
         if (!response.ok || data.ok === false) {
           if (response.status === 401 || response.status === 403) {
             sessionStorage.removeItem(PROMPT_ADMIN_TOKEN_STORAGE_KEY);
           }
-          throw new Error(data.error || `提示词库接口请求失败（${response.status}）`);
+          throw new Error(describeApiError(data.error, `提示词库接口请求失败（${response.status}）`));
         }
 
         return data;
@@ -2032,6 +2246,44 @@
         return `history-original-${record.timestamp || Date.now()}.${ext}`;
       }
 
+      function getHistoryStableStamp(record) {
+        return record?.timestamp || record?.id || 'unknown';
+      }
+
+      function getHistoryLocalFilename(record) {
+        if (!record) return '';
+        if (record.filename) return record.filename;
+        const stamp = getHistoryStableStamp(record);
+
+        if (record.mediaType === 'video') {
+          const videoSrc = record.videoSrc || record.videoUrl;
+          const ext = getVideoExtensionFromSrc(videoSrc, 'mp4');
+          return `history-video-${stamp}.${ext}`;
+        }
+
+        if (record.imageUrl) {
+          const guessedMime = guessMimeFromUrl(record.imageUrl);
+          const ext = guessedMime ? getExtensionFromMime(guessedMime) : 'png';
+          return `history-original-${stamp}.${ext}`;
+        }
+
+        if (record.imageSrc) {
+          const ext = getImageExtensionFromSrc(record.imageSrc, 'png');
+          return `history-original-${stamp}.${ext}`;
+        }
+
+        if (record.thumbnail) {
+          const ext = getImageExtensionFromSrc(record.thumbnail, 'jpg');
+          return `history-original-${stamp}.${ext}`;
+        }
+
+        return `history-original-${stamp}.png`;
+      }
+
+      function getHistoryFilenameHint(record) {
+        return getHistoryLocalFilename(record) || '未记录文件名';
+      }
+
       async function resolveHistoryImageRecord(src) {
         const timestamp = Date.now();
         const persistentSrc = await getPersistentImageSource(src);
@@ -2073,12 +2325,14 @@
       }
 
       async function getHistoryDownloadImage(record) {
-        if (record.filename && folderHandle) {
+        const localFilename = getHistoryLocalFilename(record);
+
+        if (localFilename && folderHandle) {
           try {
-            const src = await loadImageFromFolder(record.filename);
+            const src = await loadImageFromFolder(localFilename);
             return {
               src,
-              filename: record.filename,
+              filename: localFilename,
               quality: 'original'
             };
           } catch (err) {
@@ -2089,7 +2343,7 @@
         if (record.imageSrc) {
           return {
             src: record.imageSrc,
-            filename: getHistoryOriginalFilename(record),
+            filename: localFilename,
             quality: 'original'
           };
         }
@@ -2097,7 +2351,7 @@
         if (record.imageUrl) {
           return {
             src: record.imageUrl,
-            filename: getHistoryOriginalFilename(record),
+            filename: localFilename,
             quality: 'original'
           };
         }
@@ -2105,7 +2359,7 @@
         if (record.thumbnail) {
           return {
             src: record.thumbnail,
-            filename: record.filename ? `thumb-${record.filename}` : getHistoryThumbnailFilename(record),
+            filename: localFilename || getHistoryThumbnailFilename(record),
             quality: 'thumbnail'
           };
         }
@@ -2114,12 +2368,14 @@
       }
 
       async function getHistoryDownloadVideo(record) {
-        if (record.filename && folderHandle) {
+        const localFilename = getHistoryLocalFilename(record);
+
+        if (localFilename && folderHandle) {
           try {
-            const src = await loadFileFromFolder(record.filename);
+            const src = await loadFileFromFolder(localFilename);
             return {
               src,
-              filename: record.filename,
+              filename: localFilename,
               quality: 'original'
             };
           } catch (err) {
@@ -2130,7 +2386,7 @@
         if (record.videoSrc || record.videoUrl) {
           return {
             src: record.videoSrc || record.videoUrl,
-            filename: record.filename || `history-video-${record.timestamp || Date.now()}.mp4`,
+            filename: localFilename,
             quality: 'original'
           };
         }
@@ -2141,9 +2397,10 @@
       async function openHistoryPreview(record) {
         if (record.mediaType === 'video') {
           let videoSrc = record.videoSrc || record.videoUrl;
-          if (record.filename && folderHandle) {
+          const localFilename = getHistoryLocalFilename(record);
+          if (localFilename && folderHandle) {
             try {
-              videoSrc = await loadFileFromFolder(record.filename);
+              videoSrc = await loadFileFromFolder(localFilename);
               openVideoLightbox(videoSrc);
               return;
             } catch (err) {
@@ -2163,9 +2420,10 @@
           return;
         }
 
-        if (record.filename && folderHandle) {
+        const localFilename = getHistoryLocalFilename(record);
+        if (localFilename && folderHandle) {
           try {
-            const src = await loadImageFromFolder(record.filename);
+            const src = await loadImageFromFolder(localFilename);
             openLightbox(src);
             return;
           } catch (err) {
@@ -2251,22 +2509,98 @@
         return { mode };
       }
 
-      async function fetchMediaBlob(src, label = '媒体') {
+      async function fetchMediaBlob(src, label = '媒体', options = {}) {
         if (!src) throw new Error(`${label}地址为空`);
+        const maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : 2;
+        const idleTimeoutMs = Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : 20000;
+        const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+
+        function createIdleTimeout(controller) {
+          let timer = null;
+          const clear = () => {
+            if (timer) {
+              clearTimeout(timer);
+              timer = null;
+            }
+          };
+          const reset = () => {
+            clear();
+            timer = setTimeout(() => {
+              try { controller.abort(); } catch {}
+            }, idleTimeoutMs);
+          };
+          return { reset, clear };
+        }
+
+        async function readResponseAsBlob(response, onChunk) {
+          const totalBytes = Number(response.headers.get('content-length') || 0) || 0;
+          const contentType = response.headers.get('content-type') || 'application/octet-stream';
+          if (!response.body || typeof response.body.getReader !== 'function') {
+            const blob = await response.blob();
+            onChunk?.();
+            onProgress?.({
+              loadedBytes: blob.size,
+              totalBytes: totalBytes || blob.size || undefined,
+              percent: blob.size ? 100 : undefined
+            });
+            return blob;
+          }
+
+          const reader = response.body.getReader();
+          const chunks = [];
+          let loadedBytes = 0;
+          onProgress?.({ loadedBytes, totalBytes: totalBytes || undefined, percent: totalBytes ? 0 : undefined });
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+            chunks.push(value);
+            loadedBytes += value.byteLength;
+            onChunk?.();
+            onProgress?.({
+              loadedBytes,
+              totalBytes: totalBytes || undefined,
+              percent: totalBytes ? Math.min(100, Math.round(loadedBytes / totalBytes * 100)) : undefined
+            });
+          }
+          return new Blob(chunks, { type: contentType });
+        }
 
         async function fetchBlob(url) {
-          const response = await fetch(url, { cache: 'no-store' });
-          if (!response.ok) {
-            throw new Error(`${label}读取失败: HTTP ${response.status}`);
+          let lastError = null;
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            const controller = new AbortController();
+            const idle = createIdleTimeout(controller);
+            try {
+              idle.reset();
+              const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+              if (!response.ok) {
+                const err = new Error(`${label}读取失败: HTTP ${response.status}`);
+                err.status = response.status;
+                err.retryAfter = response.headers.get('Retry-After') || '';
+                throw err;
+              }
+              idle.reset();
+              // 每个数据块重置空闲计时，避免大图慢速下载被误判超时
+              const blob = await readResponseAsBlob(response, () => idle.reset());
+              idle.clear();
+              return blob;
+            } catch (err) {
+              idle.clear();
+              lastError = err;
+              if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)));
+                continue;
+              }
+            }
           }
-          return response.blob();
+          throw lastError || new Error(`${label}读取失败`);
         }
 
         try {
           return await fetchBlob(src);
         } catch (err) {
           if (!canProxyMediaUrl(src)) throw err;
-
           console.warn(`${label}直连读取失败，尝试通过代理读取:`, err);
           try {
             return await fetchBlob(buildApiProxyUrlForTarget(src));
@@ -2315,6 +2649,7 @@
           const records = await loadHistory();
           historyCountEl.textContent = `${records.length} 条`;
           clearHistoryBtn.hidden = records.length === 0;
+          if (exportHistoryBtn) exportHistoryBtn.hidden = records.length === 0;
 
           if (records.length === 0) {
             historyCurrentPage = 1;
@@ -2340,16 +2675,19 @@
             card.className = 'history-card';
 
             // 判断是否有文件名（新版本记录才有）
-            const hasFilename = record.filename && record.filename.length > 0;
             const isVideoRecord = record.mediaType === 'video';
+            const localFilename = getHistoryLocalFilename(record);
+            const filenameHint = getHistoryFilenameHint(record);
             const previewMarkup = isVideoRecord
               ? (record.thumbnail
                 ? `<img class="history-video-poster" src="${escapeHtml(record.thumbnail)}" alt="视频封面">`
                 : `<div class="history-video-placeholder"><span class="history-video-play-icon">▶</span><span>视频</span></div>`)
-              : `<img src="${record.thumbnail}" alt="缩略图">`;
+              : (record.thumbnail
+                ? `<img class="history-image-preview" src="${escapeHtml(record.thumbnail)}" alt="缩略图">`
+                : `<div class="history-image-missing"><span class="history-image-missing-icon">↗</span><span>点击查看原图</span></div>`);
             const primaryActionMarkup = isVideoRecord
               ? `<button class="action-btn play-btn" type="button" title="播放历史视频"><span class="action-icon">▶</span><span class="action-text">播放</span></button>`
-              : `<button class="action-btn add-btn" title="${hasFilename ? '添加到参考图' : '需要保存文件夹原图才能添加到参考图'}" ${hasFilename ? '' : 'disabled'}><span class="action-icon">➕</span><span class="action-text">参考</span></button>`;
+              : `<button class="action-btn add-btn" title="从保存文件夹读取 ${escapeHtml(filenameHint)} 并添加到参考图"><span class="action-icon">➕</span><span class="action-text">参考</span></button>`;
 
             card.innerHTML = `
               <div class="history-image-wrap">
@@ -2378,8 +2716,14 @@
               </div>
             `;
 
+            const historyImageWrap = card.querySelector('.history-image-wrap');
+            const imagePreview = card.querySelector('.history-image-preview');
+            imagePreview?.addEventListener('error', () => {
+              imagePreview.replaceWith(createHistoryMissingPreview());
+            }, { once: true });
+
             // 点击缩略图放大查看
-            card.querySelector(isVideoRecord ? '.history-image-wrap' : 'img')?.addEventListener('click', () => {
+            historyImageWrap?.addEventListener('click', () => {
               openHistoryPreview(record);
             });
 
@@ -2411,7 +2755,7 @@
 
             // 添加到参考图按钮
             const addBtn = card.querySelector('.add-btn');
-            if (addBtn && hasFilename && !isVideoRecord) {
+            if (addBtn && !isVideoRecord) {
               addBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
 
@@ -2426,11 +2770,11 @@
                   setHistoryActionButtonContent(addBtn, '⏳', '处理中');
                   addBtn.disabled = true;
 
-                  const hdImage = await loadImageFromFolder(record.filename);
+                  const hdImage = await loadImageFromFolder(localFilename);
 
                   // 添加到参考图
                   state.images.push({
-                    name: record.filename,
+                    name: localFilename,
                     mime: 'image/png',
                     dataUrl: hdImage
                   });
@@ -2446,7 +2790,7 @@
                 } catch (err) {
                   setHistoryActionButtonContent(addBtn, '➕', '参考');
                   addBtn.disabled = false;
-                  alert(err.message || '加载图片失败');
+                  alert(`未在保存文件夹中找到原图。\n请先下载原图，并重命名为：${filenameHint}\n然后放入当前保存文件夹后再试。`);
                 }
               });
             }
@@ -2488,12 +2832,12 @@
 
                   if (downloadItem.quality === 'original') {
                     if (downloadResult?.mode === 'link_fallback' && record.imageUrl) {
-                      flashStatus('已打开历史原图链接，可直接下载原图', 'success');
+                      flashStatus(`已打开历史原图链接，请保存为 ${downloadItem.filename}`, 'success');
                     } else {
                       flashStatus('已开始下载历史原图', 'success');
                     }
-                  } else if (record.filename) {
-                    flashStatus('未选择或未找到原保存文件夹，已下载历史缩略图', 'danger');
+                  } else if (localFilename) {
+                    flashStatus(`未找到原图，已下载可用预览图；如需补回高清图，请命名为 ${localFilename}`, 'danger');
                   } else {
                     flashStatus('已开始下载历史缩略图', 'success');
                   }
@@ -2587,11 +2931,31 @@
         }
       }
 
-      // 辅助函数：HTML 转义
+      // 辅助函数：把接口返回的 error 字段规整成可读文本
+      // 有些网关返回 { error: { message, code } }，直接拼字符串会得到 "[object Object]"
+      function describeApiError(value, fallback) {
+        if (value == null) return fallback;
+        if (typeof value === 'string') return value.trim() || fallback;
+        if (typeof value === 'object') {
+          const msg = value.message || value.msg || value.detail || value.error_msg;
+          if (typeof msg === 'string' && msg.trim()) return msg.trim();
+          try {
+            return JSON.stringify(value);
+          } catch (_) {
+            return fallback;
+          }
+        }
+        return String(value) || fallback;
+      }
+
+      // 辅助函数：HTML 转义（同时转义引号，可安全用于属性值）
       function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        return String(text ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
       }
 
       // 辅助函数：格式化日期
@@ -2642,6 +3006,13 @@
         button.innerHTML = `<span class="action-icon">${icon}</span><span class="action-text">${text}</span>`;
       }
 
+      function createHistoryMissingPreview() {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'history-image-missing';
+        placeholder.innerHTML = '<span class="history-image-missing-icon">↗</span><span>点击查看原图</span>';
+        return placeholder;
+      }
+
       function getCurrentGenerationParams(overrides = {}) {
         return {
           aspect: aspectSelect?.value || '',
@@ -2654,21 +3025,168 @@
         };
       }
 
+      function listSelectOptions(selectEl) {
+        if (!selectEl) return [];
+        return Array.from(selectEl.options || [])
+          .map(option => ({
+            value: String(option.value || ''),
+            label: String(option.textContent || option.label || option.value || '').trim() || String(option.value || '')
+          }))
+          .filter(option => option.value);
+      }
+
+      function getTextModelOptions() {
+        const current = getTextModel();
+        const options = listSelectOptions(textModelSelect);
+        if (!options.length) {
+          return [{ value: current, label: current, selected: true }];
+        }
+        return options.map(option => ({
+          ...option,
+          selected: option.value === current
+        }));
+      }
+
+      function setTextModel(value) {
+        const next = String(value || '').trim();
+        if (!next || !textModelSelect) return false;
+        ensureModelOption(textModelSelect, next, next);
+        textModelSelect.value = next;
+        try {
+          localStorage.setItem(getPlatformStorageKey(TEXT_MODEL_STORAGE_PREFIX), next);
+        } catch {}
+        return textModelSelect.value === next;
+      }
+
+      function getGenerationOptions(mediaType = 'image') {
+        const kind = mediaType === 'video' ? 'video' : 'image';
+        let modelOptions = listSelectOptions(imageModelSelect);
+        const aspectOptions = listSelectOptions(aspectSelect);
+        const resolutionOptions = listSelectOptions(resolutionSelect);
+        const qualityOptions = listSelectOptions(imageQualitySelect);
+        const durationOptions = listSelectOptions(videoDurationSelect);
+        const current = getCurrentGenerationParams();
+        const fallbackModel = current.model || (typeof getImageModel === 'function' ? getImageModel() : '') || imageModelSelect?.value || 'gpt-image-2';
+        if (!modelOptions.length && fallbackModel) {
+          modelOptions = [{ value: fallbackModel, label: fallbackModel }];
+        } else if (fallbackModel && !modelOptions.some(option => option.value === fallbackModel)) {
+          modelOptions = [{ value: fallbackModel, label: fallbackModel }, ...modelOptions];
+        }
+        return {
+          mediaType: kind,
+          model: fallbackModel || '',
+          aspect: current.aspect || '',
+          resolution: current.resolution || '',
+          quality: current.quality || 'auto',
+          duration: current.videoDuration || '10',
+          protocol: current.protocol || '',
+          modelOptions,
+          aspectOptions,
+          resolutionOptions,
+          qualityOptions,
+          durationOptions
+        };
+      }
+
+      function temporarilyApplyGenerationParams(overrides = {}) {
+        const snapshot = {
+          model: imageModelSelect?.value || '',
+          aspect: aspectSelect?.value || '',
+          resolution: resolutionSelect?.value || '',
+          quality: imageQualitySelect?.value || '',
+          videoDuration: videoDurationSelect?.value || ''
+        };
+
+        if (overrides.model && imageModelSelect) {
+          ensureModelOption(imageModelSelect, overrides.model, overrides.model);
+          imageModelSelect.value = overrides.model;
+        }
+        if (overrides.aspect && aspectSelect) {
+          const hasAspect = [...(aspectSelect.options || [])].some(opt => opt.value === overrides.aspect);
+          if (hasAspect) aspectSelect.value = overrides.aspect;
+        }
+        if (overrides.resolution && resolutionSelect) {
+          const hasResolution = [...(resolutionSelect.options || [])].some(opt => opt.value === overrides.resolution);
+          if (hasResolution) resolutionSelect.value = overrides.resolution;
+        }
+        if (overrides.quality && imageQualitySelect) {
+          const hasQuality = [...(imageQualitySelect.options || [])].some(opt => opt.value === overrides.quality);
+          if (hasQuality) imageQualitySelect.value = overrides.quality;
+        }
+        if (overrides.videoDuration && videoDurationSelect) {
+          const hasDuration = [...(videoDurationSelect.options || [])].some(opt => opt.value === String(overrides.videoDuration));
+          if (hasDuration) videoDurationSelect.value = String(overrides.videoDuration);
+        }
+
+        return () => {
+          if (imageModelSelect) imageModelSelect.value = snapshot.model;
+          if (aspectSelect) aspectSelect.value = snapshot.aspect;
+          if (resolutionSelect) resolutionSelect.value = snapshot.resolution;
+          if (imageQualitySelect) imageQualitySelect.value = snapshot.quality;
+          if (videoDurationSelect) videoDurationSelect.value = snapshot.videoDuration;
+        };
+      }
+
+      async function runAgentGeneration(mediaType, prompt, options = {}) {
+        const kind = mediaType === 'video' ? 'video' : 'image';
+        if (!String(prompt || '').trim()) {
+          throw new Error(kind === 'video' ? '视频提示词不能为空' : '图片提示词不能为空');
+        }
+
+        const restore = temporarilyApplyGenerationParams({
+          model: options.model,
+          aspect: options.aspect,
+          resolution: options.resolution,
+          quality: options.quality,
+          videoDuration: options.videoDuration || options.duration
+        });
+
+        try {
+          const images = Array.isArray(options.images) ? options.images.filter(img => img?.dataUrl) : [];
+          const params = getCurrentGenerationParams({
+            model: options.model || getImageModel(),
+            aspect: options.aspect || aspectSelect?.value || '',
+            resolution: options.resolution || resolutionSelect?.value || '',
+            quality: options.quality || imageQualitySelect?.value || '',
+            videoDuration: options.videoDuration || options.duration || videoDurationSelect?.value || '',
+            protocol: getProtocol()
+          });
+
+          if (kind === 'video') {
+            if (typeof callVideoAPI !== 'function') {
+              throw new Error('当前页面未暴露视频生成方法');
+            }
+            const result = await callVideoAPI(prompt, images);
+            return { result, params };
+          }
+
+          if (typeof callImageAPI !== 'function') {
+            throw new Error('当前页面未暴露图片生成方法');
+          }
+          const result = await callImageAPI(prompt, images);
+          return { result, params };
+        } finally {
+          restore();
+        }
+      }
+
       function formatGenerationParamValue(key, value) {
         if (value === undefined || value === null || value === '') return '';
         const normalized = String(value);
         const maps = {
           aspect: { auto: 'auto[自动]' },
           quality: { auto: 'auto[自动]', low: 'low[低]', medium: 'medium[中]', high: 'high[高]', standard: 'standard[标准]', hd: 'hd[高清]' },
-          protocol: { gemini: 'Gemini 原生', 'openai-chat': 'OpenAI Chat', 'openai-images': 'OpenAI Images', 'openai-responses': 'OpenAI Responses', 'open-images': 'Open Images', 'aliyun-images': '阿里云百炼', 'doubao-images': '豆包官方', 'replicate-flux': 'Replicate 官方', 'openai-videos': 'OpenAI Videos', 'openai-video-chat': 'OpenAI Chat 兼容', 'veo-generations': 'Veo Generations', 'veo-create': 'Video Create', 'aliyun-happyhorse': '阿里 HappyHorse', 'doubao-seedance': '豆包 Seedance', 'grok-video-create': 'Grok Video Create' }
+          protocol: { gemini: 'Gemini 原生', 'openai-chat': 'OpenAI Chat', 'openai-images': 'OpenAI Images', 'openai-responses': 'OpenAI Responses', 'open-images': 'Open Images', 'aliyun-images': '阿里云百炼', 'doubao-images': '豆包官方', 'replicate-flux': 'Replicate 官方', 'openai-videos': 'OpenAI Videos', 'openai-video-chat': 'OpenAI Chat 兼容', 'veo-generations': 'Veo Generations', 'veo-create': 'Video Create', 'aliyun-happyhorse': '阿里 HappyHorse', 'doubao-seedance': '豆包 Seedance', 'grok-video-create': 'Grok Video Create', 'local-gif': '本地动图生成', 'gif-grid': '网格生帧' }
         };
         if (key === 'videoDuration') return `${normalized} 秒`;
         return maps[key]?.[normalized] || normalized;
       }
 
       function getHistoryParamRows(record) {
+        const localFilename = getHistoryFilenameHint(record);
         const rows = record.mediaType === 'video'
           ? [
+              ['本地文件名', 'filename', localFilename],
               ['视频比例', 'aspect', record.aspect],
               ['视频清晰度', 'resolution', record.resolution],
               ['视频时长', 'videoDuration', record.videoDuration],
@@ -2677,6 +3195,7 @@
               ['生成耗时', 'runtimeMs', record.runtimeMs ? formatDurationMs(record.runtimeMs) : '']
             ]
           : [
+              ['本地文件名', 'filename', localFilename],
               ['图片比例', 'aspect', record.aspect],
               ['清晰度', 'resolution', record.resolution],
               ['质量', 'quality', record.quality],
@@ -3348,6 +3867,32 @@
         }
       });
 
+      exportHistoryBtn?.addEventListener('click', async () => {
+        try {
+          await exportHistoryRecords();
+        } catch (err) {
+          console.error('导出历史记录失败:', err);
+          alert(err.message || '导出历史记录失败');
+        }
+      });
+
+      importHistoryBtn?.addEventListener('click', () => {
+        historyImportFileInput?.click();
+      });
+
+      historyImportFileInput?.addEventListener('change', async () => {
+        const file = historyImportFileInput.files?.[0];
+        historyImportFileInput.value = '';
+        if (!file) return;
+
+        try {
+          await handleHistoryImportFile(file);
+        } catch (err) {
+          console.error('导入历史记录失败:', err);
+          alert(err.message || '导入历史记录失败');
+        }
+      });
+
       // 拉取模型列表
       const fetchModelsBtn = document.getElementById('fetch-models-btn');
       const addModelsBtn = document.getElementById('add-models-btn');
@@ -3705,6 +4250,64 @@
       }
 
       // 解析 API 错误并返回中文提示
+      function classifyGenerationFailure(errorLike) {
+        const status = Number(errorLike?.status || errorLike?.statusCode || 0) || 0;
+        const retryAfterHeader = errorLike?.retryAfter || errorLike?.headers?.get?.('Retry-After') || '';
+        const message = String(errorLike?.message || errorLike || '');
+        const lower = message.toLowerCase();
+        const retryableHints = [
+          'temporarily unavailable', 'service unavailable', 'rate limit', 'too many requests',
+          'resource_exhausted', 'overloaded', '请稍后重试', '请求频率超限', 'service temporarily',
+          'timeout', 'timed out', 'network', 'fetch failed', 'econnreset', '503', '524', '429'
+        ];
+        const terminalHints = [
+          'invalid api key', 'unauthorized', 'permission denied', 'quota is not enough',
+          'token quota', 'content policy', 'safety', 'blocked', 'not found', 'unknown model',
+          'invalid_request', 'invalid parameter', 'unsupported'
+        ];
+
+        let retryAfterMs = 0;
+        if (retryAfterHeader) {
+          const asNum = Number(retryAfterHeader);
+          if (Number.isFinite(asNum) && asNum >= 0) retryAfterMs = asNum * 1000;
+          else {
+            const dateMs = Date.parse(retryAfterHeader);
+            if (Number.isFinite(dateMs)) retryAfterMs = Math.max(0, dateMs - Date.now());
+          }
+        }
+
+        if ([401, 403, 404, 422].includes(status)) {
+          return { retryable: false, terminal: true, retryAfterMs, reason: 'terminal_status', message };
+        }
+        if ([429, 503, 504, 524].includes(status) || retryAfterMs > 0) {
+          return { retryable: true, terminal: false, retryAfterMs, reason: 'rate_limit_or_unavailable', message };
+        }
+        if (terminalHints.some(hint => lower.includes(hint))) {
+          return { retryable: false, terminal: true, retryAfterMs, reason: 'terminal_message', message };
+        }
+        if (retryableHints.some(hint => lower.includes(hint))) {
+          return { retryable: true, terminal: false, retryAfterMs, reason: 'retryable_message', message };
+        }
+        return { retryable: false, terminal: false, retryAfterMs, reason: 'unknown', message };
+      }
+
+      async function mapPool(items, limit, worker) {
+        const list = Array.isArray(items) ? items : [];
+        const concurrency = Math.max(1, Math.min(Number(limit) || 1, list.length || 1));
+        const results = new Array(list.length);
+        let nextIndex = 0;
+
+        async function run() {
+          while (nextIndex < list.length) {
+            const current = nextIndex++;
+            results[current] = await worker(list[current], current);
+          }
+        }
+
+        await Promise.all(Array.from({ length: concurrency }, () => run()));
+        return results;
+      }
+
       function parseApiError(errorMessage) {
         // 先尝试直接匹配英文错误消息并翻译
         if (errorMessage.includes('token quota is not enough') ||
@@ -3797,7 +4400,9 @@
           'Forbidden': '禁止访问',
           'Not found': '资源不存在',
           'Request timeout': '请求超时',
-          'Too many requests': '请求过于频繁'
+          'Too many requests': '请求过于频繁',
+          'Upstream service': '上游服务暂时不可用',
+          'temporarily unavailable': '暂时不可用'
         };
 
         let translated = msg;
@@ -3881,6 +4486,170 @@
         flashStatus(state.images.length ? `已选择 ${state.images.length} 张` : '待发送...');
       }
 
+      function getCanvasUploadPreviewImageSourcesFromState(images) {
+        return Array.isArray(images)
+          ? images
+            .filter(image => image?.dataUrl)
+            .map((image, index) => ({
+              kind: 'image',
+              origin: 'upload-preview',
+              src: image.dataUrl,
+              label: String(image.name || `Upload ${index + 1}`),
+              mimeType: String(image.mime || ''),
+              width: Number.isFinite(image.width) ? image.width : null,
+              height: Number.isFinite(image.height) ? image.height : null
+            }))
+          : [];
+      }
+
+      function getCanvasUploadPreviewImageSources() {
+        return getCanvasUploadPreviewImageSourcesFromState(state?.images);
+      }
+
+      function isCanvasHistoryCardVisible(card) {
+        if (!card || card.hidden) return false;
+        if (card.style && card.style.display === 'none') return false;
+        return true;
+      }
+
+      function getCanvasHistoryGridImageSourcesFromGrid(grid) {
+        if (!grid || typeof grid.querySelectorAll !== 'function') return [];
+        return [...grid.querySelectorAll('.history-card')]
+          .filter(card => isCanvasHistoryCardVisible(card))
+          .map((card, index) => {
+            const previewImage = card.querySelector('.history-image-preview');
+            return {
+              kind: 'image',
+              origin: 'history-grid',
+              src: previewImage?.getAttribute('src') || '',
+              label: card.querySelector('.prompt')?.textContent?.trim() || `History ${index + 1}`,
+              alt: previewImage?.getAttribute('alt') || '',
+              recordId: card.querySelector('.delete-btn')?.dataset?.id || ''
+            };
+          })
+          .filter(item => item.src || item.recordId);
+      }
+
+      function getCanvasHistoryGridImageSources() {
+        return getCanvasHistoryGridImageSourcesFromGrid(historyGrid);
+      }
+
+      // ===== 无限画布入口 =====
+      const CANVAS_FEATURE_ENABLED = true;
+      const CANVAS_DEV_NOTICE = '无限画布功能开发中，暂不可用';
+
+      function showCanvasDevelopmentNotice() {
+        flashStatus(CANVAS_DEV_NOTICE);
+        return null;
+      }
+
+      function openCanvasTool(options = {}) {
+        if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
+        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260728-1', _appBase).href;
+        return import(canvasUrl)
+          .then(module => module.openCanvasWorkspace(options))
+          .catch(error => {
+            console.error('canvas load failed', error);
+            flashStatus('画布模块加载失败：' + (error?.message || error), 'danger');
+          });
+      }
+
+      async function loadCanvasResumeSummary() {
+        if (!CANVAS_FEATURE_ENABLED) return null;
+        try {
+          const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260728-1', _appBase).href;
+          const module = await import(canvasUrl);
+          return typeof module.getCanvasResumeProject === 'function' ? module.getCanvasResumeProject() : null;
+        } catch (error) {
+          console.warn('canvas resume summary unavailable', error);
+          return null;
+        }
+      }
+
+      function sendImagesToCanvas(sources) {
+        if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
+        const list = (Array.isArray(sources) ? sources : [sources]).filter(item => item && item.src);
+        if (!list.length) {
+          flashStatus('没有可发送到画布的图片', 'danger');
+          return null;
+        }
+        return openCanvasTool({ importSources: list });
+      }
+
+      function collectResultImageSources() {
+        const grid = document.getElementById('results');
+        if (!grid) return [];
+        return [...grid.querySelectorAll('.result-card .result-thumb-btn img')]
+          .map((image, index) => ({
+            kind: 'image',
+            origin: 'result-output',
+            src: image.currentSrc || image.src || '',
+            label: image.alt || `Result ${index + 1}`
+          }))
+          .filter(item => item.src);
+      }
+
+      function sendAllResultsToCanvas() {
+        if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
+        return sendImagesToCanvas(collectResultImageSources());
+      }
+
+      function collectHistoryImageSources() {
+        return getCanvasHistoryGridImageSourcesFromGrid(historyGrid).filter(item => item.src);
+      }
+
+      function sendAllHistoryToCanvas() {
+        if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
+        return sendImagesToCanvas(collectHistoryImageSources());
+      }
+
+      function syncCanvasTransferButtons() {
+        const resultsBtn = document.getElementById('send-results-to-canvas');
+        if (resultsBtn) {
+          resultsBtn.setAttribute('data-canvas-transfer', 'results-batch');
+          if (!CANVAS_FEATURE_ENABLED) {
+            resultsBtn.textContent = '全部进画布（开发中）';
+            resultsBtn.title = CANVAS_DEV_NOTICE;
+          } else {
+            resultsBtn.textContent = '全部进画布';
+            resultsBtn.title = '';
+          }
+        }
+        const historyBtn = document.getElementById('send-history-to-canvas');
+        if (historyBtn) {
+          historyBtn.setAttribute('data-canvas-transfer', 'history-batch');
+          if (!CANVAS_FEATURE_ENABLED) {
+            historyBtn.textContent = '历史进画布（开发中）';
+            historyBtn.title = CANVAS_DEV_NOTICE;
+          } else {
+            historyBtn.textContent = '历史进画布';
+            historyBtn.title = '';
+          }
+        }
+      }
+
+      document.querySelectorAll('[data-open-canvas]').forEach(button => {
+        button.addEventListener('click', () => openCanvasTool());
+      });
+      document.getElementById('canvas-tool-btn')?.addEventListener('click', () => openCanvasTool());
+      document.getElementById('hero-canvas-resume-btn')?.addEventListener('click', event => {
+        const projectId = event.currentTarget?.dataset?.projectId || '';
+        openCanvasTool(projectId ? { openProjectId: projectId } : { resumeLast: true });
+      });
+      document.getElementById('send-results-to-canvas')?.addEventListener('click', () => sendAllResultsToCanvas());
+      document.getElementById('send-history-to-canvas')?.addEventListener('click', () => sendAllHistoryToCanvas());
+      syncCanvasTransferButtons();
+      loadCanvasResumeSummary().then(summary => {
+        if (!summary) return;
+        const resumeBtn = document.getElementById('hero-canvas-resume-btn');
+        if (!resumeBtn) return;
+        resumeBtn.hidden = false;
+        resumeBtn.disabled = false;
+        resumeBtn.dataset.projectId = String(summary.id || '');
+        resumeBtn.textContent = '继续上次画布';
+        resumeBtn.title = summary.title ? `继续「${summary.title}」` : '继续上次画布';
+      });
+
       function updateReferenceImageLimitText() {
         const limit = getReferenceImageLimit();
         if (uploadLabel) {
@@ -3904,8 +4673,13 @@
         Promise.all(filesToAdd.map(processAndCompressImage)).then(list => {
           state.images = [...state.images, ...list];
           renderUploads();
+          const cacheHits = list.filter(item => item && item.cacheHit).length;
           if (files.length > remaining) {
             flashStatus(`已添加 ${filesToAdd.length} 张，超出的已忽略（最多 ${limit} 张）`, 'success');
+          } else if (cacheHits > 0 && cacheHits === list.length) {
+            flashStatus(`已添加 ${list.length} 张图片（全部命中本地缓存）`, 'success');
+          } else if (cacheHits > 0) {
+            flashStatus(`已添加 ${list.length} 张图片（缓存 ${cacheHits} 张，其余已压缩）`, 'success');
           } else {
             flashStatus(`已添加 ${list.length} 张图片（已自动压缩至10MB内）`, 'success');
           }
@@ -4112,8 +4886,18 @@
         });
       }
 
-      // 处理并压缩图片
+      // 处理并压缩图片（优先走 ImageCompress 哈希缓存，重复上传秒回）
       async function processAndCompressImage(file) {
+        if (window.ImageCompress && typeof window.ImageCompress.processAndCompressImage === 'function') {
+          const prepared = await window.ImageCompress.processAndCompressImage(file);
+          if (prepared?.cacheHit) {
+            debugLog(`参考图缓存命中: ${file.name}`);
+          } else {
+            debugLog(`参考图已处理: ${file.name}, cacheHit=${!!prepared?.cacheHit}`);
+          }
+          return prepared;
+        }
+
         const fileSizeBytes = file.size;
         const fileSizeKB = fileSizeBytes / 1024;
         const fileSizeMB = fileSizeKB / 1024;
@@ -4178,39 +4962,45 @@
         };
       }
 
-      function buildOpenAIChatImagePayload(prompt, imgs = [], model = getImageModel()) {
+      function buildOpenAIChatImagePayload(prompt, imgs = [], model = getImageModel(), options = {}) {
+        const context = getImageRequestContext(model, { images: imgs });
+        const requestPrompt = getImagePromptWithAspect(prompt, context);
         const content = imgs.length
           ? [
-              { type: 'text', text: prompt },
+              { type: 'text', text: requestPrompt },
               ...imgs.map(img => ({
                 type: 'image_url',
                 image_url: { url: img.dataUrl }
               }))
             ]
-          : prompt;
+          : requestPrompt;
 
         return {
           model,
           messages: [{ role: 'user', content }],
-          stream: false
+          stream: false,
+          ...getOpenAICompatibleAspectFields(context, options.includeAspectFields !== false)
         };
       }
 
-      function buildOpenAIResponsesImagePayload(prompt, imgs = [], model = getImageModel()) {
+      function buildOpenAIResponsesImagePayload(prompt, imgs = [], model = getImageModel(), options = {}) {
+        const context = getImageRequestContext(model, { images: imgs });
+        const requestPrompt = getImagePromptWithAspect(prompt, context);
         const content = imgs.length
           ? [
-              { type: 'input_text', text: prompt },
+              { type: 'input_text', text: requestPrompt },
               ...imgs.map(img => ({
                 type: 'input_image',
                 image_url: img.dataUrl
               }))
             ]
-          : prompt;
+          : requestPrompt;
 
         return {
           model,
           input: [{ role: 'user', content }],
-          stream: false
+          stream: false,
+          ...getOpenAICompatibleAspectFields(context, options.includeAspectFields !== false)
         };
       }
 
@@ -4354,8 +5144,138 @@
       }
 
       // 根据比例获取像素尺寸（用于 OpenAI Images 格式）
-      function getImageSize(modelName = getImageModel()) {
-        const aspect = aspectSelect.value;
+
+      const ImageRatio = window.ImageRatio || {};
+      window.ImageRequestBuilders = window.ImageRequestBuilders || {};
+      window.ImageRequestBuilders['openai-chat'] = async function(prompt, imgs = [], cfg = {}) {
+        const model = cfg.modelId || getImageModel();
+        return {
+          endpoint: buildApiUrl('/v1/chat/completions'),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey || getApiKey()}` },
+          body: JSON.stringify(buildOpenAIChatImagePayload(prompt, imgs, model))
+        };
+      };
+      window.ImageRequestBuilders['openai-responses'] = async function(prompt, imgs = [], cfg = {}) {
+        const model = cfg.modelId || getImageModel();
+        return {
+          endpoint: buildApiUrl('/v1/responses'),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey || getApiKey()}` },
+          body: JSON.stringify(buildOpenAIResponsesImagePayload(prompt, imgs, model))
+        };
+      };
+
+
+
+      function getPrimaryReferenceDimensions(images = state.images) {
+        const first = (images || []).find(img => img && (Number(img.width || img.naturalWidth || 0) > 0));
+        if (!first) return {};
+        const width = Number(first.width || first.naturalWidth || 0);
+        const height = Number(first.height || first.naturalHeight || 0);
+        if (width > 0 && height > 0) return { referenceWidth: width, referenceHeight: height };
+        return {};
+      }
+
+      function getImageRequestContext(modelName = getImageModel(), options = {}) {
+        const aspect = options.aspect || aspectSelect?.value || 'auto';
+        const resolution = options.resolution || resolutionSelect?.value || '';
+        const dims = (options.referenceWidth || options.referenceHeight)
+          ? { referenceWidth: options.referenceWidth, referenceHeight: options.referenceHeight }
+          : getPrimaryReferenceDimensions(options.images || state.images);
+        if (typeof ImageRatio.buildRequestContext === 'function') {
+          return ImageRatio.buildRequestContext({ aspect, resolution, model: modelName, ...dims });
+        }
+        return {
+          aspect,
+          ratio: null,
+          resolution,
+          size: getImageSize(modelName, aspect, resolution),
+          instruction: ''
+        };
+      }
+
+      function getImagePromptWithAspect(prompt, context) {
+        return `${prompt || ''}${context?.instruction || ''}`;
+      }
+
+      function getOpenAICompatibleAspectFields(context, includeAspectFields = true) {
+        if (!includeAspectFields || !context || context.aspect === 'auto') return {};
+        const fields = { aspect_ratio: context.aspect };
+        if (context.size) fields.size = context.size;
+        return fields;
+      }
+
+      function maybeWarnVideoAspectFallback(videoInfo) {
+        if (videoInfo?.fellBack && videoInfo?.reason) {
+          flashStatus(videoInfo.reason, 'warning');
+        }
+        return videoInfo;
+      }
+
+      function applyCompatibleRetryLayout(options = {}) {
+        if (typeof ImageRatio.getCompatibleRetryLayout !== 'function') return options || {};
+        const layout = ImageRatio.getCompatibleRetryLayout({
+          aspect: options.aspect || aspectSelect?.value || 'auto',
+          resolution: options.resolution || resolutionSelect?.value || '1K',
+          model: options.model || getImageModel()
+        });
+        if (layout.aspect) restoreSelectValue(aspectSelect, layout.aspect);
+        if (layout.resolution && resolutionSelect) {
+          const hasResolution = [...(resolutionSelect.options || [])].some(opt => opt.value === layout.resolution);
+          if (hasResolution) restoreSelectValue(resolutionSelect, layout.resolution);
+        }
+        if (layout.fellBack && layout.reason) flashStatus(layout.reason, 'warning');
+        return {
+          ...options,
+          aspect: layout.aspect,
+          resolution: layout.resolution,
+          size: layout.size
+        };
+      }
+
+      async function annotateImageResultDimensions(result, requestedAspect = aspectSelect?.value || 'auto') {
+        if (!result || !(result.imageBase64 || result.imageUrl) || typeof ImageRatio.measureImageSource !== 'function') {
+          return result;
+        }
+        const src = result.imageBase64
+          ? (String(result.imageBase64).startsWith('data:') ? result.imageBase64 : `data:image/png;base64,${result.imageBase64}`)
+          : result.imageUrl;
+        const dimensions = await ImageRatio.measureImageSource(src);
+        if (!dimensions) return result;
+        const normalizedAspect = typeof ImageRatio.normalizeAspectRatio === 'function'
+          ? ImageRatio.normalizeAspectRatio(requestedAspect)
+          : String(requestedAspect || 'auto');
+        const aspectMatch = typeof ImageRatio.compareAspect === 'function'
+          ? ImageRatio.compareAspect(dimensions.width, dimensions.height, normalizedAspect)
+          : null;
+        Object.assign(result, {
+          requestedAspect: normalizedAspect,
+          sourceWidth: dimensions.width,
+          sourceHeight: dimensions.height,
+          sourceAspect: dimensions.aspect,
+          aspectMatch
+        });
+        if (aspectMatch === false && !result.__aspectWarningReported) {
+          result.__aspectWarningReported = true;
+          const message = `中转未按要求返回比例：请求 ${normalizedAspect}，实际 ${dimensions.width}x${dimensions.height}（${dimensions.aspect}）。原图未修改。`;
+          console.warn('[image-ratio] aspect mismatch:', {
+            requested: normalizedAspect,
+            actual: dimensions.aspect,
+            width: dimensions.width,
+            height: dimensions.height
+          });
+          flashStatus(message, 'danger');
+        }
+        return result;
+      }
+
+      function getImageSize(modelName = getImageModel(), aspectValue = aspectSelect?.value, resolutionValue = resolutionSelect?.value) {
+        const aspect = aspectValue || aspectSelect?.value || 'auto';
+        const resolution = resolutionValue || resolutionSelect?.value || '1K';
+        if (typeof ImageRatio.resolveImageSize === 'function') {
+          const resolved = ImageRatio.resolveImageSize({ aspect, resolution, model: modelName });
+          if (String(aspect || 'auto') === 'auto') return resolved || '';
+          return resolved || (typeof ImageRatio.getLegacyCompatibleSize === 'function' ? ImageRatio.getLegacyCompatibleSize(aspect, modelName) : '') || '1024x1024';
+        }
         const family = getImageModelFamily(modelName);
         const model = String(modelName || '').trim().toLowerCase();
 
@@ -4516,19 +5436,29 @@
         };
       }
 
-      function getVideoAspectInfo() {
+      function getVideoAspectInfo(protocol = getProtocol()) {
         const aspect = aspectSelect?.value || '16:9';
+        const resolution = resolutionSelect?.value || '720P';
+        if (typeof ImageRatio.resolveVideoAspectInfo === 'function') {
+          return maybeWarnVideoAspectFallback(ImageRatio.resolveVideoAspectInfo({ aspect, resolution, protocol }));
+        }
         const normalized = aspect === '9:16' || aspect === '2:3' || aspect === '3:4' || aspect === '4:5'
           ? '9:16'
           : '16:9';
-        const resolution = resolutionSelect?.value || '720P';
         const useHighRes = resolution === '1080P';
         return {
+          requestedAspect: aspect,
+          effectiveAspect: normalized,
           aspect: normalized,
           orientation: normalized === '9:16' ? 'portrait' : 'landscape',
           openAiSize: normalized === '9:16'
             ? (useHighRes ? '1024x1792' : '720x1280')
-            : (useHighRes ? '1792x1024' : '1280x720')
+            : (useHighRes ? '1792x1024' : '1280x720'),
+          sizeOrResolution: normalized === '9:16'
+            ? (useHighRes ? '1024x1792' : '720x1280')
+            : (useHighRes ? '1792x1024' : '1280x720'),
+          fellBack: false,
+          reason: ''
         };
       }
 
@@ -4631,8 +5561,8 @@
       }
 
       function getHappyHorseRatio() {
-        const value = aspectSelect?.value || '16:9';
-        return ['16:9', '9:16', '1:1', '4:3', '3:4'].includes(value) ? value : '16:9';
+        const info = getVideoAspectInfo('aliyun-happyhorse');
+        return info.effectiveAspect || info.aspect || '16:9';
       }
 
       function buildHappyHorseVideoPayload(prompt, imgs, videoModel) {
@@ -4675,8 +5605,8 @@
       }
 
       function getDoubaoVideoRatio() {
-        const value = aspectSelect?.value || '16:9';
-        return ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].includes(value) ? value : '16:9';
+        const info = getVideoAspectInfo('doubao-seedance');
+        return info.effectiveAspect || info.aspect || '16:9';
       }
 
       function getDoubaoVideoDurationSeconds(videoModel = '') {
@@ -4736,8 +5666,8 @@
       }
 
       function getGrokVideoAspectRatio() {
-        const value = aspectSelect?.value || '3:2';
-        return ['3:2', '2:3', '1:1'].includes(value) ? value : '3:2';
+        const info = getVideoAspectInfo('grok-video-create');
+        return info.effectiveAspect || info.aspect || '3:2';
       }
 
       function buildGrokVideoPrompt(prompt) {
@@ -4859,10 +5789,10 @@
         }
 
         if (String(data?.status || '').toLowerCase() === 'failed') {
-          throw new Error(data.error || 'Replicate 任务失败');
+          throw new Error(describeApiError(data.error, 'Replicate 任务失败'));
         }
         if (String(data?.status || '').toLowerCase() === 'canceled') {
-          throw new Error(data.error || 'Replicate 任务已取消');
+          throw new Error(describeApiError(data.error, 'Replicate 任务已取消'));
         }
 
         return {
@@ -5491,7 +6421,7 @@
         return sourceState.cachedSrc || sourceState.displaySrc || '';
       }
 
-      async function warmContinueImageSource(sourceState) {
+      async function warmContinueImageSource(sourceState, options = {}) {
         if (!sourceState) return '';
         if (sourceState.cachedSrc) return sourceState.cachedSrc;
         if (!sourceState.displaySrc) {
@@ -5501,10 +6431,17 @@
         }
 
         try {
-          const persistentSrc = await getPersistentImageSource(sourceState.displaySrc);
+          const persistentSrc = await getPersistentImageSource(sourceState.displaySrc, {
+            maxRetries: 2,
+            onProgress: (progress) => {
+              sourceState.downloadProgress = progress;
+              options.onProgress?.(progress);
+            }
+          });
           sourceState.cachedSrc = persistentSrc;
           sourceState.failed = false;
           sourceState.error = '';
+          sourceState.downloadProgress = { percent: 100, stage: 'done' };
           return persistentSrc;
         } catch (err) {
           sourceState.failed = true;
@@ -5524,22 +6461,30 @@
             : '该图片没有可用图源，请先下载后再上传';
       }
 
-      async function getPersistentImageSource(src) {
+      async function getPersistentImageSource(src, options = {}) {
         if (!src) throw new Error('图片地址为空');
-        if (/^data:/i.test(src)) return src;
+        if (/^data:/i.test(src)) {
+          options.onProgress?.({ loadedBytes: 1, totalBytes: 1, percent: 100, stage: 'cached' });
+          return src;
+        }
 
-        const blob = await fetchImageAsBlob(src);
+        options.onProgress?.({ loadedBytes: 0, totalBytes: 0, percent: 0, stage: 'downloading' });
+        const blob = await fetchImageAsBlob(src, options);
+        options.onProgress?.({ loadedBytes: blob.size, totalBytes: blob.size, percent: 100, stage: 'encoding' });
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
+          reader.onload = () => {
+            options.onProgress?.({ loadedBytes: blob.size, totalBytes: blob.size, percent: 100, stage: 'done' });
+            resolve(reader.result);
+          };
           reader.onerror = () => reject(new Error('图片转为本地数据失败'));
           reader.readAsDataURL(blob);
         });
       }
 
-      async function fetchImageAsBlob(src) {
+      async function fetchImageAsBlob(src, options = {}) {
         if (!src) throw new Error('图片地址为空');
-        return fetchMediaBlob(src, '图片');
+        return fetchMediaBlob(src, '图片', options);
       }
 
       // 判断 result 是否包含图片
@@ -6153,6 +7098,667 @@ ${chinesePrompt}
         }
       }
 
+      function getGifSourceImages() {
+        const sources = [];
+        const seen = new Set();
+        const addSource = (src, label) => {
+          if (!src || seen.has(src) || /^data:video\//i.test(src)) return;
+          if (!/^data:image\//i.test(src) && !/^https?:\/\//i.test(src) && !/^blob:/i.test(src)) return;
+          seen.add(src);
+          sources.push({ src, label: label || `Frame ${sources.length + 1}` });
+        };
+
+        state.images.forEach((image, index) => addSource(image?.dataUrl, `参考图 ${index + 1}`));
+
+        if (!sources.length && resultsEl) {
+          resultsEl.querySelectorAll('.result-thumb-btn img, .result-card img, img.zoomable').forEach((img, index) => {
+            addSource(img.currentSrc || img.src, `输出图 ${index + 1}`);
+          });
+        }
+
+        return sources.slice(0, 12);
+      }
+
+      function getInitialGifGridReferences() {
+        return state.images
+          .filter(image => image?.dataUrl)
+          .slice(0, 6)
+          .map((image, index) => ({
+            ...image,
+            name: image.name || `参考图 ${index + 1}`
+          }));
+      }
+
+      function loadGifImage(src) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('图片加载失败，无法合成 GIF'));
+          img.crossOrigin = 'anonymous';
+          img.src = src;
+        });
+      }
+
+      async function prepareGifSource(src) {
+        if (/^data:image\//i.test(src || '')) return src;
+        return getPersistentImageSource(src);
+      }
+
+      function clampGifSize(value) {
+        const size = parseInt(value, 10) || 512;
+        return Math.max(256, Math.min(1024, size));
+      }
+
+      function clampGifDelay(value) {
+        const delay = parseInt(value, 10) || 120;
+        return Math.max(40, Math.min(2000, delay));
+      }
+
+      function getGifColorIndex(r, g, b) {
+        return ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6);
+      }
+
+      function getGifGlobalPalette() {
+        const palette = [];
+        for (let r = 0; r < 8; r++) {
+          for (let g = 0; g < 8; g++) {
+            for (let b = 0; b < 4; b++) {
+              palette.push(Math.round((r / 7) * 255), Math.round((g / 7) * 255), Math.round((b / 3) * 255));
+            }
+          }
+        }
+        return palette;
+      }
+
+      function renderGifFrame(image, options, frameIndex, totalFrames) {
+        const width = options.width;
+        const height = options.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = options.background || '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+
+        const baseScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+        const progress = totalFrames <= 1 ? 0 : frameIndex / (totalFrames - 1);
+        const pulse = options.animateSingle ? Math.sin(progress * Math.PI * 2) : 0;
+        const scale = baseScale * (options.animateSingle ? 1 + pulse * 0.035 : 1);
+        const drawW = image.naturalWidth * scale;
+        const drawH = image.naturalHeight * scale;
+        const panX = options.animateSingle ? Math.sin(progress * Math.PI * 2) * width * 0.018 : 0;
+        const panY = options.animateSingle ? Math.cos(progress * Math.PI * 2) * height * 0.012 : 0;
+        ctx.drawImage(image, (width - drawW) / 2 + panX, (height - drawH) / 2 + panY, drawW, drawH);
+
+        const data = ctx.getImageData(0, 0, width, height).data;
+        const indexed = new Uint8Array(width * height);
+        for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+          const alpha = data[i + 3] / 255;
+          const r = Math.round(data[i] * alpha + 255 * (1 - alpha));
+          const g = Math.round(data[i + 1] * alpha + 255 * (1 - alpha));
+          const b = Math.round(data[i + 2] * alpha + 255 * (1 - alpha));
+          indexed[p] = getGifColorIndex(r, g, b);
+        }
+        return indexed;
+      }
+
+      function gifWriteShort(bytes, value) {
+        bytes.push(value & 255, (value >> 8) & 255);
+      }
+
+      function gifWriteString(bytes, value) {
+        for (let i = 0; i < value.length; i++) bytes.push(value.charCodeAt(i) & 255);
+      }
+
+      function lzwEncodeGifPixels(indexedPixels, minCodeSize = 8) {
+        const clearCode = 1 << minCodeSize;
+        const endCode = clearCode + 1;
+        const codeSize = minCodeSize + 1;
+        const output = [];
+        let bitBuffer = 0;
+        let bitCount = 0;
+        const writeCode = (code) => {
+          bitBuffer |= code << bitCount;
+          bitCount += codeSize;
+          while (bitCount >= 8) {
+            output.push(bitBuffer & 255);
+            bitBuffer >>= 8;
+            bitCount -= 8;
+          }
+        };
+
+        // Literal-only LZW is larger, but it avoids decoder drift in browser GIF playback.
+        writeCode(clearCode);
+        let literalCount = 0;
+        for (let i = 0; i < indexedPixels.length; i++) {
+          if (literalCount >= 254) {
+            writeCode(clearCode);
+            literalCount = 0;
+          }
+          writeCode(indexedPixels[i]);
+          literalCount++;
+        }
+        writeCode(endCode);
+        if (bitCount > 0) output.push(bitBuffer & 255);
+        return output;
+      }
+
+      function appendGifDataSubBlocks(bytes, data) {
+        for (let i = 0; i < data.length; i += 255) {
+          const block = data.slice(i, i + 255);
+          bytes.push(block.length, ...block);
+        }
+        bytes.push(0);
+      }
+
+      function encodeGif(frames, options) {
+        if (!frames.length) throw new Error('没有可合成的帧');
+        const bytes = [];
+        const width = options.width;
+        const height = options.height;
+        gifWriteString(bytes, 'GIF89a');
+        gifWriteShort(bytes, width);
+        gifWriteShort(bytes, height);
+        bytes.push(0xf7, 0, 0);
+        bytes.push(...getGifGlobalPalette());
+
+        bytes.push(0x21, 0xff, 0x0b);
+        gifWriteString(bytes, 'NETSCAPE2.0');
+        bytes.push(0x03, 0x01);
+        gifWriteShort(bytes, options.loop ? 0 : 1);
+        bytes.push(0);
+
+        const delayCs = Math.max(1, Math.round(options.delayMs / 10));
+        frames.forEach(frame => {
+          bytes.push(0x21, 0xf9, 0x04, 0x04);
+          gifWriteShort(bytes, delayCs);
+          bytes.push(0, 0);
+          bytes.push(0x2c);
+          gifWriteShort(bytes, 0);
+          gifWriteShort(bytes, 0);
+          gifWriteShort(bytes, width);
+          gifWriteShort(bytes, height);
+          bytes.push(0);
+          bytes.push(8);
+          appendGifDataSubBlocks(bytes, lzwEncodeGifPixels(frame, 8));
+        });
+        bytes.push(0x3b);
+        return new Blob([new Uint8Array(bytes)], { type: 'image/gif' });
+      }
+
+      function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('GIF 读取失败'));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function buildGifDataUrl(sources, options) {
+        const width = clampGifSize(options.width);
+        const height = clampGifSize(options.height);
+        const delayMs = clampGifDelay(options.delayMs);
+        const preparedSources = await Promise.all(sources.map(source => prepareGifSource(source.src)));
+        const images = await Promise.all(preparedSources.map(src => loadGifImage(src)));
+        const frames = [];
+        const animateSingle = images.length === 1;
+        const totalFrames = animateSingle ? Math.max(6, Math.min(24, parseInt(options.singleFrameCount, 10) || 12)) : images.length;
+        for (let i = 0; i < totalFrames; i++) {
+          const image = animateSingle ? images[0] : images[i];
+          frames.push(renderGifFrame(image, { width, height, background: options.background || '#ffffff', animateSingle }, i, totalFrames));
+        }
+        const gifBlob = encodeGif(frames, { width, height, delayMs, loop: options.loop !== false });
+        return blobToDataUrl(gifBlob);
+      }
+
+      function buildGifGridPrompt(theme) {
+        const subject = String(theme || '').trim();
+        return [
+          'Create one animation sprite sheet for GIF generation.',
+          'Canvas layout: exactly 3 columns by 4 rows, 12 frames total.',
+          'Target full image size: 3264x2448. Each frame is a square 816x816 cell.',
+          'The 12 frames must describe a smooth continuous motion sequence from frame 1 to frame 12.',
+          'Keep the same subject identity, outfit, style, lighting, camera angle, and background across all frames.',
+          'No text, no numbers, no labels, no borders, no gutters, no frame separators, no watermark.',
+          'Each cell must be a complete centered square frame, suitable for slicing into an animated GIF.',
+          `Animation theme/action: ${subject}`
+        ].join('\n');
+      }
+
+      function buildGifGridImageRequest(prompt, refs, model, key) {
+        const payload = {
+          model: model || 'gpt-image-2',
+          prompt,
+          size: '3264x2448',
+          n: 1,
+          response_format: 'b64_json'
+        };
+        const images = refs.map(ref => ref?.dataUrl).filter(Boolean).slice(0, 6);
+        if (images.length) {
+          payload.image = images;
+          payload.images = images;
+        }
+        return {
+          endpoint: buildApiUrl('/v1/images/generations'),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify(payload)
+        };
+      }
+
+      async function callGifGridImageAPI(theme, refs, model) {
+        const key = getApiKey();
+        if (!key) throw new Error('请先配置 API Key');
+        const request = buildGifGridImageRequest(buildGifGridPrompt(theme), refs, model, key);
+        const response = await sendImageRequest(request, 'gif-grid-generations');
+        if (!response.ok) {
+          const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
+          throw new Error(errorText);
+        }
+        const apiErrorMessage = extractApiErrorMessage(response.data);
+        if (apiErrorMessage) throw new Error(apiErrorMessage);
+        const result = await annotateImageResultDimensions(extractResult(response.data), aspectSelect?.value || 'auto');
+        if (!hasResultImage(result)) throw new Error('接口未返回可用网格图');
+        return result;
+      }
+
+      async function sliceGifGridFrames(gridSrc, options = {}) {
+        const frameSize = Math.max(256, Math.min(1024, parseInt(options.frameSize, 10) || 816));
+        const image = await loadGifImage(await prepareGifSource(gridSrc));
+        const cols = 3;
+        const rows = 4;
+        const cellW = image.naturalWidth / cols;
+        const cellH = image.naturalHeight / rows;
+        const frames = [];
+        for (let row = 0; row < rows; row++) {
+          for (let col = 0; col < cols; col++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = frameSize;
+            canvas.height = frameSize;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, frameSize, frameSize);
+            ctx.drawImage(
+              image,
+              Math.round(col * cellW),
+              Math.round(row * cellH),
+              Math.ceil(cellW),
+              Math.ceil(cellH),
+              0,
+              0,
+              frameSize,
+              frameSize
+            );
+            frames.push({
+              src: canvas.toDataURL('image/png'),
+              label: `帧 ${frames.length + 1}`
+            });
+          }
+        }
+        return frames;
+      }
+
+      async function readGifReferenceFiles(fileList, existing = []) {
+        const files = Array.from(fileList || []).filter(file => /^image\//i.test(file.type || ''));
+        const remaining = Math.max(0, 6 - existing.length);
+        if (!files.length || remaining <= 0) return existing;
+        const nextRefs = await Promise.all(files.slice(0, remaining).map(processAndCompressImage));
+        return [...existing, ...nextRefs].slice(0, 6);
+      }
+
+      function renderGifReferenceList(container, refs) {
+        if (!container) return;
+        if (!refs.length) {
+          container.innerHTML = '<div class="gif-ref-empty">可选：拖放或粘贴参考图，最多 6 张。</div>';
+          return;
+        }
+        container.innerHTML = refs.map((ref, index) => `
+          <div class="gif-ref-item">
+            <img src="${escapeHtml(ref.dataUrl)}" alt="${escapeHtml(ref.name || `参考图 ${index + 1}`)}">
+            <span>${escapeHtml(ref.name || `参考图 ${index + 1}`)}</span>
+          </div>
+        `).join('');
+      }
+
+      function showGifToolDialog() {
+        const localSources = getGifSourceImages();
+        let gridReferences = getInitialGifGridReferences();
+        const overlay = document.createElement('div');
+        overlay.className = 'prompt-compare-overlay gif-tool-overlay';
+        const sourceItems = localSources.map((source, index) => `
+          <label class="gif-source-item">
+            <input type="checkbox" value="${index}" checked>
+            <img src="${escapeHtml(source.src)}" alt="${escapeHtml(source.label)}">
+            <span>${escapeHtml(source.label)}</span>
+            <span class="gif-order-control">顺序 <input class="gif-order-input" type="number" min="1" max="${Math.max(1, localSources.length)}" value="${index + 1}"></span>
+          </label>
+        `).join('');
+        overlay.innerHTML = `
+          <div class="prompt-compare-panel gif-tool-panel">
+            <div class="prompt-compare-header">
+              <h3>动图生成</h3>
+              <button class="prompt-compare-close" type="button">✕</button>
+            </div>
+            <div class="prompt-compare-content gif-tool-content">
+              <div class="gif-tool-tabs" role="tablist" aria-label="动图生成模式">
+                <button class="gif-tool-tab active" type="button" data-gif-tab="grid">网格生帧</button>
+                <button class="gif-tool-tab" type="button" data-gif-tab="local">本地合成</button>
+              </div>
+
+              <div class="gif-tab-panel" data-gif-panel="grid">
+                <div class="gif-grid-layout">
+                  <div class="gif-grid-form">
+                    <label class="gif-field">动画主题 / 动作
+                      <textarea class="gif-grid-theme" rows="5" placeholder="例如：一只虎斑猫缓慢眨眼">${escapeHtml(promptInput?.value?.trim() || '')}</textarea>
+                    </label>
+                    <div class="gif-field-row">
+                      <label class="gif-field">模型
+                        <select class="gif-grid-model">
+                          <option value="gpt-image-2" selected>gpt-image-2</option>
+                        </select>
+                      </label>
+                      <label class="gif-field">每帧时长
+                        <input class="gif-grid-delay" type="number" min="40" max="2000" step="20" value="120">
+                      </label>
+                    </div>
+                    <label class="gif-loop-field gif-grid-loop">
+                      <input class="gif-grid-loop-input" type="checkbox" checked>
+                      循环播放
+                    </label>
+                    <div class="gif-ref-drop" tabindex="0">
+                      <input class="gif-ref-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+                      <strong>可选：拖放或点击添加参考图</strong>
+                      <span>最多 6 张；默认已带入当前工作台参考图。</span>
+                    </div>
+                    <div class="gif-ref-list"></div>
+                  </div>
+                  <div class="gif-grid-preview-column">
+                    <div class="gif-preview-title">网格底图</div>
+                    <div class="gif-preview-box gif-grid-image-box">
+                      <img class="gif-grid-img" alt="网格底图预览" hidden>
+                      <div class="gif-preview-empty">生成后显示 3×4 网格底图。</div>
+                    </div>
+                    <div class="gif-preview-title">GIF 预览</div>
+                    <div class="gif-preview-box">
+                      <img class="gif-preview-img gif-grid-preview-img" alt="GIF 预览" hidden>
+                      <div class="gif-preview-empty">生成完成后自动切片并合成 GIF。</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="gif-tab-panel" data-gif-panel="local" hidden>
+                <div class="prompt-compare-section">
+                  <div class="prompt-compare-label">来源图片</div>
+                  ${localSources.length ? `<div class="gif-source-grid">${sourceItems}</div>` : '<div class="gif-ref-empty">请先上传参考图，或先生成至少一张图片结果。</div>'}
+                </div>
+                <div class="gif-mode-grid">
+                  <button class="gif-mode-card active" type="button" data-mode="auto">
+                    <strong>自动生成</strong>
+                    <small>使用默认尺寸、节奏和循环设置快速合成</small>
+                  </button>
+                  <button class="gif-mode-card" type="button" data-mode="custom">
+                    <strong>微调生成</strong>
+                    <small>调整尺寸、每帧时长、循环和单图帧数</small>
+                  </button>
+                </div>
+                <div class="gif-custom-panel" hidden>
+                  <label>输出尺寸
+                    <select class="gif-size-select">
+                      <option value="512" selected>512 x 512</option>
+                      <option value="768">768 x 768</option>
+                      <option value="1024">1024 x 1024</option>
+                    </select>
+                  </label>
+                  <label>每帧时长
+                    <input class="gif-delay-input" type="number" min="40" max="2000" step="20" value="120">
+                  </label>
+                  <label>单图动画帧数
+                    <input class="gif-frame-count-input" type="number" min="6" max="24" value="12">
+                  </label>
+                  <label class="gif-loop-field">
+                    <input class="gif-loop-input" type="checkbox" checked>
+                    循环播放
+                  </label>
+                </div>
+                <div class="gif-preview-box">
+                  <img class="gif-preview-img gif-local-preview-img" alt="GIF 预览" hidden>
+                  <div class="gif-preview-empty">选择图片后点击生成，结果会添加到当前输出和历史记录。</div>
+                </div>
+              </div>
+            </div>
+            <div class="prompt-compare-actions">
+              <button class="prompt-compare-btn prompt-compare-btn-secondary close-btn" type="button">关闭</button>
+              <button class="prompt-compare-btn prompt-compare-btn-secondary gif-reference-slice-btn" type="button">参考图生成</button>
+              <button class="prompt-compare-btn prompt-compare-btn-primary gif-generate-btn" type="button">生成网格图</button>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        const customPanel = overlay.querySelector('.gif-custom-panel');
+        const generateBtn = overlay.querySelector('.gif-generate-btn');
+        const referenceSliceBtn = overlay.querySelector('.gif-reference-slice-btn');
+        const localPreviewImg = overlay.querySelector('.gif-local-preview-img');
+        const gridPreviewImg = overlay.querySelector('.gif-grid-preview-img');
+        const gridImageEl = overlay.querySelector('.gif-grid-img');
+        const refListEl = overlay.querySelector('.gif-ref-list');
+        const refFileInput = overlay.querySelector('.gif-ref-file-input');
+        let localMode = 'auto';
+        let activeGifTab = 'grid';
+
+        overlay.querySelector('.prompt-compare-close')?.addEventListener('click', close);
+        overlay.querySelector('.close-btn')?.addEventListener('click', close);
+        renderGifReferenceList(refListEl, gridReferences);
+
+        const setActiveGifTab = (tab) => {
+          activeGifTab = tab === 'local' ? 'local' : 'grid';
+          overlay.querySelectorAll('.gif-tool-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.gifTab === activeGifTab));
+          overlay.querySelectorAll('.gif-tab-panel').forEach(panel => {
+            panel.hidden = panel.dataset.gifPanel !== activeGifTab;
+          });
+          generateBtn.textContent = activeGifTab === 'grid'
+            ? '生成网格图'
+            : (localMode === 'custom' ? '微调生成' : '自动生成');
+          if (referenceSliceBtn) referenceSliceBtn.hidden = activeGifTab !== 'grid';
+        };
+
+        overlay.querySelectorAll('.gif-tool-tab').forEach(btn => {
+          btn.addEventListener('click', () => setActiveGifTab(btn.dataset.gifTab));
+        });
+
+        overlay.querySelectorAll('.gif-mode-card').forEach(card => {
+          card.addEventListener('click', () => {
+            localMode = card.dataset.mode || 'auto';
+            overlay.querySelectorAll('.gif-mode-card').forEach(item => item.classList.toggle('active', item === card));
+            customPanel.hidden = localMode !== 'custom';
+            if (activeGifTab === 'local') {
+              generateBtn.textContent = localMode === 'custom' ? '微调生成' : '自动生成';
+            }
+          });
+        });
+
+        const handleRefFiles = async (files) => {
+          try {
+            gridReferences = await readGifReferenceFiles(files, gridReferences);
+            renderGifReferenceList(refListEl, gridReferences);
+            flashStatus(`动图参考图 ${gridReferences.length}/6`, 'success');
+          } catch (error) {
+            console.error('动图参考图处理失败:', error);
+            flashStatus(error.message || '动图参考图处理失败', 'danger');
+          }
+        };
+
+        const refDrop = overlay.querySelector('.gif-ref-drop');
+        refDrop?.addEventListener('click', () => refFileInput?.click());
+        refDrop?.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          refDrop.classList.add('dragging');
+        });
+        refDrop?.addEventListener('dragleave', () => refDrop.classList.remove('dragging'));
+        refDrop?.addEventListener('drop', (event) => {
+          event.preventDefault();
+          refDrop.classList.remove('dragging');
+          handleRefFiles(event.dataTransfer?.files);
+        });
+        refFileInput?.addEventListener('change', () => {
+          handleRefFiles(refFileInput.files);
+          refFileInput.value = '';
+        });
+
+        async function generateLocalGif() {
+          const selected = [...overlay.querySelectorAll('[data-gif-panel="local"] .gif-source-item input:checked')]
+            .map(input => {
+              const item = input.closest('.gif-source-item');
+              const sourceIndex = parseInt(input.value, 10);
+              const order = parseInt(item?.querySelector('.gif-order-input')?.value, 10) || sourceIndex + 1;
+              return { ...localSources[sourceIndex], order };
+            })
+            .sort((a, b) => a.order - b.order)
+            .filter(Boolean);
+          if (!selected.length) {
+            flashStatus('请至少选择一张图片用于动图生成', 'danger');
+            return false;
+          }
+          const startedAt = performance.now();
+          const size = localMode === 'custom' ? overlay.querySelector('.gif-size-select')?.value : 512;
+          const delayMs = localMode === 'custom' ? overlay.querySelector('.gif-delay-input')?.value : 120;
+          const singleFrameCount = localMode === 'custom' ? overlay.querySelector('.gif-frame-count-input')?.value : 12;
+          const loop = localMode === 'custom' ? !!overlay.querySelector('.gif-loop-input')?.checked : true;
+          const gifDataUrl = await buildGifDataUrl(selected, { width: size, height: size, delayMs, singleFrameCount, loop });
+          const empty = localPreviewImg?.parentElement?.querySelector('.gif-preview-empty');
+          localPreviewImg.src = gifDataUrl;
+          localPreviewImg.hidden = false;
+          if (empty) empty.hidden = true;
+          await appendResult({
+            mediaType: 'gif',
+            imageBase64: gifDataUrl,
+            mime: 'image/gif',
+            text: ''
+          }, getCurrentGenerationParams({
+            prompt: `动图生成：${selected.map(item => item.label).join('、')}`,
+            model: 'local-gif',
+            protocol: 'local-gif',
+            runtimeMs: performance.now() - startedAt
+          }));
+          return true;
+        }
+
+        async function generateGridGif() {
+          const theme = overlay.querySelector('.gif-grid-theme')?.value.trim();
+          if (!theme) {
+            flashStatus('请先填写动画主题 / 动作', 'danger');
+            overlay.querySelector('.gif-grid-theme')?.focus();
+            return false;
+          }
+          const startedAt = performance.now();
+          const model = overlay.querySelector('.gif-grid-model')?.value || 'gpt-image-2';
+          const delayMs = overlay.querySelector('.gif-grid-delay')?.value || 120;
+          const loop = !!overlay.querySelector('.gif-grid-loop-input')?.checked;
+          flashStatus('正在生成 3×4 网格底图...', '');
+          const gridResult = await callGifGridImageAPI(theme, gridReferences, model);
+          const gridSrc = getResultImgSrc(gridResult);
+          gridImageEl.src = gridSrc;
+          gridImageEl.hidden = false;
+          const gridEmpty = gridImageEl.parentElement?.querySelector('.gif-preview-empty');
+          if (gridEmpty) gridEmpty.hidden = true;
+
+          flashStatus('网格底图已生成，正在切片合成 GIF...', '');
+          const frames = await sliceGifGridFrames(gridSrc, { frameSize: 816 });
+          const gifDataUrl = await buildGifDataUrl(frames, { width: 816, height: 816, delayMs, loop });
+          gridPreviewImg.src = gifDataUrl;
+          gridPreviewImg.hidden = false;
+          const gifEmpty = gridPreviewImg.parentElement?.querySelector('.gif-preview-empty');
+          if (gifEmpty) gifEmpty.hidden = true;
+          await appendResult({
+            mediaType: 'gif',
+            imageBase64: gifDataUrl,
+            mime: 'image/gif',
+            text: ''
+          }, getCurrentGenerationParams({
+            prompt: `网格生帧：${theme}`,
+            model,
+            protocol: 'gif-grid',
+            runtimeMs: performance.now() - startedAt
+          }));
+          return true;
+        }
+
+        async function generateGifFromReferenceGrid() {
+          const referenceGrid = gridReferences.find(ref => ref?.dataUrl);
+          if (!referenceGrid) {
+            flashStatus('请先添加一张 3×4 网格参考图', 'danger');
+            return false;
+          }
+          const startedAt = performance.now();
+          const theme = overlay.querySelector('.gif-grid-theme')?.value.trim();
+          const delayMs = overlay.querySelector('.gif-grid-delay')?.value || 120;
+          const loop = !!overlay.querySelector('.gif-grid-loop-input')?.checked;
+          gridImageEl.src = referenceGrid.dataUrl;
+          gridImageEl.hidden = false;
+          const gridEmpty = gridImageEl.parentElement?.querySelector('.gif-preview-empty');
+          if (gridEmpty) gridEmpty.hidden = true;
+          flashStatus('正在切片参考图并合成 GIF...', '');
+
+          const frames = await sliceGifGridFrames(referenceGrid.dataUrl, { frameSize: 816 });
+          const gifDataUrl = await buildGifDataUrl(frames, { width: 816, height: 816, delayMs, loop });
+          gridPreviewImg.src = gifDataUrl;
+          gridPreviewImg.hidden = false;
+          const gifEmpty = gridPreviewImg.parentElement?.querySelector('.gif-preview-empty');
+          if (gifEmpty) gifEmpty.hidden = true;
+          await appendResult({
+            mediaType: 'gif',
+            imageBase64: gifDataUrl,
+            mime: 'image/gif',
+            text: ''
+          }, getCurrentGenerationParams({
+            prompt: `参考图切片合成：${theme || referenceGrid.name || '3×4 网格图'}`,
+            model: 'reference-grid',
+            protocol: 'gif-grid',
+            runtimeMs: performance.now() - startedAt
+          }));
+          return true;
+        }
+
+        referenceSliceBtn?.addEventListener('click', async () => {
+          const originalText = referenceSliceBtn.textContent;
+          referenceSliceBtn.disabled = true;
+          generateBtn.disabled = true;
+          referenceSliceBtn.textContent = '切片中...';
+          try {
+            const ok = await generateGifFromReferenceGrid();
+            if (ok) flashStatus('已使用参考图切片合成 GIF', 'success');
+          } catch (error) {
+            console.error('参考图切片合成 GIF 失败:', error);
+            flashStatus(error.message || '参考图切片合成 GIF 失败', 'danger');
+          } finally {
+            referenceSliceBtn.disabled = false;
+            generateBtn.disabled = false;
+            referenceSliceBtn.textContent = originalText;
+          }
+        });
+
+        generateBtn?.addEventListener('click', async () => {
+          const originalText = generateBtn.textContent;
+          generateBtn.disabled = true;
+          generateBtn.textContent = activeGifTab === 'grid' ? '生成中...' : '合成中...';
+
+          try {
+            const ok = activeGifTab === 'grid'
+              ? await generateGridGif()
+              : await generateLocalGif();
+            if (ok) flashStatus('GIF 已生成并添加到当前输出', 'success');
+          } catch (error) {
+            console.error('GIF 生成失败:', error);
+            flashStatus(error.message || 'GIF 生成失败', 'danger');
+          } finally {
+            generateBtn.disabled = false;
+            generateBtn.textContent = originalText;
+          }
+        });
+      }
+
       function showReversePromptDialog() {
         const image = state.images.find(img => img?.dataUrl);
         if (!image) {
@@ -6632,7 +8238,10 @@ ${chinesePrompt}
 
         const protocol = getProtocol();
         const imageModel = getImageModel();
-        const imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
+        let imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
+        if (typeof ImageRatio.compressReferenceImages === 'function') {
+          imgs = await ImageRatio.compressReferenceImages(imgs);
+        }
         let response;
 
         if (protocol === 'openai-images') {
@@ -6732,7 +8341,7 @@ ${chinesePrompt}
           throw new Error(apiErrorMessage);
         }
 
-        const result = extractResult(response.data);
+        const result = await annotateImageResultDimensions(extractResult(response.data), aspectSelect?.value || 'auto');
         debugLog('[callImageAPI] extractResult:', { text: result.text?.slice(0,200), imageBase64: !!result.imageBase64, imageUrl: result.imageUrl });
         if (!result.imageBase64 && !result.imageUrl && !result.text) {
           throw new Error('接口未返回可用图片');
@@ -6753,7 +8362,10 @@ ${chinesePrompt}
 
         const protocol = getProtocol();
         const videoModel = getImageModel();
-        const imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
+        let imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
+        if (typeof ImageRatio.compressReferenceImages === 'function') {
+          imgs = await ImageRatio.compressReferenceImages(imgs);
+        }
         let request;
         if (protocol === 'openai-video-chat') {
           request = buildOpenAIVideoChatRequest(prompt, imgs, videoModel, key);
@@ -6830,7 +8442,8 @@ ${chinesePrompt}
         // 并发生成所有分镜（立即返回，后台继续生成）
         placeholders.forEach(async ({ placeholderId, shot, index }) => {
           if (index > 0) {
-            await new Promise(r => setTimeout(r, 500));
+            // 逐条错开，避免所有分镜在 500ms 后同时打到接口
+            await new Promise(r => setTimeout(r, 500 * index));
           }
 
           try {
@@ -6916,7 +8529,10 @@ ${chinesePrompt}
           <div style="text-align: center; color: var(--muted);">
             <div style="font-size: 48px; margin-bottom: 12px; animation: spin 2s linear infinite;">⏳</div>
             <div style="font-size: 14px; font-weight: 600; color: var(--text);">生成中 #${index}</div>
-            <div class="card-timer" style="font-size: 12px; margin-top: 4px; color: var(--accent);">0.0s</div>
+            <div class="loading-status" style="font-size: 12px; margin-top: 4px; color: var(--accent);">正在请求...</div>
+            <div class="card-timer" style="font-size: 12px; margin-top: 2px; color: var(--muted);">0.0s</div>
+            <div class="loading-status" style="font-size: 11px; margin-top: 6px; color: var(--warning);"></div>
+            <div class="loading-status" style="font-size: 11px; margin-top: 6px; color: var(--warning); min-height: 16px;"></div>
           </div>
           <style>
             @keyframes spin {
@@ -7045,6 +8661,24 @@ ${chinesePrompt}
         continueBtn.textContent = '续图';
         applyContinueSourceAvailability(continueBtn, continueSource);
         actions.appendChild(continueBtn);
+
+        const canvasBtn = document.createElement('button');
+        canvasBtn.className = 'mini-btn canvas-transfer-btn';
+        canvasBtn.type = 'button';
+        canvasBtn.setAttribute('data-canvas-transfer', 'result-card');
+        if (CANVAS_FEATURE_ENABLED) {
+          canvasBtn.textContent = '进画布';
+        } else {
+          canvasBtn.textContent = '进画布（开发中）';
+          canvasBtn.title = CANVAS_DEV_NOTICE;
+        }
+        canvasBtn.addEventListener('click', () => sendImagesToCanvas([{
+          kind: 'image',
+          origin: 'result-output',
+          src: imgSrc,
+          label: meta.label || filename
+        }]));
+        actions.appendChild(canvasBtn);
         card._continueBtn = continueBtn;
         card._resultImgEl = imgEl;
         card._downloadLink = downloadLink;
@@ -7214,6 +8848,100 @@ ${chinesePrompt}
       }
 
       // 替换占位符卡片为真实结果
+      function ensureResultCacheStatusEl(card) {
+        if (!card) return null;
+        let statusEl = card.querySelector('.result-cache-status');
+        if (statusEl) return statusEl;
+        const actions = card.querySelector('.result-card-actions') || card;
+        statusEl = document.createElement('div');
+        statusEl.className = 'result-cache-status';
+        statusEl.style.cssText = 'width:100%;font-size:11px;color:var(--accent);margin-top:6px;min-height:16px;';
+        actions.appendChild(statusEl);
+        return statusEl;
+      }
+
+      function setResultCacheStatus(card, text, type) {
+        const statusEl = ensureResultCacheStatusEl(card);
+        if (!statusEl) return;
+        statusEl.textContent = text || '';
+        statusEl.style.color = type === 'danger'
+          ? 'var(--danger)'
+          : type === 'success'
+            ? 'var(--success, var(--accent))'
+            : 'var(--accent)';
+      }
+
+      function ensureRecacheButton(card, continueSource, meta, imgSrc) {
+        if (!card || !continueSource) return null;
+        let btn = card.querySelector('.recache-result-btn');
+        if (btn) return btn;
+        const actions = card.querySelector('.result-card-actions');
+        if (!actions) return null;
+        btn = document.createElement('button');
+        btn.className = 'mini-btn recache-result-btn';
+        btn.type = 'button';
+        btn.textContent = '重新缓存';
+        btn.title = '重新把远程结果下载到本地并保存';
+        btn.addEventListener('click', async () => {
+          if (btn.disabled) return;
+          const original = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = '缓存中...';
+          setResultCacheStatus(card, '重新缓存中...', undefined);
+          try {
+            // 允许重新拉取
+            continueSource.cachedSrc = '';
+            continueSource.failed = false;
+            continueSource.error = '';
+            const persistentImgSrc = await warmContinueImageSource(continueSource, {
+              onProgress: (progress) => {
+                if (progress?.percent != null) setResultCacheStatus(card, `本地缓存 ${progress.percent}%`);
+                else if (progress?.stage) setResultCacheStatus(card, `本地缓存 ${progress.stage}`);
+              }
+            });
+            applyContinueSourceAvailability(card._continueBtn, continueSource);
+            if (!persistentImgSrc) throw new Error(continueSource.error || '重新缓存失败');
+
+            const imageRecord = await resolveHistoryImageRecord(persistentImgSrc);
+            if (card._resultImgEl && persistentImgSrc) card._resultImgEl.src = persistentImgSrc;
+            if (card._downloadLink && persistentImgSrc) {
+              card._downloadLink.href = persistentImgSrc;
+              if (imageRecord.filename) card._downloadLink.download = imageRecord.filename;
+            }
+
+            const historyRecord = {
+              thumbnail: imageRecord.thumbnail,
+              filename: imageRecord.filename,
+              prompt: meta?.prompt || '',
+              aspect: meta?.aspect || '',
+              resolution: meta?.resolution || '',
+              quality: meta?.quality || '',
+              model: meta?.model || '',
+              protocol: meta?.protocol || '',
+              timestamp: imageRecord.timestamp,
+              runtimeMs: meta?.runtimeMs || 0,
+              imageSrc: imageRecord.persistentSrc
+            };
+            await saveHistory(historyRecord);
+            await renderHistory();
+
+            const saveResult = await saveImageFile(imageRecord.persistentSrc, imageRecord.filename);
+            const feedback = getSaveImageResultMessage(saveResult);
+            flashStatus(feedback.text, feedback.type);
+            setResultCacheStatus(card, '已重新缓存到本地', 'success');
+            btn.remove();
+          } catch (err) {
+            console.error('重新缓存失败:', err);
+            setResultCacheStatus(card, err?.message || '重新缓存失败', 'danger');
+            flashStatus(err?.message || '重新缓存失败', 'danger');
+            btn.disabled = false;
+            btn.textContent = original;
+          }
+        });
+        actions.appendChild(btn);
+        return btn;
+      }
+
       async function replaceCardWithResult(placeholderCard, result, meta) {
         // 清理计时器
         if (placeholderCard.dataset.intervalId) {
@@ -7242,21 +8970,38 @@ ${chinesePrompt}
           const imgSrc = getResultImgSrc(result);
           const continueSource = replacementCard._continueSource || buildContinueSourceState(imgSrc);
           const continueBtn = replacementCard._continueBtn;
+          const needsRemoteCache = !!(result?.imageUrl && !result?.imageBase64 && !/^data:/i.test(imgSrc || ''));
 
           // 自动保存历史记录和下载图片
           try {
             let imageRecord;
             try {
-              const persistentImgSrc = await warmContinueImageSource(continueSource);
+              if (needsRemoteCache) setResultCacheStatus(replacementCard, '本地缓存 0%');
+              const persistentImgSrc = await warmContinueImageSource(continueSource, {
+                onProgress: (progress) => {
+                  meta?.onCacheProgress?.(progress);
+                  if (progress?.percent != null) setResultCacheStatus(replacementCard, `本地缓存 ${progress.percent}%`);
+                  else if (progress?.stage) setResultCacheStatus(replacementCard, `本地缓存 ${progress.stage}`);
+                }
+              });
               if (!persistentImgSrc) {
                 applyContinueSourceAvailability(continueBtn, continueSource);
                 throw new Error(continueSource.error || '图片缓存失败');
               }
               applyContinueSourceAvailability(continueBtn, continueSource);
+              if (replacementCard._resultImgEl && persistentImgSrc) {
+                replacementCard._resultImgEl.src = persistentImgSrc;
+              }
+              if (replacementCard._downloadLink && persistentImgSrc) {
+                replacementCard._downloadLink.href = persistentImgSrc;
+              }
               imageRecord = await resolveHistoryImageRecord(persistentImgSrc);
+              if (needsRemoteCache) setResultCacheStatus(replacementCard, '已缓存到本地', 'success');
             } catch (imageErr) {
               console.warn('结果图无法缓存为本地数据，历史记录降级为 URL 记录:', imageErr);
               imageRecord = await buildHistoryImageRecordFallback(imgSrc);
+              setResultCacheStatus(replacementCard, '本地缓存失败，可点重新缓存', 'danger');
+              ensureRecacheButton(replacementCard, continueSource, meta, imgSrc);
             }
 
             const historyRecord = {
@@ -7269,13 +9014,22 @@ ${chinesePrompt}
               model: meta?.model || '',
               protocol: meta?.protocol || '',
               timestamp: imageRecord.timestamp,
-              runtimeMs: meta?.runtimeMs || 0
+              runtimeMs: actualElapsedMs || meta?.runtimeMs || 0
             };
-            if (shouldSaveHistoryOriginal() && imageRecord.persistentSrc) {
+            if (imageRecord.persistentSrc) {
+              // Always keep a previewable local source for Agent/history panes.
               historyRecord.imageSrc = imageRecord.persistentSrc;
-            } else if (!imageRecord.persistentSrc) {
+              if (!shouldSaveHistoryOriginal() && imgSrc && imgSrc !== imageRecord.persistentSrc) {
+                historyRecord.imageUrl = imgSrc;
+              }
+            } else if (imgSrc) {
               historyRecord.imageUrl = imgSrc;
             }
+            if (!historyRecord.thumbnail) {
+              historyRecord.thumbnail = historyRecord.imageSrc || historyRecord.imageUrl || imgSrc || '';
+            }
+            if (!historyRecord.mediaType) historyRecord.mediaType = 'image';
+            if (!historyRecord.mime) historyRecord.mime = imageRecord.mimeType || 'image/png';
             await saveHistory(historyRecord);
             await renderHistory();
 
@@ -7311,7 +9065,9 @@ ${chinesePrompt}
           try {
             let imageRecord;
             try {
-              const persistentImgSrc = await warmContinueImageSource(continueSource);
+              const persistentImgSrc = await warmContinueImageSource(continueSource, {
+                onProgress: meta?.onCacheProgress
+              });
               if (!persistentImgSrc) {
                 applyContinueSourceAvailability(continueBtn, continueSource);
                 throw new Error(continueSource.error || '图片不可用');
@@ -7335,11 +9091,20 @@ ${chinesePrompt}
               timestamp: imageRecord.timestamp,
               runtimeMs: meta?.runtimeMs || 0
             };
-            if (shouldSaveHistoryOriginal() && imageRecord.persistentSrc) {
+            if (imageRecord.persistentSrc) {
+              // Always keep a previewable local source for Agent/history panes.
               historyRecord.imageSrc = imageRecord.persistentSrc;
-            } else if (!imageRecord.persistentSrc) {
+              if (!shouldSaveHistoryOriginal() && imgSrc && imgSrc !== imageRecord.persistentSrc) {
+                historyRecord.imageUrl = imgSrc;
+              }
+            } else if (imgSrc) {
               historyRecord.imageUrl = imgSrc;
             }
+            if (!historyRecord.thumbnail) {
+              historyRecord.thumbnail = historyRecord.imageSrc || historyRecord.imageUrl || imgSrc || '';
+            }
+            if (!historyRecord.mediaType) historyRecord.mediaType = 'image';
+            if (!historyRecord.mime) historyRecord.mime = imageRecord.mimeType || 'image/png';
             await saveHistory(historyRecord);
             await renderHistory();
 
@@ -7409,6 +9174,12 @@ ${chinesePrompt}
       }
 
       function clearResults() {
+        // 先停掉占位卡片上的计时器，否则 innerHTML 清空后 setInterval 会成为孤儿一直跑
+        resultsEl.querySelectorAll('[data-interval-id]').forEach((card) => {
+          const id = parseInt(card.dataset.intervalId, 10);
+          if (Number.isFinite(id)) clearInterval(id);
+          delete card.dataset.intervalId;
+        });
         resultsEl.innerHTML = '';
         resultCountEl.textContent = '0 条';
         flashStatus('已清空结果', 'success');
@@ -7427,13 +9198,21 @@ ${chinesePrompt}
         if (!key) return flashStatus('需要 API Key', 'danger');
         if (!prompt) return flashStatus('提示词必填', 'danger');
 
+        if (generationInFlight) return;
+        generationInFlight = true;
+        if (runBtn) {
+          runBtn.disabled = true;
+          runBtn.setAttribute('aria-busy', 'true');
+          runBtn.textContent = '准备生成...';
+        }
+        syncMobileGenerateBar({ busy: true, buttonText: '准备生成...', progressText: '准备生成...' });
+        try {
+
         const savePreflightResult = await preflightSaveFolderPermission();
 
         const headers = { 'Content-Type': 'application/json' };
         headers[headerName] = `${prefix || ''}${key}`;
 
-        // 不禁用按钮，允许并行生成
-        // runBtn.disabled = true;
         const startedAtAll = performance.now();
         let completed = 0;
         let failed = 0;
@@ -7446,6 +9225,11 @@ ${chinesePrompt}
             statusText += `，失败 ${failed}`;
           }
           flashStatus(statusText, failed > 0 ? 'danger' : undefined);
+          syncMobileGenerateBar({
+            busy: true,
+            buttonText: '生成中...',
+            progressText: statusText
+          });
         }
 
         // 显示简单的进度提示（不显示时间）
@@ -7455,43 +9239,87 @@ ${chinesePrompt}
         async function generateOne(index, placeholderCard) {
           const startedAt = performance.now();
 
-          try {
-            const result = getActivePlatformConfig().kind === 'video'
-              ? await callVideoAPI(prompt, getReferenceImagesForRequest())
-              : await callImageAPI(prompt, getReferenceImagesForRequest());
-            const durationMs = performance.now() - startedAt;
+          const MAX_RETRIES = 3;
+          const BASE_DELAY_MS = 3000;
+          let attempt = 0;
 
-            // 替换占位符为真实结果
-            await replaceCardWithResult(placeholderCard, result, getCurrentGenerationParams({
-              prompt,
-              runtimeMs: durationMs,
-              savePreflightResult
-            }));
-            completed++;
-            updateRunProgress();
-          } catch (err) {
-            console.error(`请求 #${index + 1} 失败:`, err);
-            failed++;
-            lastErrorMsg = parseApiError(err.message);
-            showErrorInCard(placeholderCard, parseApiError(err.message));
-            updateRunProgress();
+          while (attempt <= MAX_RETRIES) {
+            try {
+              const result = getActivePlatformConfig().kind === 'video'
+                ? await callVideoAPI(prompt, getReferenceImagesForRequest())
+                : await callImageAPI(prompt, getReferenceImagesForRequest());
+              const durationMs = performance.now() - startedAt;
+
+              // 替换占位符为真实结果；远程 URL 会在持久化阶段带进度回写
+              const statusEl = placeholderCard.querySelector('.loading-status');
+              if (statusEl && (result?.imageUrl || result?.videoUrl) && !result?.imageBase64) {
+                statusEl.textContent = '结果下载到本地...';
+              }
+              await replaceCardWithResult(placeholderCard, result, getCurrentGenerationParams({
+                prompt,
+                runtimeMs: durationMs,
+                savePreflightResult,
+                onCacheProgress: (progress) => {
+                  if (!statusEl) return;
+                  if (progress?.percent != null) statusEl.textContent = `本地缓存 ${progress.percent}%`;
+                  else if (progress?.stage) statusEl.textContent = `本地缓存 ${progress.stage}`;
+                }
+              }));
+              completed++;
+              updateRunProgress();
+              return; // 成功，退出重试循环
+            } catch (err) {
+              const errMsg = err.message || '';
+              attempt++;
+              const failure = classifyGenerationFailure(err);
+              const canRetry = attempt <= MAX_RETRIES && failure.retryable && !failure.terminal;
+
+              if (canRetry) {
+                const delayMs = Math.max(
+                  failure.retryAfterMs || 0,
+                  BASE_DELAY_MS * Math.pow(2, attempt - 1)
+                );
+                const retryMsg = `请求被限流/暂不可用，第 ${attempt} 次重试（等待 ${Math.round(delayMs/1000)} 秒）...`;
+                console.warn(`请求 #${index + 1} 第 ${attempt} 次重试:`, errMsg);
+
+                // 更新占位符卡片显示重试状态
+                const statusEl = placeholderCard.querySelector('.loading-status');
+                if (statusEl) statusEl.textContent = retryMsg;
+                flashStatus(retryMsg, 'warning');
+
+                await new Promise(r => setTimeout(r, delayMs));
+                // 继续下一轮重试
+              } else {
+                // 不可重试或已达最大重试次数
+                console.error(`请求 #${index + 1} 失败:`, err);
+                failed++;
+                lastErrorMsg = parseApiError(errMsg);
+                showErrorInCard(placeholderCard, lastErrorMsg);
+                updateRunProgress();
+                return;
+              }
+            }
           }
         }
 
-        // 按频率发送所有请求（并发执行，但启动间隔 500ms，即每秒 2 次）
-        const promises = [];
+        // 图片受控并发（默认 2，最大 3）；视频保持串行，避免轮询打爆中转。
+        const isVideoRun = getActivePlatformConfig().kind === 'video';
+        const concurrency = isVideoRun ? 1 : Math.max(1, Math.min(3, count > 1 ? 2 : 1));
+        const jobs = [];
         for (let i = 0; i < count; i++) {
-          // 立即创建占位符卡片
           const placeholderCard = createLoadingPlaceholder(i + 1);
           resultsEl.insertBefore(placeholderCard, resultsEl.firstChild);
           resultCountEl.textContent = `${resultsEl.children.length} 条`;
-
-          if (i > 0) {
-            await new Promise(r => setTimeout(r, 500));
-          }
-          promises.push(generateOne(i, placeholderCard));
+          jobs.push({ index: i, placeholderCard });
         }
-        await Promise.all(promises);
+        await mapPool(jobs, concurrency, async (job) => {
+          if (!isVideoRun && job.index > 0) {
+            await new Promise(r => setTimeout(r, 250 * Math.min(job.index, 3)));
+          } else if (isVideoRun && job.index > 0) {
+            await new Promise(r => setTimeout(r, 1200));
+          }
+          await generateOne(job.index, job.placeholderCard);
+        });
 
         // 显示完成状态（不显示总时间）
         if (failed === 0) {
@@ -7500,9 +9328,14 @@ ${chinesePrompt}
           // 显示失败原因的中文提示
           flashStatus(`失败 ${failed} 张: ${lastErrorMsg}`, 'danger');
         }
-        // 不需要重新启用按钮，因为从未禁用
-        // runBtn.disabled = false;
-      }
+      
+        } finally {
+          generationInFlight = false;
+          if (runBtn) runBtn.removeAttribute('aria-busy');
+          updatePlatformActionAvailability();
+          syncMobileGenerateBar();
+        }
+}
 
       // ========== 自定义角度功能 ==========
 
@@ -7775,6 +9608,8 @@ ${chinesePrompt}
 
         const width = canvas.clientWidth;
         const height = canvas.clientHeight;
+        // 面板隐藏时 clientWidth/Height 为 0，除法会得到 NaN 并污染投影矩阵
+        if (!width || !height) return;
 
         angleCamera.aspect = width / height;
         angleCamera.updateProjectionMatrix();
@@ -8154,7 +9989,9 @@ ${chinesePrompt}
 
       // 创建结果分组容器
       function createResultGroup(taskInfo) {
-        const { scenario, id: taskId } = taskInfo;
+        const { scenario } = taskInfo;
+        // 分镜流程用 taskId，多角度流程用 id，两者都要兼容，否则会生成 task-group-undefined
+        const taskId = taskInfo.id ?? taskInfo.taskId;
 
         const group = document.createElement('div');
         group.className = 'result-group';
@@ -8201,6 +10038,9 @@ ${chinesePrompt}
             <div style="font-size: 48px; margin-bottom: 12px; animation: spin 2s linear infinite;">⏳</div>
             <div style="font-size: 14px; font-weight: 600; color: var(--text);">${angleName}</div>
             <div class="card-timer" style="font-size: 12px; margin-top: 4px; color: var(--accent);">0.0s</div>
+            <div class="loading-status" style="font-size: 11px; margin-top: 6px; color: var(--accent);"></div>
+            <div class="loading-status" style="font-size: 11px; margin-top: 6px; color: var(--accent);"></div>
+            <div class="loading-status" style="font-size: 11px; margin-top: 6px; color: var(--warning);"></div>
           </div>
           <style>
             @keyframes spin {
@@ -8391,11 +10231,19 @@ ${chinesePrompt}
                 timestamp: imageRecord.timestamp,
                 runtimeMs: performance.now() - startedAt
               };
-              if (shouldSaveHistoryOriginal() && imageRecord.persistentSrc) {
+              if (imageRecord.persistentSrc) {
                 historyRecord.imageSrc = imageRecord.persistentSrc;
-              } else if (!imageRecord.persistentSrc) {
+                if (!shouldSaveHistoryOriginal() && newImgSrc && newImgSrc !== imageRecord.persistentSrc) {
+                  historyRecord.imageUrl = newImgSrc;
+                }
+              } else if (newImgSrc) {
                 historyRecord.imageUrl = newImgSrc;
               }
+              if (!historyRecord.thumbnail) {
+                historyRecord.thumbnail = historyRecord.imageSrc || historyRecord.imageUrl || newImgSrc || '';
+              }
+              if (!historyRecord.mediaType) historyRecord.mediaType = 'image';
+              if (!historyRecord.mime) historyRecord.mime = imageRecord.mimeType || 'image/png';
               await saveHistory(historyRecord);
               await renderHistory();
 
@@ -8426,7 +10274,9 @@ ${chinesePrompt}
         try {
           let imageRecord;
           try {
-            const persistentImgSrc = await warmContinueImageSource(continueSource);
+            const persistentImgSrc = await warmContinueImageSource(continueSource, {
+                onProgress: meta?.onCacheProgress
+              });
             if (!persistentImgSrc) {
               applyContinueSourceAvailability(continueBtn, continueSource);
               throw new Error(continueSource.error || '图片不可用');
@@ -8449,11 +10299,19 @@ ${chinesePrompt}
             timestamp: imageRecord.timestamp,
             runtimeMs: actualElapsedMs || 0
           };
-          if (shouldSaveHistoryOriginal() && imageRecord.persistentSrc) {
-            historyRecord.imageSrc = imageRecord.persistentSrc;
-          } else if (!imageRecord.persistentSrc) {
-            historyRecord.imageUrl = imgSrc;
-          }
+                      if (imageRecord.persistentSrc) {
+              historyRecord.imageSrc = imageRecord.persistentSrc;
+              if (!shouldSaveHistoryOriginal() && imgSrc && imgSrc !== imageRecord.persistentSrc) {
+                historyRecord.imageUrl = imgSrc;
+              }
+            } else if (imgSrc) {
+              historyRecord.imageUrl = imgSrc;
+            }
+            if (!historyRecord.thumbnail) {
+              historyRecord.thumbnail = historyRecord.imageSrc || historyRecord.imageUrl || imgSrc || '';
+            }
+            if (!historyRecord.mediaType) historyRecord.mediaType = 'image';
+            if (!historyRecord.mime) historyRecord.mime = imageRecord.mimeType || 'image/png';
           await saveHistory(historyRecord);
           await renderHistory();
 
@@ -8488,6 +10346,7 @@ ${chinesePrompt}
       const storyboardToolBtn = document.getElementById('storyboard-tool-btn');
       const angleToolBtn = document.getElementById('angle-tool-btn');
       const reversePromptToolBtn = document.getElementById('reverse-prompt-tool-btn');
+      const gifToolBtn = document.getElementById('gif-tool-btn');
 
       function setPromptLibraryCollapsed(collapsed) {
         if (!promptLibraryPanel || !promptLibraryToggleBtn) return;
@@ -8541,6 +10400,10 @@ ${chinesePrompt}
         });
       });
       runBtn.addEventListener('click', handleRun);
+      mobileGenerateBtn?.addEventListener('click', handleRun);
+      countInput?.addEventListener('input', () => syncMobileGenerateBar());
+      countInput?.addEventListener('change', () => syncMobileGenerateBar());
+      syncMobileGenerateBar();
       baseUrlInput.addEventListener('input', () => {
         persistActivePlatformSnapshot();
         updateProviderStudioStatus();
@@ -8629,6 +10492,9 @@ ${chinesePrompt}
       reversePromptToolBtn?.addEventListener('click', () => {
         if (!ensurePlatformFeatureAvailable('反推提示词')) return;
         showReversePromptDialog();
+      });
+      gifToolBtn?.addEventListener('click', () => {
+        showGifToolDialog();
       });
 
       importPromptsBtn?.addEventListener('click', () => {

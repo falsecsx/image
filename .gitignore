@@ -17,6 +17,26 @@ Desktop.ini
 tmp/
 temp/
 *.tmp
+*.cache
+*.bak
+*.out
+*.err
+
+# Local development and test artifacts
+node_modules/
+.codex-cache/
+.superpowers/
+.agents/
+tests/
+scripts/
+docs/superpowers/
+_nova-image-studio/
+接口文档/
+.codex-static-server.cjs
+start-local-server.bat
+package.json
+package-lock.json
+bun.lock
 
 # PHP / Composer
 vendor/

@@ -1,6 +1,10 @@
-AI 绘图工作台
-Copyright 2026 falsecsx
+This project includes adapted code from infinite-canvas.
 
-This product includes software originally developed by falsecsx.
-Project repository:
-https://github.com/falsecsx/image
+Upstream project: https://github.com/basketikun/infinite-canvas
+Upstream version: v0.11.0
+Upstream commit: b6e9954c0a584b9a63e810a4fb632ee93c049f3b
+Upstream author: HouYunFei and contributors
+License: GNU Affero General Public License v3.0
+
+The adapted implementation keeps this project's native JavaScript architecture and
+existing canvas data model. React-specific code and dependencies were not imported.

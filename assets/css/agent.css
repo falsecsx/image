@@ -1,0 +1,1146 @@
+/* Agent base styles.
+ * Owns structural skeleton and feature components (proposal/attachments).
+ * Final product layout, theming, and responsive behavior are owned by ui-polish.css.
+ */
+
+.agent-workspace {
+  position: fixed;
+  inset: 0 auto 0 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 80%;
+  max-width: 1100px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  background: var(--panel, #1e1e1e);
+  color: var(--text, #eee);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.4);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.agent-workspace .agent-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agent-workspace .agent-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.agent-workspace .agent-sidebar-head strong {
+  display: block;
+  font-size: 14px;
+}
+
+.agent-workspace .agent-sidebar-copy {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.72;
+}
+
+.agent-workspace .agent-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.agent-workspace .agent-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.agent-workspace .agent-btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.agent-workspace .agent-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-workspace .agent-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.agent-workspace .agent-btn-primary {
+  background: #409eff;
+  border-color: #409eff;
+  color: #fff;
+}
+
+.agent-workspace .agent-btn-primary:hover {
+  background: #5babff;
+}
+
+.agent-workspace .agent-new {
+  width: 100%;
+}
+
+.agent-workspace .agent-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-workspace .agent-agent-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-workspace .agent-agent-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.agent-workspace .agent-agent-item.is-active {
+  background: rgba(64, 158, 255, 0.18);
+  border-color: rgba(64, 158, 255, 0.22);
+}
+
+.agent-workspace .agent-agent-item .agent-dot {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.agent-workspace .agent-agent-item .agent-agent-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-workspace .agent-agent-item .agent-agent-del {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0.5;
+  font-size: 12px;
+}
+
+.agent-workspace .agent-agent-item .agent-agent-del:hover {
+  opacity: 1;
+}
+
+.agent-workspace .agent-main-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agent-workspace .agent-main-heading {
+  min-width: 0;
+}
+
+.agent-workspace .agent-main-kicker {
+  margin-bottom: 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.agent-workspace .agent-main-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.agent-workspace .agent-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-workspace .agent-main-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.agent-workspace .agent-scope-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.agent-workspace .agent-scope-label {
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.agent-workspace .agent-scope-select {
+  height: 26px;
+  min-width: 72px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* select 是真实可聚焦控件，键盘焦点需要保留可见环 */
+.agent-workspace .agent-scope-select:focus-visible {
+  outline: 2px solid #8ef2da;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.agent-workspace .agent-scope-select option {
+  background: #1e1e1e;
+  color: #eee;
+}
+
+.agent-workspace .agent-export {
+  height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.agent-workspace .agent-context-turns {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  min-width: 148px;
+  max-width: 220px;
+  padding: 0 28px 0 12px;
+  border: 1px solid rgba(146, 177, 190, 0.22);
+  border-radius: 999px;
+  background: rgba(12, 32, 42, 0.88);
+  color: rgba(236, 247, 255, 0.92);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+
+.agent-workspace .agent-context-turns:hover {
+  border-color: rgba(99, 179, 255, 0.48);
+  background: rgba(14, 40, 52, 0.96);
+}
+
+.agent-workspace .agent-context-turns:focus-within {
+  border-color: rgba(99, 179, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(99, 179, 255, 0.14);
+}
+
+.agent-workspace .agent-context-turns::after {
+  content: "\2304";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.64;
+  pointer-events: none;
+}
+
+.agent-workspace .agent-context-turns-label {
+  flex: 0 0 auto;
+  opacity: 0.72;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.agent-workspace .agent-context-turns-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  color: rgba(244, 250, 255, 0.98);
+}
+
+.agent-workspace .agent-context-turns-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.agent-workspace .agent-context-turns-select option {
+  background: #1e1e1e;
+  color: #eee;
+}
+
+.agent-workspace .agent-close {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.agent-workspace .agent-status {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+}
+
+.agent-workspace .agent-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px 20px;
+  scrollbar-gutter: stable;
+}
+
+.agent-workspace .agent-msg {
+  max-width: min(760px, 88%);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  line-height: 1.6;
+}
+
+.agent-workspace .agent-msg-user {
+  align-self: flex-end;
+  background: rgba(64, 158, 255, 0.14);
+}
+
+.agent-workspace .agent-msg-assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-workspace .agent-input-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.agent-workspace .agent-input-wrap {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-workspace .agent-input-wrap .agent-input,
+.agent-workspace .agent-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 72px;
+  padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  font-family: inherit;
+}
+
+.agent-workspace .agent-model-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(3, 13, 20, 0.82);
+  color: rgba(234, 246, 255, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.agent-workspace .agent-model-control::after {
+  content: "\2304";
+  margin-left: 2px;
+  opacity: 0.64;
+  pointer-events: none;
+}
+
+.agent-workspace .agent-model-control > span:first-child {
+  flex: 0 0 auto;
+  opacity: 0.68;
+}
+
+.agent-workspace .agent-model-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+/* 透明 select 铺满外壳，焦点环由外壳统一呈现 */
+.agent-workspace .agent-model-control:focus-within {
+  border-color: rgba(99, 179, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(99, 179, 255, 0.14);
+}
+
+.agent-workspace .agent-model-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.agent-workspace .agent-model-select option {
+  background: #0b1b24;
+  color: #eef8ff;
+}
+
+.agent-workspace .agent-send,
+.agent-workspace .agent-abort {
+  min-width: 72px;
+  min-height: 42px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.agent-workspace .agent-sidepane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agent-workspace .agent-sidepane-tabs {
+  display: none;
+}
+
+.agent-workspace .agent-sidecard {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.agent-workspace .agent-sidecard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-workspace .agent-sidecard-kicker {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.agent-workspace .agent-sidecard h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+
+.agent-workspace .agent-sidecard-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.72;
+}
+
+.agent-workspace .agent-reference-grid,
+.agent-workspace .agent-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.agent-workspace .agent-reference-card,
+.agent-workspace .agent-recent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.14);
+  color: inherit;
+  cursor: pointer;
+}
+
+.agent-workspace .agent-reference-card img,
+.agent-workspace .agent-recent-card img,
+.agent-workspace .agent-recent-card video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+.agent-workspace .agent-reference-card span,
+.agent-workspace .agent-recent-meta {
+  padding: 0 8px 8px;
+  font-size: 11px;
+  color: rgba(234, 246, 255, 0.78);
+}
+
+.agent-workspace .agent-recent-ref-btn {
+  margin: 0 8px 8px;
+  min-height: 28px;
+  border: 1px solid rgba(64, 158, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(64, 158, 255, 0.14);
+  color: #eef8ff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-workspace .agent-reference-card.is-selected {
+  border-color: rgba(64, 158, 255, 0.68);
+  box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.3) inset;
+}
+
+.agent-workspace .agent-empty-state {
+  grid-column: 1 / -1;
+  padding: 14px 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.agent-workspace .agent-attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.agent-workspace .agent-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 11px;
+}
+
+.agent-workspace .agent-attach-chip img {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 999px;
+}
+
+.agent-workspace .agent-attach-chip i {
+  font-style: normal;
+  opacity: 0.72;
+}
+
+.agent-workspace .agent-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.agent-workspace .agent-msg-attachment {
+  display: inline-flex;
+  flex-direction: column;
+  width: 72px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.agent-workspace .agent-msg-attachment img {
+  display: block;
+  width: 100%;
+  height: 56px;
+  object-fit: cover;
+}
+
+.agent-workspace .agent-msg-attachment span {
+  padding: 4px 6px;
+  font-size: 10px;
+  color: rgba(234, 246, 255, 0.68);
+}
+
+.agent-workspace .agent-context-note {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+/* Hide main studio chrome while Agent is open. */
+body.agent-mode-open {
+  overflow: hidden;
+}
+
+body.agent-mode-open .studio-layout,
+body.agent-mode-open .app {
+  display: none !important;
+}
+
+
+/* proposal-card-20260711 */
+.agent-workspace .agent-proposal-card {
+  align-self: stretch;
+  width: min(760px, 100%);
+  max-width: 100%;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid rgba(103, 194, 58, 0.28);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(76,175,80,.12), rgba(76,175,80,.05)),
+    rgba(12, 18, 24, 0.88);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.agent-workspace .agent-proposal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.02);
+}
+
+.agent-workspace .agent-proposal-head-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.agent-workspace .agent-proposal-kicker {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.62;
+}
+
+.agent-workspace .agent-proposal-kind-title,
+.agent-workspace .agent-proposal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.agent-workspace .agent-proposal-head-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.agent-workspace .agent-proposal-status {
+  min-height: 24px;
+  max-width: min(220px, 100%);
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(142, 229, 155, 0.28);
+  background: rgba(142, 229, 155, 0.1);
+  color: #b8f0c0;
+  font-size: 12px;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-workspace .agent-proposal-collapse {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.05);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-workspace .agent-proposal-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px 14px;
+  overflow: visible;
+  min-width: 0;
+}
+
+.agent-workspace .agent-proposal-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(236, 247, 255, 0.78);
+}
+
+.agent-workspace .agent-proposal-prompt {
+  width: 100%;
+  max-width: 100%;
+  min-height: 88px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.22);
+  color: inherit;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-workspace .agent-proposal-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.agent-workspace .agent-proposal-row label,
+.agent-workspace .agent-proposal-control {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: rgba(236, 247, 255, 0.78);
+}
+
+.agent-workspace .agent-proposal-control-label {
+  display: block;
+  min-width: 0;
+  line-height: 1.3;
+  opacity: 0.86;
+}
+
+.agent-workspace .agent-proposal-row select,
+.agent-workspace .agent-proposal-row input,
+.agent-workspace .agent-proposal-control select,
+.agent-workspace .agent-proposal-control input {
+  min-height: 36px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.2);
+  color: inherit;
+  font: inherit;
+  line-height: 1.3;
+}
+
+.agent-workspace .agent-proposal-row select,
+.agent-workspace .agent-proposal-control select {
+  padding-right: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+  appearance: auto;
+  -webkit-appearance: menulist;
+  pointer-events: auto;
+  position: relative;
+  z-index: 2;
+}
+
+.agent-workspace .agent-proposal-advanced-body {
+  position: relative;
+  z-index: 1;
+}
+
+.agent-workspace .agent-proposal-control {
+  position: relative;
+  z-index: 1;
+}
+
+.agent-workspace .agent-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.agent-workspace .agent-proposal-card .agent-prop-confirm {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-weight: 700;
+  background: linear-gradient(135deg, rgba(76,175,80,.42), rgba(56, 142, 60, .42));
+  border-color: rgba(142, 229, 155, 0.45);
+}
+
+.agent-workspace .agent-prop-cancel {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+}
+
+.agent-workspace .agent-proposal-state {
+  margin-top: 0;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-proposal-body {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .agent-workspace .agent-proposal-row {
+    grid-template-columns: 1fr;
+  }
+  .agent-workspace .agent-proposal-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .agent-workspace .agent-proposal-head-side {
+    justify-content: flex-start;
+  }
+  .agent-workspace .agent-proposal-advanced > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agent-workspace .agent-proposal-advanced-hint {
+    display: none;
+  }
+  .agent-workspace .agent-proposal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .agent-workspace .agent-proposal-actions .agent-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .agent-workspace .agent-proposal-body,
+  .agent-workspace .agent-proposal-results,
+  .agent-workspace .agent-proposal-footer,
+  .agent-workspace .agent-proposal-collapsed-actions {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+
+/* proposal-collapsed-20260711-12 */
+.agent-workspace .agent-proposal-summary {
+  display: none;
+  gap: 4px;
+  padding: 10px 14px 0;
+}
+
+.agent-workspace .agent-proposal-summary-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  opacity: 0.62;
+}
+
+.agent-workspace .agent-proposal-summary-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(236, 247, 255, 0.88);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.agent-workspace .agent-proposal-footer,
+.agent-workspace .agent-proposal-collapsed-actions {
+  display: grid;
+  gap: 8px;
+  padding: 10px 14px 14px;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-proposal-summary {
+  display: grid;
+  padding-bottom: 8px;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-proposal-body {
+  display: none;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-proposal-collapsed-actions {
+  padding-top: 0;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-proposal-actions {
+  margin-top: 0;
+}
+
+.agent-workspace .agent-proposal-card.is-collapsed .agent-prop-confirm,
+.agent-workspace .agent-proposal-card.is-collapsed .agent-prop-cancel {
+  min-height: 34px;
+}
+
+.agent-workspace .agent-prop-cancel:disabled,
+.agent-workspace .agent-prop-confirm:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* proposal-collapsed-spacing-fix */
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-body {
+  padding-bottom: 12px;
+}
+
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-footer,
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-collapsed-actions {
+  padding-top: 2px;
+  border-top: 1px solid rgba(255,255,255,.05);
+}
+
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-results:not([hidden]) + .agent-proposal-footer,
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-results:not([hidden]) + .agent-proposal-collapsed-actions {
+  border-top: 0;
+  padding-top: 8px;
+}
+
+
+/* proposal-advanced-20260711-13 */
+.agent-workspace .agent-proposal-advanced {
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  overflow: visible;
+}
+
+.agent-workspace .agent-proposal-advanced > summary {
+  list-style: none;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: rgba(236, 247, 255, 0.88);
+}
+
+.agent-workspace .agent-proposal-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-workspace .agent-proposal-advanced-title {
+  flex: 0 0 auto;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.agent-workspace .agent-proposal-advanced-hint {
+  min-width: 0;
+  opacity: 0.62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-workspace .agent-proposal-advanced > summary::after {
+  content: '展开';
+  justify-self: end;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.agent-workspace .agent-proposal-advanced[open] > summary::after {
+  content: '收起';
+}
+
+.agent-workspace .agent-proposal-advanced-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 12px 12px;
+  overflow: visible;
+}
+
+.agent-workspace .agent-proposal-row-primary {
+  margin-bottom: 0;
+}
+
+
+
+.agent-workspace .agent-proposal-results {
+  margin: 0;
+  padding: 12px 14px 4px;
+  border-top: 1px solid rgba(255,255,255,.06);
+}
+
+.agent-workspace .agent-proposal-results[hidden] {
+  display: none !important;
+}
+
+.agent-workspace .agent-proposal-results-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #9aa3b2);
+  margin-bottom: 8px;
+}
+
+.agent-workspace .agent-proposal-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.agent-workspace .agent-proposal-result-card {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--border, #2a2f3a) 90%, transparent);
+  background: color-mix(in srgb, var(--panel, #12151c) 92%, #fff 8%);
+  border-radius: 12px;
+  padding: 6px;
+  display: grid;
+  gap: 6px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.agent-workspace .agent-proposal-result-card:hover {
+  border-color: color-mix(in srgb, var(--accent, #6ea8fe) 55%, transparent);
+}
+
+.agent-workspace .agent-proposal-result-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+  background: #0b0d12;
+}
+
+.agent-workspace .agent-proposal-result-card span {
+  font-size: 11px;
+  color: var(--muted, #9aa3b2);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* proposal-layout-fix-20260715 */
+.agent-workspace .agent-proposal-card {
+  container-type: inline-size;
+  container-name: agent-proposal;
+}
+
+.agent-workspace .agent-proposal-results {
+  padding-bottom: 10px;
+}
+
+.agent-workspace .agent-proposal-footer,
+.agent-workspace .agent-proposal-collapsed-actions {
+  padding-bottom: 16px;
+}
+
+.agent-workspace .agent-proposal-card:not(.is-collapsed) .agent-proposal-results:not([hidden]) {
+  margin-top: 0;
+}
+
+@container agent-proposal (max-width: 560px) {
+  .agent-proposal-row {
+    grid-template-columns: 1fr;
+  }
+  .agent-proposal-advanced > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agent-proposal-advanced-hint {
+    display: none;
+  }
+  .agent-proposal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .agent-proposal-actions .agent-btn {
+    width: 100%;
+  }
+}

@@ -76,10 +76,12 @@ function validate_target(string $target): array
     }
 
     $allowedPathPatterns = [
-        '#/(v1|v1beta)(/|$)#',
-        '#/compatible-mode/v1(/|$)#',
-        '#/api/v1(/|$)#',
-        '#/api/v3(/|$)#',
+        '#(^|/)(v1|v1beta)(/|$)#',
+        '#(^|/)compatible-mode/v1(/|$)#',
+        '#(^|/)api/v1(/|$)#',
+        '#(^|/)api/v3(/|$)#',
+        '#(^|/)alibailian/api/v1(/|$)#',
+        '#(^|/)volc/v1(/|$)#',
     ];
     $pathAllowed = false;
     foreach ($allowedPathPatterns as $pattern) {
@@ -88,8 +90,24 @@ function validate_target(string $target): array
             break;
         }
     }
-    if (!$pathAllowed) {
-        send_json(400, ['error' => '代理模式只允许常见 AI API 路径']);
+
+    // Media download proxy: known model-output hosts + media-like paths only.
+    $mediaHosts = [
+        'oaidalleapiprodscus.blob.core.windows.net',
+        'cdn.openai.com',
+        'videos.openai.com',
+        'replicate.delivery',
+        'pbxt.replicate.delivery',
+        'storage.googleapis.com',
+    ];
+    $isMediaHost = in_array($host, $mediaHosts, true)
+        || preg_match('/\.replicate\.delivery$/', $host)
+        || preg_match('/\.blob\.core\.windows\.net$/', $host);
+    $isMediaPath = (bool) preg_match('#\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v)(\?|$)#i', $path)
+        || strpos($path, '/files/') !== false
+        || strpos($path, '/oai/') !== false;
+    if (!$pathAllowed && !($isMediaHost && $isMediaPath)) {
+        send_json(400, ['error' => '代理模式只允许常见 AI API 路径或受支持的媒体下载地址']);
     }
 
     if (filter_var($host, FILTER_VALIDATE_IP) && is_private_ip($host)) {
@@ -250,9 +268,18 @@ $contentTypeOverride = '';
 
 if ($method === 'POST') {
     $rawBody = file_get_contents('php://input');
-    if (($rawBody === false || $rawBody === '') && (!empty($_POST) || !empty($_FILES))) {
+    if ($rawBody === false) {
+        $rawBody = '';
+    }
+    if ($rawBody !== '' && strlen($rawBody) > MAX_PROXY_BODY_BYTES) {
+        send_json(413, ['error' => '请求体过大']);
+    }
+    if (($rawBody === '') && (!empty($_POST) || !empty($_FILES))) {
         $multipart = build_multipart_body($_POST, $_FILES);
         $postFields = $multipart['body'];
+        if (strlen((string) $postFields) > MAX_PROXY_BODY_BYTES) {
+            send_json(413, ['error' => '请求体过大']);
+        }
         $skipContentType = true;
         $contentTypeOverride = $multipart['content_type'];
     }
