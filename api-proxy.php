@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 const MAX_PROXY_BODY_BYTES = 60 * 1024 * 1024;
+const MAX_COMMUNITY_MEDIA_BYTES = 15 * 1024 * 1024;
 
 function set_cors_headers(): void
 {
@@ -58,6 +59,51 @@ function is_private_ip(string $ip): bool
     ) === false;
 }
 
+function resolve_host_ips(string $host): array
+{
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return [$host];
+    }
+
+    $ips = [];
+    if (function_exists('dns_get_record')) {
+        $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                foreach (['ip', 'ipv6'] as $key) {
+                    $ip = trim((string) ($record[$key] ?? ''));
+                    if ($ip !== '') {
+                        $ips[] = $ip;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!$ips) {
+        $fallback = @gethostbynamel($host);
+        if (is_array($fallback)) {
+            $ips = $fallback;
+        }
+    }
+
+    return array_values(array_unique($ips));
+}
+
+function assert_public_host(string $host, string $error): void
+{
+    $ips = resolve_host_ips($host);
+    if (!$ips) {
+        send_json(400, ['error' => $error]);
+    }
+
+    foreach ($ips as $ip) {
+        if (is_private_ip($ip)) {
+            send_json(400, ['error' => $error]);
+        }
+    }
+}
+
 function validate_target(string $target): array
 {
     $parts = parse_url($target);
@@ -110,18 +156,35 @@ function validate_target(string $target): array
         send_json(400, ['error' => '代理模式只允许常见 AI API 路径或受支持的媒体下载地址']);
     }
 
-    if (filter_var($host, FILTER_VALIDATE_IP) && is_private_ip($host)) {
-        send_json(400, ['error' => '不允许代理内网 IP']);
+    assert_public_host($host, '不允许代理私密或无法验证的地址');
+
+    return $parts;
+}
+
+function load_community_media_hosts(): array
+{
+    $path = __DIR__ . '/data/community-image-hosts.json';
+    if (!is_file($path)) {
+        return [];
+    }
+    $payload = json_decode((string) file_get_contents($path), true);
+    $hosts = is_array($payload['hosts'] ?? null) ? $payload['hosts'] : [];
+    return array_values(array_filter(array_map(static fn($host) => strtolower(trim((string) $host)), $hosts)));
+}
+
+function validate_community_media_target(string $target): array
+{
+    $parts = parse_url($target);
+    if (!$parts || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+        send_json(400, ['error' => 'community media proxy requires https']);
     }
 
-    $resolvedIps = @gethostbynamel($host);
-    if (is_array($resolvedIps)) {
-        foreach ($resolvedIps as $ip) {
-            if (is_private_ip($ip)) {
-                send_json(400, ['error' => '不允许代理解析到内网的域名']);
-            }
-        }
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    if ($host === '' || !in_array($host, load_community_media_hosts(), true)) {
+        send_json(400, ['error' => 'community media host is not allowlisted']);
     }
+
+    assert_public_host($host, 'private media address is not allowed or could not be verified');
 
     return $parts;
 }
@@ -248,6 +311,56 @@ if (!in_array($method, ['GET', 'POST'], true)) {
 $target = trim((string) ($_GET['target'] ?? ''));
 if ($target === '') {
     send_json(400, ['error' => '缺少 target 参数']);
+}
+
+$isCommunityMedia = (string) ($_GET['media'] ?? '') === '1';
+if ($isCommunityMedia) {
+    if ($method !== 'GET') {
+        send_json(405, ['error' => 'community media proxy only supports GET']);
+    }
+    validate_community_media_target($target);
+    $ch = curl_init($target);
+    $body = '';
+    $tooLarge = false;
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST => 'GET',
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_HEADER => false,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTPHEADER => ['Accept: image/*'],
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
+            $body .= $chunk;
+            if (strlen($body) > MAX_COMMUNITY_MEDIA_BYTES) {
+                $tooLarge = true;
+                return 0;
+            }
+            return strlen($chunk);
+        }
+    ]);
+    $response = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $contentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    if ($tooLarge) {
+        curl_close($ch);
+        send_json(413, ['error' => 'community image is too large']);
+    }
+    if ($response === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+        send_json(502, ['error' => 'community media proxy failed: ' . $error]);
+    }
+    curl_close($ch);
+    if ($status < 200 || $status >= 300 || stripos($contentType, 'image/') !== 0) {
+        send_json($status >= 400 ? $status : 502, ['error' => 'community target did not return an image']);
+    }
+    http_response_code($status);
+    set_cors_headers();
+    header('Content-Type: ' . ($contentType ?: 'image/png'));
+    header('Cache-Control: public, max-age=86400');
+    echo $body;
+    exit;
 }
 
 validate_target($target);

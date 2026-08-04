@@ -8,22 +8,35 @@ import {
   pruneCanvasProjects,
   renameCanvasProject,
   saveCanvasProjects
-} from './canvas-store.js';
-import { mountCanvasEditor } from './canvas-editor.js?v=20260711-95';
-import { getCanvasResourceStore } from './canvas-resources.js?v=20260711-95';
-import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260711-95';
-import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260728-1';
+} from './canvas-store.js?v=20260803-4';
+import { mountCanvasEditor } from './canvas-editor.js?v=20260803-4';
+import { cacheCanvasResourceRecord, garbageCollectCanvasResources, getCanvasResourceStore, prepareCanvasResourceRecord } from './canvas-resources.js?v=20260803-4';
+import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260803-4';
+import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260803-4';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260803-4';
 
 let isCanvasWorkspaceOpen = false;
+let activeWorkspaceCloser = null;
+
+function setWorkspaceNavActive(workspace) {
+  const value = String(workspace || 'studio');
+  document.querySelectorAll('[data-workspace-nav]').forEach(button => {
+    button.classList.toggle('is-active', button.dataset.workspaceNav === value);
+  });
+}
+
+export function closeCanvasWorkspace() {
+  activeWorkspaceCloser?.();
+}
 
 function formatProjectTime(value) {
   const ts = Number(value);
-  if (!Number.isFinite(ts) || ts <= 0) return '04';
+  if (!Number.isFinite(ts) || ts <= 0) return '刚刚';
   const diff = Date.now() - ts;
-  if (diff < 60 * 1000) return '04';
+  if (diff < 60 * 1000) return '刚刚';
   if (diff < 60 * 60 * 1000) return Math.max(1, Math.round(diff / 60000)) + ' 分钟前';
   if (diff < 24 * 60 * 60 * 1000) return Math.max(1, Math.round(diff / 3600000)) + ' 小时前';
-  if (diff < 7 * 24 * 60 * 60 * 1000) return Math.max(1, Math.round(diff / 86400000)) + ' 02';
+  if (diff < 7 * 24 * 60 * 60 * 1000) return Math.max(1, Math.round(diff / 86400000)) + ' 天前';
   try {
     return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch {
@@ -67,9 +80,9 @@ function summarizeProject(project) {
   const configIds = new Set(nodes.filter(node => node && (node.type === 'config' || node.type === 'loop' || node.type === 'llm')).map(node => node.id));
   const wired = edges.filter(edge => edge && (configIds.has(edge.fromNodeId) || configIds.has(edge.toNodeId))).length;
   const parts = [];
-  if (counts.media) parts.push(counts.media + ' 05');
+  if (counts.media) parts.push(counts.media + ' 媒体');
   if (counts.config) parts.push(counts.config + ' 编排');
-  if (counts.text || counts.note) parts.push((counts.text + counts.note) + ' 03');
+  if (counts.text || counts.note) parts.push((counts.text + counts.note) + ' 文本');
   if (counts.group) parts.push(counts.group + ' 分组');
   if (!parts.length) parts.push('空白画布');
 
@@ -150,6 +163,53 @@ export function getCanvasResumeProject(projects = null) {
   };
 }
 
+function normalizeProjectThumbnailUrl(value) {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  if (/^data:image\//i.test(source) || /^blob:/i.test(source)) return source;
+  try {
+    const url = new URL(source, window.location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function getProjectThumbnail(project) {
+  const nodes = project?.nodes && typeof project.nodes === 'object'
+    ? Object.values(project.nodes).filter(node => node?.type === 'media')
+    : [];
+  const candidates = nodes
+    .map((node, index) => {
+      const source = normalizeProjectThumbnailUrl(
+        node.thumbnailSrc || node.resourceSrc || node.posterSrc || node.src || node.imageSrc
+      );
+      if (!source) return null;
+      const role = String(node.canvasRole || '').toLowerCase();
+      const score = role === 'target' ? 0 : role === 'reference-prompt' ? 1 : role === 'reference' ? 2 : 3;
+      return { source, title: String(node.title || ''), score, index };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score || a.index - b.index);
+  return candidates[0] || null;
+}
+
+export function getCanvasProjectTargets(projects = null) {
+  const list = Array.isArray(projects) ? projects : loadCanvasProjects();
+  return [...list].sort((a, b) => {
+    const ao = Number(a?.lastOpenedAt || a?.updatedAt) || 0;
+    const bo = Number(b?.lastOpenedAt || b?.updatedAt) || 0;
+    return bo - ao;
+  }).map(project => {
+    const summary = summarizeProject(project);
+    return {
+      id: String(project?.id || ''),
+      title: String(project?.title || '未命名画布'),
+      meta: `${summary.counts.total} 个节点 · ${summary.workflowLabel}`
+    };
+  }).filter(project => project.id);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -203,20 +263,28 @@ function renderWorkspaceHome(projects, state, health = null) {
   const resumeProject = resolveResumeProject(list);
   const resumeSummary = resumeProject ? summarizeProject(resumeProject) : null;
   const storageHealth = health || getCanvasProjectsStorageHealth(list);
-  const items = list.length
+    const items = list.length
     ? list.map((project, index) => {
       const summary = summarizeProject(project);
+      const thumbnail = getProjectThumbnail(project);
+      const thumbnailMarkup = thumbnail
+        ? '<div class="canvas-project-thumbnail" data-project-thumbnail>'
+          + '<img src="' + escapeHtml(thumbnail.source) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+          + '<span data-thumbnail-fallback hidden>暂无预览</span>'
+          + '</div>'
+        : '<div class="canvas-project-thumbnail is-empty" data-project-thumbnail><span>暂无预览</span></div>';
       const isResume = Boolean(resumeProject && project.id === resumeProject.id);
       const isRecent = index === 0 || isResume;
       const badges = [];
       if (isResume) badges.push('<span class="canvas-project-badge is-resume">继续</span>');
       else if (index === 0) badges.push('<span class="canvas-project-badge">最近</span>');
-      if (summary.workflowStep === 'failed') badges.push('<span class="canvas-project-badge is-failed">02</span>');
+      if (summary.workflowStep === 'failed') badges.push('<span class="canvas-project-badge is-failed">失败</span>');
       else if (summary.workflowStep === 'ready') badges.push('<span class="canvas-project-badge is-ready">可生成</span>');
       return [
         '<li>',
         '<article class="canvas-project-card' + (isRecent ? ' is-recent' : '') + (isResume ? ' is-resume' : '') + ' is-step-' + escapeHtml(summary.workflowStep) + '" data-project-card="' + escapeHtml(project.id) + '" data-workflow-step="' + escapeHtml(summary.workflowStep) + '">',
         '<button type="button" class="canvas-project-open" data-project-id="' + escapeHtml(project.id) + '">',
+        thumbnailMarkup,
         '<div class="canvas-project-open-top">',
         '<strong>' + escapeHtml(project.title || '未命名画布') + '</strong>',
         '<span class="canvas-project-badges">' + badges.join('') + '</span>',
@@ -233,7 +301,7 @@ function renderWorkspaceHome(projects, state, health = null) {
         '<div class="canvas-project-more-menu">',
         '<button type="button" class="canvas-action-btn" data-action="rename-project" data-project-id="' + escapeHtml(project.id) + '">重命名</button>',
         '<button type="button" class="canvas-action-btn" data-action="export-project" data-project-id="' + escapeHtml(project.id) + '">导出</button>',
-        '<button type="button" class="canvas-action-btn is-danger" data-action="delete-project" data-project-id="' + escapeHtml(project.id) + '">01</button>',
+        '<button type="button" class="canvas-action-btn is-danger" data-action="delete-project" data-project-id="' + escapeHtml(project.id) + '">删除</button>',
         '</div>',
         '</details>',
         '</div>',
@@ -269,6 +337,7 @@ function renderWorkspaceHome(projects, state, health = null) {
     resumeCard,
     renderStorageHealthCard(storageHealth),
     '<div class="canvas-project-actions">',
+    '<button type="button" class="canvas-create-btn" data-action="prompt-library"><i data-lucide="library" aria-hidden="true"></i> 提示词库</button>',
     '<button type="button" class="canvas-create-btn is-primary" data-action="create-quick">一键起步工作流</button>',
     '<button type="button" class="canvas-create-btn" data-action="create">新建空白画布</button>',
     '<button type="button" class="canvas-create-btn" data-action="create-sample">创建示例项目</button>',
@@ -320,6 +389,83 @@ function filterProjects(projects, keyword = '') {
 
 let activeEditorApi = null;
 let pendingImportSources = [];
+
+export function getActiveCanvasProjectId() {
+  return String(activeEditorApi?.getProject?.()?.id || '');
+}
+
+export async function addPromptEntryToCanvas(entry, options = {}) {
+  const activeProjectId = getActiveCanvasProjectId();
+  if (activeEditorApi && (!options.targetProjectId || options.targetProjectId === activeProjectId)) {
+    return activeEditorApi.addPromptEntry(entry, options);
+  }
+
+  const projects = loadCanvasProjects();
+  let project = options.targetProjectId
+    ? projects.find(item => item?.id === options.targetProjectId)
+    : null;
+  let createdProject = false;
+  if (!project && options.createNew !== false && options.targetProjectId === '') {
+    project = createCanvasProject(`提示词 · ${String(entry?.title || '新分支').trim().slice(0, 36)}`);
+    projects.unshift(project);
+    createdProject = true;
+  }
+  if (!project) {
+    project = [...projects].sort((a, b) => (Number(b?.lastOpenedAt || b?.updatedAt) || 0) - (Number(a?.lastOpenedAt || a?.updatedAt) || 0))[0];
+  }
+  if (!project) {
+    project = createCanvasProject(`提示词 · ${String(entry?.title || '新分支').trim().slice(0, 36)}`);
+    projects.unshift(project);
+    createdProject = true;
+  }
+
+  const branch = createPromptBranch(project, entry, {
+    referenceUrls: options.referenceUrls,
+    useCoverAsReference: options.useCoverAsReference === true,
+    point: options.point || null
+  });
+  const resourceStore = getCanvasResourceStore();
+  const cacheWarnings = [];
+  const omittedNodeIds = new Set();
+  for (let index = 0; index < (branch.resourceRecords || []).length; index += 1) {
+    let record = branch.resourceRecords[index];
+    try {
+      record = await prepareCanvasResourceRecord(record, { maxDimension: 320 });
+      branch.resourceRecords[index] = record;
+      const embedded = /^data:image\//i.test(String(record?.source?.src || ''));
+      Object.values(project.nodes || {}).forEach(node => {
+        if (node?.resourceId !== record.id) return;
+        if (embedded) node.resourceSrc = '';
+        if (record.source?.thumbnailSrc) node.thumbnailSrc = record.source.thumbnailSrc;
+      });
+      const result = await cacheCanvasResourceRecord(record, { store: resourceStore, proxyEndpoint: options.proxyEndpoint || 'api-proxy.php' });
+      if (Array.isArray(result.cacheWarnings)) cacheWarnings.push(...result.cacheWarnings);
+      if (result?.record) await resourceStore.put(result.record);
+    } catch (error) {
+      cacheWarnings.push(error?.message || '图片缓存失败');
+      try {
+        await resourceStore.put(record);
+      } catch {
+        if (/^data:image\//i.test(String(record?.source?.src || ''))) {
+          removePromptBranchResourceNodes(project, record.id).forEach(id => omittedNodeIds.add(id));
+        }
+      }
+    }
+  }
+  const saved = saveCanvasProjects(projects);
+  if (saved?.ok === false) throw saved.error || new Error('画布项目保存失败');
+  void garbageCollectCanvasResources(resourceStore, projects).catch(error => {
+    console.warn('canvas resource cleanup failed:', error);
+  });
+  return {
+    projectId: project.id,
+    nodeIds: branch.nodeIds.filter(id => !omittedNodeIds.has(id)),
+    configId: branch.configId,
+    targetId: branch.targetId,
+    createdProject,
+    cacheWarnings
+  };
+}
 
 function takePendingImportSources(extra = []) {
   const merged = [...pendingImportSources, ...(Array.isArray(extra) ? extra : [])]
@@ -380,6 +526,7 @@ export function openCanvasWorkspace(options = {}) {
     isCanvasWorkspaceOpen = true;
     root.hidden = false;
     document.body.classList.add('canvas-workspace-open');
+    setWorkspaceNavActive('canvas');
   }
 
   const resourceStore = options.resourceStore || getCanvasResourceStore();
@@ -438,6 +585,7 @@ export function openCanvasWorkspace(options = {}) {
       try { activeEditorApi.destroy(); } catch {}
     }
     activeEditorApi = null;
+    try { delete globalThis.__activeCanvasProjectId; } catch {}
   };
 
   const closeWorkspace = () => {
@@ -445,8 +593,11 @@ export function openCanvasWorkspace(options = {}) {
     root.innerHTML = '';
     root.hidden = true;
     isCanvasWorkspaceOpen = false;
+    activeWorkspaceCloser = null;
     document.body.classList.remove('canvas-workspace-open');
+    setWorkspaceNavActive('studio');
   };
+  activeWorkspaceCloser = closeWorkspace;
 
   const openProjectEditor = projectId => {
     const projects = loadCanvasProjects();
@@ -476,15 +627,16 @@ export function openCanvasWorkspace(options = {}) {
         }
       }
     });
+    globalThis.__activeCanvasProjectId = String(project.id || '');
     const pending = takePendingImportSources();
     if (pending.length) {
       void applyPendingImportsToEditor(activeEditorApi, pending, {
         statusText: pending.length > 1
-          ? `04 Studio 导入 ${pending.length} 张并自动整理/接线`
+          ? `从 Studio 导入 ${pending.length} 张并自动整理/接线`
           : `已从 Studio 导入 ${pending.length} 张图片`
       }).then(created => {
         if (activeEditorApi?.setStatus && created?.length) {
-          activeEditorApi.setStatus(`04 Studio 导入 ${created.length} 张并定位`, { stickyMs: 2400, tone: 'success' });
+          activeEditorApi.setStatus(`从 Studio 导入 ${created.length} 张并定位`, { stickyMs: 2400, tone: 'success' });
         }
       }).catch(error => {
         console.error('pending import failed', error);
@@ -560,7 +712,12 @@ export function openCanvasWorkspace(options = {}) {
     const confirmed = globalThis.confirm?.(`确认删除「${project.title || '未命名画布'}」吗？`);
     if (!confirmed) return;
     deleteCanvasProject(projects, projectId);
-    saveProjectsSafely(projects);
+    const saved = saveProjectsSafely(projects);
+    if (saved?.ok !== false) {
+      void garbageCollectCanvasResources(resourceStore, projects).catch(error => {
+        console.warn('canvas resource cleanup failed:', error);
+      });
+    }
     renderWorkspace();
   };
 
@@ -606,6 +763,9 @@ export function openCanvasWorkspace(options = {}) {
     // Save first so cleanup remains useful even if backup download/IDB is blocked.
     const saved = saveProjectsSafely(plan.projects);
     if (saved?.ok === false) return;
+    void garbageCollectCanvasResources(resourceStore, plan.projects).catch(error => {
+      console.warn('canvas resource cleanup failed:', error);
+    });
     try {
       // Skip resource store during cleanup backup to avoid IndexedDB stalls.
       await exportCanvasProjectsToJson(plan.removed, null, {
@@ -632,7 +792,14 @@ export function openCanvasWorkspace(options = {}) {
     });
     const saved = saveProjectsSafely(merged);
     if (saved?.ok === false) return;
-    if (imported.resources?.length) await resourceStore.putMany(imported.resources);
+    if (imported.resources?.length) {
+      const resources = [];
+      for (const resource of imported.resources) resources.push(await prepareCanvasResourceRecord(resource, { maxDimension: 320 }));
+      await resourceStore.putMany(resources);
+    }
+    void garbageCollectCanvasResources(resourceStore, merged).catch(error => {
+      console.warn('canvas resource cleanup failed:', error);
+    });
     notifyWorkspace('已导入 ' + (imported.projects?.length || 0) + ' 个画布项目', 'success');
     renderWorkspace();
   };
@@ -643,7 +810,21 @@ export function openCanvasWorkspace(options = {}) {
     const visibleProjects = filterProjects(sortProjects(projects, workspaceState.sortMode), workspaceState.search);
     root.innerHTML = renderWorkspaceHome(visibleProjects, workspaceState, health);
 
+    root.querySelectorAll('[data-project-thumbnail] img').forEach(image => {
+      image.addEventListener('error', () => {
+        const frame = image.closest('[data-project-thumbnail]');
+        if (!frame) return;
+        frame.classList.add('is-broken');
+        image.hidden = true;
+        const fallback = frame.querySelector('[data-thumbnail-fallback]');
+        if (fallback) fallback.hidden = false;
+      }, { once: true });
+    });
+
     root.querySelector('[data-action="close"]')?.addEventListener('click', closeWorkspace);
+    root.querySelector('[data-action="prompt-library"]')?.addEventListener('click', () => {
+      globalThis.PromptLibraryBridge?.open?.({ context: 'canvas-home' });
+    });
     root.querySelector('[data-action="create-quick"]')?.addEventListener('click', createQuickWorkflowProject);
     root.querySelector('[data-action="create"]')?.addEventListener('click', createProject);
     root.querySelector('[data-action="create-sample"]')?.addEventListener('click', createSampleProject);

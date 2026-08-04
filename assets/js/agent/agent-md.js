@@ -32,7 +32,7 @@ export function buildAgentMarkdown(agent) {
     `messageCount: ${(agent.messages || []).length}`,
     `contextScope: ${agent.contextScope || 'minimal'}`,
     `contextTurns: ${Number.isFinite(Number(agent.contextTurns)) ? (Number(agent.contextTurns) <= 0 ? 'all' : Number(agent.contextTurns)) : 12}`,
-    `webSearch: on`
+    `webSearch: ${agent.webSearchEnabled === false ? 'off' : 'on'}`
   ].join('\n- ');
   const head = `# ${title}\n\n- ${meta}\n\n---`;
 
@@ -40,7 +40,14 @@ export function buildAgentMarkdown(agent) {
     const ts = isoOrEmpty(m.createdAt);
     const role = m.role === 'user' ? 'User' : 'Assistant';
     let block = `\n\n## ${role} · ${ts}\n\n${m.text || ''}`;
+    if (m.status && m.status !== 'completed') block += `\n\n[Status]\n${m.status}`;
     if (m.reasoning) block += `\n\n[Reasoning]\n${m.reasoning}`;
+    const sources = (Array.isArray(m.sources) ? m.sources : []).filter(source => {
+      try { return ['http:', 'https:'].includes(new URL(source?.url || '').protocol); } catch { return false; }
+    });
+    if (sources.length) {
+      block += '\n\n[Sources]\n' + sources.map(source => `- [${source.title || source.url}](${source.url})`).join('\n');
+    }
     if (m.proposalId && agent.proposals && agent.proposals[m.proposalId]) {
       block += `\n\n${formatProposalBlock(agent.proposals[m.proposalId].raw)}`;
     }

@@ -2,7 +2,8 @@ import {
   CANVAS_EXPORT_VERSION,
   cloneCanvasProject,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260626-2';
+} from './canvas-model.js?v=20260803-4';
+import { prepareCanvasResourceRecord } from './canvas-resources.js?v=20260803-4';
 
 function createDownload(name, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
@@ -38,7 +39,10 @@ export async function exportCanvasProjectsToJson(projects, resourceStore, option
   });
 
   const allResources = resourceStore ? await resourceStore.list() : [];
-  const resources = allResources.filter(record => resourceIds.has(record.id));
+  const resources = [];
+  for (const record of allResources.filter(item => resourceIds.has(item.id))) {
+    resources.push(await prepareCanvasResourceRecord(record, { maxDimension: 320 }));
+  }
   const payload = {
     app: 'image-app-canvas',
     version: CANVAS_EXPORT_VERSION,

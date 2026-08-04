@@ -7,7 +7,7 @@ import {
   createCanvasProject,
   createCanvasTextNode,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260628-6';
+} from './canvas-model.js?v=20260803-4';
 
 function createDemoImageDataUri(title, accent = '#7c3aed', background = '#0f172a') {
   const svg = `
@@ -67,8 +67,8 @@ export function createCanvasSampleProject() {
     height: 210,
     zIndex: 2,
     canvasRole: 'reference',
-    resourceSrc: createDemoImageDataUri('ʷͼ', '#38bdf8', '#111827'),
-    thumbnailSrc: createDemoImageDataUri('ʷͼ', '#38bdf8', '#111827'),
+    resourceSrc: createDemoImageDataUri('历史图', '#38bdf8', '#111827'),
+    thumbnailSrc: createDemoImageDataUri('历史图', '#38bdf8', '#111827'),
     posterSrc: '',
     mimeType: 'image/svg+xml'
   });

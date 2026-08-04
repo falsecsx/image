@@ -2,7 +2,7 @@ import {
   buildCanvasNodeLabel,
   ensureCanvasProjectTimeline,
   getProjectTimelineClips
-} from './canvas-model.js?v=20260626-2';
+} from './canvas-model.js?v=20260803-4';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -133,7 +133,7 @@ export function buildCanvasNodeMarkup(nodeId, rawNode, options = {}) {
           <button type="button" class="canvas-node-resize canvas-node-resize-ne" data-resize-handle="ne" data-node-id="${id}" title="从右上角调整大小" aria-label="从右上角调整大小"></button>
           <button type="button" class="canvas-node-resize canvas-node-resize-sw" data-resize-handle="sw" data-node-id="${id}" title="从左下角调整大小" aria-label="从左下角调整大小"></button>
           <button type="button" class="canvas-node-resize canvas-node-resize-se" data-resize-handle="se" data-node-id="${id}" title="拖动调整大小（Shift 保持比例）" aria-label="调整大小"></button>
-          <button type="button" class="canvas-node-rotate" data-rotate-handle="true" data-node-id="${id}" title="拖动旋转（Shift 吸附 15㣩" aria-label="旋转节点"></button>
+          <button type="button" class="canvas-node-rotate" data-rotate-handle="true" data-node-id="${id}" title="拖动旋转（Shift 吸附 15°）" aria-label="旋转节点"></button>
         ` : ''}
       </article>
     `;
@@ -783,7 +783,7 @@ function renderCanvasNodeBody(node) {
   if (node.type === 'loop') {
     const variations = Array.isArray(node.variations) ? node.variations.length : 0;
     const progress = Number.isFinite(node.loopProgress) ? Math.round(node.loopProgress * 100) : 0;
-    const statusLabel = node.loopStatus === 'running' ? `循环中 ${progress}%` : node.loopStatus === 'success' ? '已完成' : node.loopStatus === 'partial' ? '部分成功' : node.loopStatus === 'error' ? 'ʧ' : '空闲';
+    const statusLabel = node.loopStatus === 'running' ? `循环中 ${progress}%` : node.loopStatus === 'success' ? '已完成' : node.loopStatus === 'partial' ? '部分成功' : node.loopStatus === 'error' ? '失败' : '空闲';
     return `
       <div class="canvas-node-head"><strong title="${titleAttr}">${title}</strong>${metaBadges}</div>
       <div class="canvas-node-config-meta"><span>${escapeHtml(statusLabel)}</span><span>${variations} 个变化项</span></div>
@@ -794,7 +794,7 @@ function renderCanvasNodeBody(node) {
 
   if (node.type === 'llm') {
     const modeLabel = node.llmMode === 'describe' ? '图片描述' : '提示词优化';
-    const statusLabel = node.llmStatus === 'running' ? '处理中' : node.llmStatus === 'success' ? '已完成' : node.llmStatus === 'error' ? 'ʧ' : '空闲';
+    const statusLabel = node.llmStatus === 'running' ? '处理中' : node.llmStatus === 'success' ? '已完成' : node.llmStatus === 'error' ? '失败' : '空闲';
     const output = node.llmOutput ? `<p class="canvas-node-config-text">${escapeHtml(node.llmOutput)}</p>` : '';
     return `
       <div class="canvas-node-head"><strong title="${titleAttr}">${title}</strong>${metaBadges}</div>
@@ -904,20 +904,20 @@ function resolveGenerationStatusLabel(status) {
   if (status === 'queued') return '排队中';
   if (status === 'running') return '生成中';
   if (status === 'success') return '已完成';
-  if (status === 'error') return 'ʧ';
+  if (status === 'error') return '失败';
   return '空闲';
 }
 
 function resolveMediaTypeLabel(kind) {
-  if (kind === 'video') return 'Ƶ';
-  if (kind === 'audio') return 'Ƶ';
+  if (kind === 'video') return '视频';
+  if (kind === 'audio') return '音频';
   if (kind === 'subtitle') return '字幕';
   return '图片';
 }
 
 function resolveTrackKindLabel(kind) {
   if (kind === 'video') return '画面 / 图片 / 视频';
-  if (kind === 'audio') return 'Ƶ / 配乐 / ԰';
+  if (kind === 'audio') return '音频 / 配乐 / 环境音';
   if (kind === 'subtitle') return '字幕 / 文本提示';
   return '混合轨道';
 }

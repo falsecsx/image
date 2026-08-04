@@ -8,7 +8,7 @@
         getTextModelOptions: () => typeof getTextModelOptions === 'function' ? getTextModelOptions() : [],
         getBaseUrl: () => typeof getBaseUrl === 'function' ? getBaseUrl() : '',
         buildApiUrl: (path) => typeof buildApiUrl === 'function' ? buildApiUrl(path) : path,
-        sendImageRequest: (req, kind) => typeof sendImageRequest === 'function' ? sendImageRequest(req, kind) : Promise.reject(new Error('sendImageRequest not available')),
+        sendImageRequest: (req, kind, signal) => typeof sendImageRequest === 'function' ? sendImageRequest(req, kind, signal) : Promise.reject(new Error('sendImageRequest not available')),
         appendResult: (item, params) => typeof appendResult === 'function' ? appendResult(item, params) : null,
         flashStatus: (msg, type) => typeof flashStatus === 'function' ? flashStatus(msg, type) : console.log(msg),
         getStateImages: () => Array.isArray(state?.images) ? state.images : [],
@@ -17,7 +17,14 @@
         getCurrentGenerationParams: (overrides = {}) => typeof getCurrentGenerationParams === 'function' ? getCurrentGenerationParams(overrides) : { ...overrides },
         getGenerationOptions: (mediaType = 'image') => typeof getGenerationOptions === 'function' ? getGenerationOptions(mediaType) : {},
         runAgentGeneration: (mediaType, prompt, options = {}) => typeof runAgentGeneration === 'function' ? runAgentGeneration(mediaType, prompt, options) : Promise.reject(new Error('runAgentGeneration not available')),
-        getPromptLibraryTitles: async () => (await loadAllPrompts()).map(p => p?.title || p?.content || '').filter(Boolean)
+        getPromptLibraryEntries: async (options = {}) => loadPromptLibraryEntries(options),
+        recordPromptLibraryUsage: (id) => typeof incrementPromptUsage === 'function' ? incrementPromptUsage(id) : Promise.resolve(),
+        sendToCanvas: (sources) => typeof sendImagesToCanvas === 'function' ? sendImagesToCanvas(sources) : null,
+        getPromptLibraryTitles: async () => (await loadPromptLibraryEntries()).map(p => p?.title || p?.content || '').filter(Boolean),
+        saveLocalPrompt: (record = {}) => savePromptToLocalLibrary(record.title, record.content, record),
+        updateLocalPrompt: (id, patch = {}) => updateLocalPromptRecord(id, patch),
+        deleteLocalPrompt: (id) => deleteLocalPromptEntry(id),
+        setStudioPrompt: (content, options = {}) => setStudioPromptContent(content, options)
       };
 
       window.CanvasBridge = {
@@ -29,19 +36,79 @@
           ? runAgentGeneration(mediaType, prompt, options)
           : Promise.reject(new Error('runAgentGeneration not available')),
         flashStatus: (message, tone) => typeof flashStatus === 'function' ? flashStatus(message, tone) : undefined,
-        getPromptLibraryTitles: async () => (await loadAllPrompts()).map(p => p?.title || p?.content || '').filter(Boolean)
+        getPromptLibraryEntries: async (options = {}) => loadPromptLibraryEntries(options),
+        getPromptLibraryTitles: async () => (await loadPromptLibraryEntries()).map(p => p?.title || p?.content || '').filter(Boolean),
+        getCanvasProjectTargets: () => typeof getCanvasProjectTargets === 'function' ? getCanvasProjectTargets() : [],
+        getActiveCanvasProjectId: () => typeof getActiveCanvasProjectId === 'function' ? getActiveCanvasProjectId() : '',
+        openCanvasWorkspace: (options = {}) => typeof openCanvasTool === 'function' ? openCanvasTool(options) : null,
+        closeCanvasWorkspace: () => closeCanvasTool(),
+        addPromptEntryToCanvas: (entry, options = {}) => typeof addPromptEntryToCanvas === 'function'
+          ? addPromptEntryToCanvas(entry, options)
+          : Promise.reject(new Error('Canvas prompt bridge is not available'))
+      };
+
+      window.PromptLibraryBridge = {
+        getEntries: (options = {}) => loadPromptLibraryEntries(options),
+        getLocalEntries: () => loadPromptLibraryEntries({ includeCommunity: false, localOnly: true }),
+        getDiscoverEntries: () => loadPromptLibraryEntries({ includeLocal: false, includeCommunity: true, includePublic: true }),
+        saveLocalPrompt: (record = {}) => savePromptToLocalLibrary(record.title, record.content, record),
+        recordPromptLibraryUsage: (id) => typeof incrementPromptUsage === 'function' ? incrementPromptUsage(id) : Promise.resolve(),
+        updateLocalPrompt: (id, patch = {}) => updateLocalPromptRecord(id, patch),
+        deleteLocalPrompt: (id) => deleteLocalPromptEntry(id),
+        setStudioPrompt: (content, options = {}) => setStudioPromptContent(content, options),
+        addStudioReferenceImages: (sources = []) => addStudioReferenceImages(sources),
+        flashStatus: (message, tone) => typeof flashStatus === 'function' ? flashStatus(message, tone) : undefined,
+        open: (options = {}) => typeof openPromptLibraryFromHost === 'function' ? openPromptLibraryFromHost(options) : null
       };
 
       const _appScriptSrc = document.currentScript?.src || '';
       const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
+      const _agentUiUrl = new URL('agent/agent-ui.js?v=20260803-4', _appBase).href;
 
-      document.getElementById('agent-tool-btn')?.addEventListener('click', () => {
-        const agentUrl = new URL('agent/agent-ui.js?v=20260715-3', _appBase).href;
-        import(agentUrl).then(m => m.openAgentWorkspace()).catch(err => {
+      function openPromptLibraryFromHost(options = {}) {
+        const promptLibraryUrl = new URL('prompt-library.js?v=20260803-4', _appBase).href;
+        return import(promptLibraryUrl)
+          .then(module => {
+            const result = module.openPromptLibrary(options);
+            setWorkspaceNavActive('prompts');
+            return result;
+          })
+          .catch(error => {
+            console.error('prompt library load failed', error);
+            setWorkspaceNavActive('studio');
+            if (typeof flashStatus === 'function') flashStatus(`提示词库加载失败：${error?.message || error}`, 'danger');
+          });
+      }
+
+      function setWorkspaceNavActive(workspace) {
+        const value = String(workspace || 'studio');
+        document.querySelectorAll('[data-workspace-nav]').forEach(button => {
+          button.classList.toggle('is-active', button.dataset.workspaceNav === value);
+        });
+      }
+
+      function openAgentFromWorkspace() {
+        return import(_agentUiUrl).then(m => {
+          const result = m.openAgentWorkspace();
+          setWorkspaceNavActive('agent');
+          return result;
+        }).catch(err => {
           console.error('agent load failed', err);
+          setWorkspaceNavActive('studio');
           alert('Agent 模块加载失败：' + err.message);
         });
+      }
+
+      document.querySelectorAll('[data-open-prompt-library]').forEach(button => {
+        button.addEventListener('click', () => {
+          openPromptLibraryFromHost({ context: 'global' });
+        });
       });
+      document.querySelectorAll('[data-open-agent]').forEach(button => {
+        button.addEventListener('click', openAgentFromWorkspace);
+      });
+      window.addEventListener('agent-workspace-closed', () => setWorkspaceNavActive('studio'));
+      try { window.lucide?.createIcons?.(); } catch (error) { console.warn('Lucide icons failed:', error); }
 
       // 获取用户配置的 Base URL
       const baseUrlInput = document.getElementById('base-url');
@@ -122,7 +189,13 @@
       }
 
       function getBaseUrl() {
-        const url = baseUrlInput.value.trim().replace(/\/+$/, '');
+        const override = settingsConnectionOverride;
+        const platformId = override?.platformId || committedSettingsSnapshot?.activePlatformId || activePlatformId;
+        const settings = override?.settings || getRuntimePlatformSettings(platformId);
+        const raw = Object.prototype.hasOwnProperty.call(settings, 'baseUrl')
+          ? settings.baseUrl
+          : (!committedSettingsSnapshot && !override ? baseUrlInput.value : getPlatformConfig(platformId).baseUrlValue);
+        const url = String(raw || getPlatformConfig(platformId).baseUrlValue || defaultBaseUrl).trim().replace(/\/+$/, '');
         return url || defaultBaseUrl;
       }
 
@@ -150,7 +223,10 @@
       }
 
       function isApiProxyEnabled() {
-        return !!proxyModeInput?.checked && /^https:\/\//i.test(getBaseUrl());
+        const configured = settingsConnectionOverride?.settings?.proxyMode
+          ?? committedSettingsSnapshot?.platformSettings?.[settingsConnectionOverride?.platformId || activePlatformId]?.proxyMode
+          ?? proxyModeInput?.checked;
+        return !!configured && /^https:\/\//i.test(getBaseUrl());
       }
 
       function buildApiUrl(path) {
@@ -178,8 +254,13 @@
 
       // 当 Base URL 变化时，同步更新"前往获取"链接
       baseUrlInput.addEventListener('input', () => {
-        const url = getBaseUrl();
+        const url = (settingsIsOpen ? baseUrlInput.value.trim() : getBaseUrl()) || defaultBaseUrl;
         if (apiLinkEl) apiLinkEl.href = url.startsWith('/') ? apiHomeUrl : url;
+        if (settingsIsOpen) {
+          const platform = getPlatformConfig(getSettingsPlatformId());
+          if (apiLinkEl) apiLinkEl.href = platform.apiHome || (url.startsWith('/') ? apiHomeUrl : url);
+          markSettingsDirty();
+        }
       });
 
       // 模型选择下拉框
@@ -193,6 +274,11 @@
       const IMAGE_MODEL_STORAGE_PREFIX = 'image_model';
       const TEXT_MODEL_STORAGE_PREFIX = 'text_model';
       const DEFAULT_TEXT_MODEL = 'gpt-5.4-mini';
+      let committedSettingsSnapshot = null;
+      let settingsDraft = null;
+      let settingsIsOpen = false;
+      let settingsFocusReturn = null;
+      let settingsConnectionOverride = null;
       const PLATFORM_REGISTRY = {
         openai: {
           id: 'openai',
@@ -513,14 +599,32 @@
       let activePlatformId = 'openai';
       let activePlatformKind = 'image';
 
+      function getRuntimePlatformSettings(platformId = activePlatformId) {
+        return committedSettingsSnapshot?.platformSettings?.[platformId] || loadPlatformSettings(platformId) || {};
+      }
+
+      function getSettingsPlatformId() {
+        return settingsDraft?.activePlatformId || activePlatformId;
+      }
+
+      function getSettingsPlatformKind() {
+        return settingsDraft?.activePlatformKind || activePlatformKind;
+      }
+
       function getImageModel() {
-        return imageModelSelect.value || 'gpt-image-2';
+        const override = settingsConnectionOverride;
+        const settings = override?.settings || getRuntimePlatformSettings(override?.platformId || activePlatformId);
+        return settings.imageModel || (!committedSettingsSnapshot && !override ? imageModelSelect.value : '') || 'gpt-image-2';
       }
       function getTextModel() {
-        return textModelSelect.value || DEFAULT_TEXT_MODEL;
+        const override = settingsConnectionOverride;
+        const settings = override?.settings || getRuntimePlatformSettings(override?.platformId || activePlatformId);
+        return settings.textModel || (!committedSettingsSnapshot && !override ? textModelSelect.value : '') || DEFAULT_TEXT_MODEL;
       }
       function getProtocol() {
-        return protocolSelect.value || 'openai-chat';
+        const override = settingsConnectionOverride;
+        const settings = override?.settings || getRuntimePlatformSettings(override?.platformId || activePlatformId);
+        return settings.protocol || (!committedSettingsSnapshot && !override ? protocolSelect.value : '') || 'openai-chat';
       }
       function getPlatformConfig(platformId = activePlatformId) {
         return PLATFORM_REGISTRY[platformId] || PLATFORM_REGISTRY.openai;
@@ -543,6 +647,12 @@
       }
       function getPlatformStorageKey(prefix, platformId = activePlatformId) {
         return platformId ? `${prefix}_${platformId}` : prefix;
+      }
+      function getEditableModels(platformId = getSettingsPlatformId()) {
+        if (settingsDraft?.modelLists?.[platformId]) {
+          return settingsDraft.modelLists[platformId].map(model => ({ ...model }));
+        }
+        return getStoredModels(platformId).map(model => ({ ...model }));
       }
       function getStoredPlatformSettingsMap() {
         try {
@@ -585,7 +695,7 @@
       function isAvailableTextModel(modelId, platformId = activePlatformId) {
         if (!modelId) return false;
         if (modelId === DEFAULT_TEXT_MODEL) return true;
-        return getStoredModels(platformId).some(model => model.id === modelId);
+        return getEditableModels(platformId).some(model => model.id === modelId);
       }
       function applyPlatformSettings(platformConfig, platformSettings) {
         if (!platformConfig) return;
@@ -595,6 +705,15 @@
           : DEFAULT_TEXT_MODEL;
 
         populateProtocolOptions(platformConfig, settings.protocol || platformConfig.defaultProtocol);
+        const editableModels = getEditableModels(platformConfig.id);
+        if (editableModels.length > 0) {
+          imageModelSelect.innerHTML = '';
+          textModelSelect.innerHTML = '';
+          editableModels.forEach(model => {
+            appendModelOption(imageModelSelect, model.id, model.name);
+            appendModelOption(textModelSelect, model.id, model.name);
+          });
+        }
         ensurePlatformDefaultModels(platformConfig);
 
         if (platformConfig.defaultImageModel) {
@@ -667,15 +786,15 @@
           }
         }
       }
-      function syncPlatformBaseUrl(platformConfig) {
+      function syncPlatformBaseUrl(platformConfig, selectedPlatformId = activePlatformId) {
         if (!baseUrlInput || !platformConfig) return;
         baseUrlInput.placeholder = platformConfig.baseUrlPlaceholder || defaultBaseUrl;
         const knownPlatformBaseUrls = Object.values(PLATFORM_REGISTRY)
           .map(platform => platform.baseUrlValue)
           .filter(Boolean);
-        if (platformConfig.id === activePlatformId && platformConfig.baseUrlValue && knownPlatformBaseUrls.includes(baseUrlInput.value) && baseUrlInput.value !== platformConfig.baseUrlValue) {
+        if (platformConfig.id === selectedPlatformId && platformConfig.baseUrlValue && knownPlatformBaseUrls.includes(baseUrlInput.value) && baseUrlInput.value !== platformConfig.baseUrlValue) {
           baseUrlInput.value = platformConfig.baseUrlValue;
-        } else if (platformConfig.id === activePlatformId && platformConfig.baseUrlValue && baseUrlInput.value === defaultBaseUrl && platformConfig.baseUrlValue !== defaultBaseUrl) {
+        } else if (platformConfig.id === selectedPlatformId && platformConfig.baseUrlValue && baseUrlInput.value === defaultBaseUrl && platformConfig.baseUrlValue !== defaultBaseUrl) {
           baseUrlInput.value = platformConfig.baseUrlValue;
         } else if (!baseUrlInput.value && platformConfig.baseUrlValue) {
           baseUrlInput.value = platformConfig.baseUrlValue;
@@ -685,26 +804,29 @@
         }
       }
       function renderPlatformKindToggle() {
+        const selectedKind = getSettingsPlatformKind();
         platformKindButtons.forEach(button => {
-          const isActive = button.dataset.platformKind === activePlatformKind;
+          const isActive = button.dataset.platformKind === selectedKind;
           button.classList.toggle('active', isActive);
           button.setAttribute('aria-selected', String(isActive));
+          button.tabIndex = isActive ? 0 : -1;
         });
       }
 
       function renderPlatformSwitcher() {
         if (!platformSwitcherEl) return;
+        const selectedPlatformId = getSettingsPlatformId();
         platformSwitcherEl.innerHTML = '';
         renderPlatformKindToggle();
-        getPlatformOrderForKind().forEach(platformId => {
+        getPlatformOrderForKind(getSettingsPlatformKind()).forEach(platformId => {
           const platform = getPlatformConfig(platformId);
           const button = document.createElement('button');
           button.type = 'button';
           button.className = 'platform-switcher-item';
           button.dataset.platformId = platform.id;
           button.setAttribute('role', 'tab');
-          button.setAttribute('aria-selected', String(platform.id === activePlatformId));
-          if (platform.id === activePlatformId) {
+          button.setAttribute('aria-selected', String(platform.id === selectedPlatformId));
+          if (platform.id === selectedPlatformId) {
             button.classList.add('active');
           }
           if (!platform.supported) {
@@ -717,11 +839,36 @@
             <span class="platform-switcher-name">${platform.label}</span>
             <span class="platform-switcher-meta">${platform.kind === 'video' ? '视频' : '图片'} · ${platform.supported ? '已接入' : '开发中'}</span>
           `;
+          const platformMeta = button.querySelector('.platform-switcher-meta');
+          if (platformMeta) platformMeta.textContent = `${platform.kind === 'video' ? '视频' : '图片'} · ${platform.supported ? '已接入' : '开发中'}`;
+          if (settingsDraft?.dirtyPlatforms?.has(platform.id)) {
+            const status = document.createElement('span');
+            status.className = 'platform-switcher-status';
+            status.title = '未保存';
+            status.setAttribute('aria-label', '未保存');
+            button.appendChild(status);
+          }
           button.addEventListener('click', () => {
-            setActivePlatform(platform.id);
+            if (settingsIsOpen) selectDraftPlatform(platform.id);
+            else setActivePlatform(platform.id);
+          });
+          button.addEventListener('keydown', event => {
+            if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft'].includes(event.key)) return;
+            const items = [...platformSwitcherEl.querySelectorAll('.platform-switcher-item')];
+            const index = items.indexOf(button);
+            if (index < 0) return;
+            event.preventDefault();
+            const direction = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1;
+            const next = items[(index + direction + items.length) % items.length];
+            next?.focus();
+            if (next?.dataset.platformId) {
+              if (settingsIsOpen) selectDraftPlatform(next.dataset.platformId);
+              else setActivePlatform(next.dataset.platformId);
+            }
           });
           platformSwitcherEl.appendChild(button);
         });
+        syncMobilePlatformPicker(getPlatformConfig(selectedPlatformId));
       }
       function renderPlatformExtraFields(platformConfig) {
         if (!platformExtraFieldsEl) return;
@@ -910,11 +1057,21 @@
             runBtn.disabled = true;
           }
         }
-        if (fetchModelsBtn) fetchModelsBtn.disabled = !isSupported || generationInFlight;
         syncMobileGenerateBar();
       }
       function persistActivePlatformSnapshot() {
+        if (settingsIsOpen && settingsDraft) {
+          captureSettingsDraftPlatform();
+          markSettingsDirty();
+          return;
+        }
         savePlatformSettings(activePlatformId);
+        if (committedSettingsSnapshot) {
+          committedSettingsSnapshot.platformSettings[activePlatformId] = {
+            ...(committedSettingsSnapshot.platformSettings[activePlatformId] || {}),
+            ...collectCurrentPlatformSettings()
+          };
+        }
       }
       function ensurePlatformFeatureAvailable(featureLabel = '当前功能') {
         if (isActivePlatformSupported()) return true;
@@ -941,9 +1098,14 @@
         updateReferenceImageLimitText();
         updatePlatformActionAvailability();
         syncPlatformSummary();
+        if (!settingsIsOpen) refreshCommittedSettingsSnapshot();
       }
 
       function setActivePlatformKind(kind) {
+        if (settingsIsOpen) {
+          setDraftPlatformKind(kind);
+          return;
+        }
         const nextKind = kind === 'video' ? 'video' : 'image';
         activePlatformKind = nextKind;
         localStorage.setItem(ACTIVE_PLATFORM_KIND_STORAGE_KEY, activePlatformKind);
@@ -1058,11 +1220,12 @@
 
       const apiKeyInput = document.getElementById('api-key');
       const rememberApiKeyInput = document.getElementById('remember-api-key');
-      const setTextKeyBtn = document.getElementById('set-text-key-btn');
+      const textApiKeyInput = document.getElementById('text-api-key');
+      const apiKeyToggleBtn = document.getElementById('api-key-toggle');
+      const textApiKeyToggleBtn = document.getElementById('text-api-key-toggle');
       const API_KEY_STORAGE_KEY = 'gemini_api_key';
       const API_KEY_REMEMBER_KEY = 'gemini_api_key_remember';
       const TEXT_API_KEY_STORAGE_KEY = 'text_api_key_override';
-      const PROMPT_ADMIN_TOKEN_STORAGE_KEY = 'prompt_admin_token';
       let apiKeyValue = '';
       let textApiKeyValue = '';
 
@@ -1119,24 +1282,15 @@
             sessionStorage.setItem(TEXT_API_KEY_STORAGE_KEY, value);
           }
         }
-        updateTextKeyButtonState();
-      }
-
-      function maskApiKey(key) {
-        const value = (key || '').trim();
-        if (!value) return '';
-        if (value.length <= 11) return value;
-
-        const prefix = value.slice(0, 7);
-        const suffix = value.slice(-4);
-        return prefix + '*'.repeat(value.length - 11) + suffix;
       }
 
       function renderApiKeyMask() {
-        apiKeyInput.value = maskApiKey(apiKeyValue);
+        if (apiKeyInput) apiKeyInput.value = apiKeyValue || '';
       }
 
       function getApiKey() {
+        if (settingsConnectionOverride?.apiKey !== undefined) return settingsConnectionOverride.apiKey || '';
+        if (committedSettingsSnapshot?.apiKey !== undefined) return committedSettingsSnapshot.apiKey || '';
         const shownValue = apiKeyInput.value.trim();
         if (!shownValue) {
           apiKeyValue = '';
@@ -1153,94 +1307,13 @@
       }
 
       function getTextApiKey() {
+        if (settingsConnectionOverride?.textApiKey !== undefined) {
+          return (settingsConnectionOverride.textApiKey || '').trim() || (settingsConnectionOverride.apiKey || '');
+        }
+        if (committedSettingsSnapshot?.textApiKey !== undefined) {
+          return (committedSettingsSnapshot.textApiKey || '').trim() || getApiKey();
+        }
         return (textApiKeyValue || '').trim() || getApiKey();
-      }
-
-      function updateTextKeyButtonState() {
-        if (!setTextKeyBtn) return;
-        setTextKeyBtn.title = textApiKeyValue
-          ? '已设置文本模型专用 Key，留空保存可恢复使用上方默认 Key'
-          : '留空时默认使用上方 API Key';
-      }
-
-      function showTextKeyDialog() {
-        let dialogKeyValue = textApiKeyValue || '';
-        const dialogOverlay = document.createElement('div');
-        dialogOverlay.className = 'dialog-overlay active';
-        dialogOverlay.innerHTML = `
-          <div class="dialog-content">
-            <div class="dialog-title">设置文本模型专用 Key</div>
-            <div class="dialog-desc">仅用于文本优化、翻译、分镜分析等文本模型请求。留空后保存，则默认使用上方 API Key。</div>
-            <input class="dialog-input" id="text-key-input" type="text" placeholder="留空则使用上方 API Key" autocomplete="off" />
-            <div class="dialog-actions">
-              <button class="dialog-btn dialog-btn-cancel" type="button">取消</button>
-              <button class="dialog-btn dialog-btn-confirm" type="button">保存</button>
-            </div>
-          </div>
-        `;
-
-        document.body.appendChild(dialogOverlay);
-
-        const textKeyInput = dialogOverlay.querySelector('#text-key-input');
-        const cancelBtn = dialogOverlay.querySelector('.dialog-btn-cancel');
-        const confirmBtn = dialogOverlay.querySelector('.dialog-btn-confirm');
-
-        textKeyInput.value = maskApiKey(dialogKeyValue);
-
-        const closeDialog = () => dialogOverlay.remove();
-        const confirmSave = () => {
-          const shownValue = textKeyInput.value.trim();
-          if (!shownValue) {
-            dialogKeyValue = '';
-          } else if (!(shownValue.includes('*') && dialogKeyValue)) {
-            dialogKeyValue = shownValue;
-          }
-
-          persistTextApiKey(dialogKeyValue, !!rememberApiKeyInput?.checked);
-          closeDialog();
-          flashStatus(
-            dialogKeyValue
-              ? '已保存文本模型专用 Key'
-              : '已清除文本模型专用 Key，文本请求将默认使用上方 API Key',
-            'success'
-          );
-        };
-
-        textKeyInput.addEventListener('paste', (event) => {
-          const pastedText = event.clipboardData?.getData('text')?.trim();
-          if (!pastedText) return;
-
-          event.preventDefault();
-          dialogKeyValue = pastedText;
-          textKeyInput.value = maskApiKey(dialogKeyValue);
-        });
-
-        textKeyInput.addEventListener('input', () => {
-          const shownValue = textKeyInput.value.trim();
-          if (!shownValue) {
-            dialogKeyValue = '';
-            return;
-          }
-
-          if (shownValue.includes('*') && dialogKeyValue) {
-            textKeyInput.value = maskApiKey(dialogKeyValue);
-            return;
-          }
-
-          dialogKeyValue = shownValue;
-        });
-
-        cancelBtn.addEventListener('click', closeDialog);
-        confirmBtn.addEventListener('click', confirmSave);
-        textKeyInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') confirmSave();
-          if (e.key === 'Escape') closeDialog();
-        });
-        dialogOverlay.addEventListener('click', (e) => {
-          if (e.target === dialogOverlay) closeDialog();
-        });
-
-        setTimeout(() => textKeyInput.focus(), 80);
       }
 
       apiKeyInput.addEventListener('paste', (event) => {
@@ -1250,6 +1323,10 @@
         event.preventDefault();
         apiKeyValue = pastedText;
         renderApiKeyMask();
+        if (settingsIsOpen) {
+          captureSettingsDraftPlatform();
+          markSettingsDirty();
+        }
       });
 
       apiKeyInput.addEventListener('input', () => {
@@ -1272,6 +1349,29 @@
         if (apiKeyValue) {
           setTimeout(() => apiKeyInput.select(), 0);
         }
+      });
+
+      function setSecretVisibility(input, button, visible) {
+        if (!input || !button) return;
+        input.type = visible ? 'text' : 'password';
+        const label = visible ? '隐藏' : '显示';
+        button.title = `${label}${input.id === 'api-key' ? ' API Key' : '文本 Key'}`;
+        button.setAttribute('aria-label', button.title);
+        const icon = button.querySelector('[data-lucide]');
+        if (icon) icon.setAttribute('data-lucide', visible ? 'eye-off' : 'eye');
+        try { window.lucide?.createIcons?.(); } catch {}
+      }
+
+      apiKeyToggleBtn?.addEventListener('click', () => {
+        setSecretVisibility(apiKeyInput, apiKeyToggleBtn, apiKeyInput.type !== 'text');
+      });
+      textApiKeyToggleBtn?.addEventListener('click', () => {
+        setSecretVisibility(textApiKeyInput, textApiKeyToggleBtn, textApiKeyInput.type !== 'text');
+      });
+      textApiKeyInput?.addEventListener('input', () => {
+        textApiKeyValue = textApiKeyInput.value.trim();
+        if (settingsIsOpen) captureSettingsDraftPlatform();
+        markSettingsDirty();
       });
 
       const promptInput = document.getElementById('prompt');
@@ -1315,7 +1415,36 @@
 
       const preview = document.getElementById('upload-preview');
       const resultsEl = document.getElementById('results');
+      const resultsEmptyEl = document.getElementById('results-empty');
       const resultCountEl = document.getElementById('result-count');
+      const resultsActionsEl = document.getElementById('results-actions');
+
+      function getResultOutputChildren() {
+        if (!resultsEl) return [];
+        return Array.from(resultsEl.children).filter((child) => {
+          if (child === resultsEmptyEl) return false;
+          return child.classList.contains('result-card') || child.classList.contains('result-group');
+        });
+      }
+
+      function syncResultsEmptyState() {
+        if (!resultsEl) return;
+        if (resultsEmptyEl && resultsEmptyEl.parentElement !== resultsEl) {
+          resultsEl.appendChild(resultsEmptyEl);
+        }
+        const outputs = getResultOutputChildren();
+        const hasTransferableImages = typeof collectResultImageSources === 'function'
+          && collectResultImageSources().length > 0;
+        if (resultsEmptyEl) resultsEmptyEl.hidden = outputs.length > 0;
+        if (resultCountEl) resultCountEl.textContent = `${outputs.length} 条`;
+        const sendResultsBtn = document.getElementById('send-results-to-canvas');
+        const clearResultsBtn = document.getElementById('clear-results');
+        if (sendResultsBtn) sendResultsBtn.hidden = !hasTransferableImages;
+        if (clearResultsBtn) clearResultsBtn.hidden = outputs.length === 0;
+        if (resultsActionsEl) resultsActionsEl.hidden = outputs.length === 0;
+      }
+
+      syncResultsEmptyState();
       const announcementBtn = document.getElementById('announcement-btn');
       const announcementModal = document.getElementById('announcement-modal');
       const announcementCloseBtn = document.getElementById('announcement-close');
@@ -1323,7 +1452,31 @@
       const settingsCloseBtn = document.getElementById('settings-close-btn');
       const settingsDrawer = document.getElementById('settings-drawer');
       const settingsDrawerOverlay = document.getElementById('settings-drawer-overlay');
+      const settingsCancelBtn = document.getElementById('settings-cancel-btn');
+      const settingsDirtyStatus = document.getElementById('settings-dirty-status');
+      const settingsTabs = [...document.querySelectorAll('#settings-tabs [data-settings-tab]')];
+      const settingsPanels = [...document.querySelectorAll('[data-settings-panel]')];
+      const settingsConfirm = document.getElementById('settings-confirm');
+      const settingsConfirmCancel = document.getElementById('settings-confirm-cancel');
+      const settingsConfirmDiscard = document.getElementById('settings-confirm-discard');
+      const settingsMoreBtn = document.getElementById('settings-more-btn');
+      const settingsMoreMenu = document.getElementById('settings-more-menu');
+      const resetPlatformSettingsBtn = document.getElementById('reset-platform-settings');
+      const testConnectionBtn = document.getElementById('test-connection-btn');
+      const updateModelsBtn = document.getElementById('update-models-btn');
+      const connectionStatusEl = document.getElementById('connection-status');
+      const connectionStatusTextEl = document.getElementById('connection-status-text');
+      const exportSettingsBtn = document.getElementById('export-settings-btn');
+      const importSettingsBtn = document.getElementById('import-settings-btn');
+      const settingsImportFile = document.getElementById('settings-import-file');
+      const includeCredentialsInput = document.getElementById('include-credentials');
+      const sensitiveExportWarning = document.getElementById('sensitive-export-warning');
+      const settingsImportSummary = document.getElementById('settings-import-summary');
       const platformSwitcherEl = document.getElementById('platform-switcher');
+      const mobilePlatformPickerToggle = document.getElementById('mobile-platform-picker-toggle');
+      const mobilePlatformPickerNameEl = document.getElementById('mobile-platform-picker-name');
+      const mobilePlatformPickerMetaEl = document.getElementById('mobile-platform-picker-meta');
+      const mobilePlatformPickerStatusEl = document.getElementById('mobile-platform-picker-status');
       const platformKindButtons = [...document.querySelectorAll('.platform-kind-btn')];
       const platformTitleEl = document.getElementById('platform-title');
       const platformTypeBadgeEl = document.getElementById('platform-type-badge');
@@ -1351,6 +1504,36 @@
       const resolutionLabelEl = document.getElementById('resolution-label');
       const countLabelEl = document.getElementById('count-label');
       const countHelpEl = document.getElementById('count-help');
+
+      let mobilePlatformPickerExpanded = false;
+
+      function isMobileSettingsLayout() {
+        return window.matchMedia?.('(max-width: 599px)').matches === true;
+      }
+
+      function setMobilePlatformPickerExpanded(expanded = false) {
+        const isMobile = isMobileSettingsLayout();
+        mobilePlatformPickerExpanded = isMobile && !!expanded;
+        if (platformSwitcherEl) {
+          platformSwitcherEl.hidden = isMobile ? !mobilePlatformPickerExpanded : false;
+          platformSwitcherEl.setAttribute('aria-hidden', String(isMobile && !mobilePlatformPickerExpanded));
+        }
+        if (mobilePlatformPickerToggle) {
+          mobilePlatformPickerToggle.setAttribute('aria-expanded', String(mobilePlatformPickerExpanded));
+        }
+      }
+
+      function syncMobilePlatformPicker(platformConfig = getPlatformConfig(settingsDraft?.activePlatformId || activePlatformId)) {
+        if (!platformConfig) return;
+        if (mobilePlatformPickerNameEl) mobilePlatformPickerNameEl.textContent = platformConfig.label;
+        if (mobilePlatformPickerMetaEl) mobilePlatformPickerMetaEl.textContent = platformConfig.kind === 'video' ? '视频平台' : '图片平台';
+        const isDirty = !!settingsDraft?.dirtyPlatforms?.has(platformConfig.id);
+        mobilePlatformPickerStatusEl?.classList.toggle('is-dirty', isDirty);
+        if (mobilePlatformPickerStatusEl) {
+          mobilePlatformPickerStatusEl.title = isDirty ? '未保存' : '';
+          mobilePlatformPickerStatusEl.setAttribute('aria-label', isDirty ? '未保存' : '');
+        }
+      }
 
       const state = { images: [] };
       let timeoutHandle = null;
@@ -1392,22 +1575,735 @@
         announcementModal.setAttribute('aria-hidden', 'true');
       }
 
-      function openSettingsDrawer() {
-        if (!settingsDrawer || !settingsDrawerOverlay) return;
-        settingsDrawer.classList.add('active');
-        settingsDrawer.setAttribute('aria-hidden', 'false');
-        settingsDrawerOverlay.classList.add('active');
-        settingsDrawerOverlay.setAttribute('aria-hidden', 'false');
-        document.body.classList.add('settings-drawer-open');
+      function isSafeObjectKey(key) {
+        return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
       }
 
-      function closeSettingsDrawer() {
+      function clonePlatformSettingsMap(source = {}) {
+        return Object.fromEntries(Object.entries(source || {})
+          .filter(([id]) => isSafeObjectKey(id))
+          .map(([id, value]) => [id, { ...(value || {}) }]));
+      }
+
+      function cloneModelLists(source = {}) {
+        return Object.fromEntries(Object.entries(source || {}).filter(([id]) => isSafeObjectKey(id)).map(([id, models]) => [
+          id,
+          Array.isArray(models) ? models.map(model => ({ id: String(model.id || ''), name: String(model.name || model.id || '') })).filter(model => model.id) : []
+        ]));
+      }
+
+      function getCurrentModelListFromControls() {
+        const values = new Map();
+        [imageModelSelect, textModelSelect].forEach(select => {
+          [...(select?.options || [])].forEach(option => {
+            if (option.value) values.set(option.value, { id: option.value, name: option.textContent || option.value });
+          });
+        });
+        return [...values.values()];
+      }
+
+      function getSettingsPlatformSignature(draft, platformId) {
+        if (!draft) return '';
+        return JSON.stringify({
+          settings: draft.platformSettings?.[platformId] || {},
+          models: draft.modelLists?.[platformId] || []
+        });
+      }
+
+      function getSettingsDraftSignature(draft) {
+        if (!draft) return '';
+        const platformSettings = Object.fromEntries(Object.keys(draft.platformSettings || {}).sort().map(platformId => [
+          platformId,
+          draft.platformSettings?.[platformId] || {}
+        ]));
+        const modelLists = Object.fromEntries(Object.keys(draft.modelLists || {}).sort().map(platformId => [
+          platformId,
+          draft.modelLists?.[platformId] || []
+        ]));
+        return JSON.stringify({
+          activePlatformId: draft.activePlatformId,
+          activePlatformKind: draft.activePlatformKind,
+          platformSettings,
+          modelLists,
+          apiKey: draft.apiKey || '',
+          textApiKey: draft.textApiKey || '',
+          rememberApiKey: !!draft.rememberApiKey,
+          historyRetention: draft.historyRetention || 'original',
+          folderAction: draft.folderAction || null,
+          folderName: draft.folderHandle?.name || ''
+        });
+      }
+
+      function refreshCommittedSettingsSnapshot() {
+        const platformSettings = clonePlatformSettingsMap(getStoredPlatformSettingsMap());
+        const current = collectCurrentPlatformSettings();
+        platformSettings[activePlatformId] = { ...(platformSettings[activePlatformId] || {}), ...current };
+        committedSettingsSnapshot = {
+          activePlatformId,
+          activePlatformKind,
+          platformSettings,
+          apiKey: apiKeyValue || '',
+          textApiKey: textApiKeyValue || '',
+          rememberApiKey: !!rememberApiKeyInput?.checked,
+          historyRetention: getHistoryImageRetention()
+        };
+      }
+
+      function createSettingsDraft() {
+        if (!committedSettingsSnapshot) refreshCommittedSettingsSnapshot();
+        const platformSettings = clonePlatformSettingsMap(committedSettingsSnapshot?.platformSettings || getStoredPlatformSettingsMap());
+        platformSettings[activePlatformId] = {
+          ...(platformSettings[activePlatformId] || {}),
+          ...collectCurrentPlatformSettings()
+        };
+        const modelLists = {};
+        Object.keys(PLATFORM_REGISTRY).forEach(platformId => {
+          modelLists[platformId] = getStoredModels(platformId).map(model => ({ ...model }));
+        });
+        modelLists[activePlatformId] = getCurrentModelListFromControls();
+        const draft = {
+          activePlatformId,
+          activePlatformKind,
+          platformSettings,
+          modelLists,
+          apiKey: apiKeyValue || '',
+          textApiKey: textApiKeyValue || '',
+          rememberApiKey: !!rememberApiKeyInput?.checked,
+          historyRetention: getHistoryImageRetention(),
+          folderHandle,
+          folderAction: null,
+          dirtyPlatforms: new Set(),
+          dirty: false
+        };
+        draft.initialSignature = getSettingsDraftSignature(draft);
+        draft.initialPlatformSignatures = Object.fromEntries(Object.keys(PLATFORM_REGISTRY).map(platformId => [
+          platformId,
+          getSettingsPlatformSignature(draft, platformId)
+        ]));
+        return draft;
+      }
+
+      function markSettingsDirty() {
+        if (!settingsDraft) return;
+        settingsDraft.dirtyPlatforms?.add(settingsDraft.activePlatformId);
+        clearConnectionStatus();
+        syncSettingsDirtyState();
+      }
+
+      function setConnectionStatus(message = '', tone = '') {
+        if (!connectionStatusEl) return;
+        connectionStatusEl.classList.remove('success', 'warning', 'danger');
+        if (tone) connectionStatusEl.classList.add(tone);
+        connectionStatusEl.hidden = !message;
+        if (connectionStatusTextEl) connectionStatusTextEl.textContent = message;
+        else connectionStatusEl.textContent = message;
+        const connectionStatusIconEl = connectionStatusEl.querySelector('.connection-status-icon, [data-lucide]');
+        if (connectionStatusIconEl) {
+          const iconName = tone === 'success'
+            ? 'circle-check'
+            : tone === 'warning'
+              ? 'triangle-alert'
+              : tone === 'danger'
+                ? 'circle-x'
+                : message
+                  ? 'loader-circle'
+                  : 'circle-dashed';
+          connectionStatusIconEl.setAttribute('data-lucide', iconName);
+          try { window.lucide?.createIcons?.(); } catch {}
+        }
+      }
+
+      function clearConnectionStatus() {
+        setConnectionStatus('');
+        if (updateModelsBtn) updateModelsBtn.hidden = true;
+        if (settingsDraft) settingsDraft.pendingModels = null;
+      }
+
+      function syncSettingsDirtyState() {
+        if (settingsDraft) {
+          settingsDraft.dirty = getSettingsDraftSignature(settingsDraft) !== settingsDraft.initialSignature;
+          Object.keys(settingsDraft.initialPlatformSignatures || {}).forEach(platformId => {
+            const currentSignature = getSettingsPlatformSignature(settingsDraft, platformId);
+            if (currentSignature === settingsDraft.initialPlatformSignatures[platformId]) {
+              settingsDraft.dirtyPlatforms?.delete(platformId);
+            } else {
+              settingsDraft.dirtyPlatforms?.add(platformId);
+            }
+          });
+        }
+        const dirty = !!settingsDraft?.dirty;
+        if (settingsDirtyStatus) {
+          settingsDirtyStatus.textContent = dirty ? '未保存' : '未修改';
+          settingsDirtyStatus.classList.toggle('is-dirty', dirty);
+        }
+        syncMobilePlatformPicker(getPlatformConfig(settingsDraft?.activePlatformId || activePlatformId));
+        if (saveKeyBtn) saveKeyBtn.disabled = !dirty;
+      }
+
+      function captureSettingsDraftPlatform() {
+        if (!settingsDraft) return;
+        const platformId = settingsDraft.activePlatformId;
+        settingsDraft.platformSettings[platformId] = {
+          ...(settingsDraft.platformSettings[platformId] || {}),
+          ...collectCurrentPlatformSettings()
+        };
+        settingsDraft.modelLists[platformId] = getCurrentModelListFromControls();
+        const shownApiKey = apiKeyInput?.value?.trim() || '';
+        settingsDraft.apiKey = shownApiKey.includes('*') && apiKeyValue ? apiKeyValue : shownApiKey;
+        settingsDraft.textApiKey = textApiKeyInput?.value?.trim() || textApiKeyValue || '';
+        settingsDraft.rememberApiKey = !!rememberApiKeyInput?.checked;
+        settingsDraft.historyRetention = getHistoryImageRetention();
+      }
+
+      function syncSettingsFolderUi() {
+        const handle = settingsDraft ? settingsDraft.folderHandle : folderHandle;
+        const supported = !isMobileDevice() && 'showDirectoryPicker' in window;
+        if (selectFolderBtn) {
+          selectFolderBtn.disabled = !supported;
+          selectFolderBtn.title = supported ? '选择保存文件夹' : '当前浏览器不支持选择文件夹';
+        }
+        if (savePathEl) savePathEl.textContent = handle?.name || (supported ? '未选择' : '浏览器默认下载位置');
+        if (resetFolderBtn) resetFolderBtn.hidden = !handle;
+        const note = document.getElementById('folder-support-note');
+        if (note) note.textContent = supported
+          ? '支持 File System Access 的浏览器可选择文件夹；取消不会改变当前保存位置。'
+          : '当前浏览器不支持文件夹句柄，将使用浏览器默认下载位置。';
+      }
+
+      function syncSettingsPlatformDetails(platformConfig) {
+        if (!platformConfig) return;
+        if (platformTitleEl) platformTitleEl.textContent = platformConfig.label;
+        if (platformTypeBadgeEl) {
+          platformTypeBadgeEl.textContent = platformConfig.kind === 'video' ? '视频平台' : '图片平台';
+          platformTypeBadgeEl.classList.toggle('video', platformConfig.kind === 'video');
+          platformTypeBadgeEl.classList.toggle('pending', !platformConfig.supported);
+        }
+        if (platformMetaNoteEl) platformMetaNoteEl.textContent = platformConfig.summary || '';
+      }
+
+      function renderSettingsDraftPlatform() {
+        if (!settingsDraft) return;
+        const platformConfig = getPlatformConfig(settingsDraft.activePlatformId);
+        const platformSettings = settingsDraft.platformSettings[settingsDraft.activePlatformId] || {};
+        applyPlatformSettings(platformConfig, platformSettings);
+        syncPlatformBaseUrl(platformConfig, settingsDraft.activePlatformId);
+        renderPlatformSwitcher();
+        setMobilePlatformPickerExpanded(false);
+        renderPlatformParams(platformConfig);
+        syncPromptHints(platformConfig);
+        syncSettingsPlatformDetails(platformConfig);
+        syncMobilePlatformPicker(platformConfig);
+        if (apiKeyInput) {
+          apiKeyInput.value = settingsDraft.apiKey || '';
+          apiKeyInput.type = 'password';
+        }
+        if (textApiKeyInput) {
+          textApiKeyInput.value = settingsDraft.textApiKey || '';
+          textApiKeyInput.type = 'password';
+        }
+        if (rememberApiKeyInput) rememberApiKeyInput.checked = !!settingsDraft.rememberApiKey;
+        setHistoryImageRetention(settingsDraft.historyRetention);
+        syncSettingsFolderUi();
+        if (settingsMoreMenu) settingsMoreMenu.hidden = true;
+        settingsMoreBtn?.setAttribute('aria-expanded', 'false');
+        syncSettingsDirtyState();
+        try { window.lucide?.createIcons?.(); } catch {}
+      }
+
+      function selectDraftPlatform(platformId) {
+        if (!settingsDraft || !PLATFORM_REGISTRY[platformId]) return;
+        captureSettingsDraftPlatform();
+        settingsDraft.activePlatformId = platformId;
+        settingsDraft.activePlatformKind = getPlatformKind(platformId);
+        settingsDraft.platformSettings[platformId] ||= {};
+        renderSettingsDraftPlatform();
+      }
+
+      function setDraftPlatformKind(kind) {
+        if (!settingsDraft) return;
+        const nextKind = kind === 'video' ? 'video' : 'image';
+        captureSettingsDraftPlatform();
+        settingsDraft.activePlatformKind = nextKind;
+        settingsDraft.activePlatformId = ensurePlatformMatchesKind(settingsDraft.activePlatformId, nextKind);
+        settingsDraft.platformSettings[settingsDraft.activePlatformId] ||= {};
+        renderSettingsDraftPlatform();
+      }
+
+      function setSettingsTab(tabName) {
+        const next = ['platform', 'storage', 'backup'].includes(tabName) ? tabName : 'platform';
+        if (next !== 'platform' && settingsMoreMenu) {
+          settingsMoreMenu.hidden = true;
+          settingsMoreBtn?.setAttribute('aria-expanded', 'false');
+        }
+        settingsTabs.forEach(tab => {
+          const active = tab.dataset.settingsTab === next;
+          tab.classList.toggle('is-active', active);
+          tab.setAttribute('aria-selected', String(active));
+          tab.tabIndex = active ? 0 : -1;
+        });
+        settingsPanels.forEach(panel => {
+          const active = panel.dataset.settingsPanel === next;
+          panel.hidden = !active;
+          panel.classList.toggle('is-active', active);
+          if (active) panel.scrollTop = 0;
+        });
+      }
+
+      function showSettingsDiscardConfirm() {
+        if (settingsConfirm) settingsConfirm.hidden = false;
+        settingsConfirmDiscard?.focus();
+      }
+
+      function hideSettingsDiscardConfirm() {
+        if (settingsConfirm) settingsConfirm.hidden = true;
+      }
+
+      function setSettingsBackgroundInert(inert) {
+        const backgroundTargets = [
+          document.querySelector('.app'),
+          document.getElementById('main-content'),
+          document.querySelector('.skip-to-content')
+        ].filter(Boolean);
+        backgroundTargets.forEach(target => {
+          target.inert = inert;
+        });
+      }
+
+      function closeSettingsDrawer(options = {}) {
+        const { force = false } = options;
         if (!settingsDrawer || !settingsDrawerOverlay) return;
+        if (!force && settingsDraft?.dirty) {
+          showSettingsDiscardConfirm();
+          return;
+        }
+        hideSettingsDiscardConfirm();
+        settingsIsOpen = false;
+        settingsDraft = null;
         settingsDrawer.classList.remove('active');
         settingsDrawer.setAttribute('aria-hidden', 'true');
         settingsDrawerOverlay.classList.remove('active');
         settingsDrawerOverlay.setAttribute('aria-hidden', 'true');
         document.body.classList.remove('settings-drawer-open');
+        setMobilePlatformPickerExpanded(false);
+        setSettingsBackgroundInert(false);
+        settingsFocusReturn?.focus?.();
+        settingsFocusReturn = null;
+      }
+
+      function openSettingsDrawer() {
+        if (!settingsDrawer || !settingsDrawerOverlay || settingsIsOpen) return;
+        settingsFocusReturn = document.activeElement;
+        settingsDraft = createSettingsDraft();
+        settingsIsOpen = true;
+        settingsDrawer.classList.add('active');
+        settingsDrawer.setAttribute('aria-hidden', 'false');
+        settingsDrawerOverlay.classList.add('active');
+        settingsDrawerOverlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('settings-drawer-open');
+        setSettingsBackgroundInert(true);
+        clearConnectionStatus();
+        if (includeCredentialsInput) {
+          includeCredentialsInput.checked = false;
+          if (sensitiveExportWarning) sensitiveExportWarning.hidden = true;
+        }
+        setSettingsTab('platform');
+        settingsPanels.forEach(panel => {
+          panel.scrollTop = 0;
+        });
+        renderSettingsDraftPlatform();
+        settingsCloseBtn?.focus();
+      }
+
+      function getSafePlatformSettings(settings = {}) {
+        const allowed = ['protocol', 'imageModel', 'textModel', 'baseUrl', 'proxyMode', 'aspect', 'resolution', 'imageQuality', 'outputFormat', 'imageBackground', 'videoDuration', 'count'];
+        return Object.fromEntries(allowed.filter(key => settings[key] !== undefined).map(key => [key, settings[key]]));
+      }
+
+      const SETTINGS_STRING_FIELDS = new Set([
+        'protocol', 'imageModel', 'textModel', 'baseUrl', 'aspect', 'resolution',
+        'imageQuality', 'outputFormat', 'imageBackground', 'videoDuration', 'count'
+      ]);
+
+      function validateImportedPlatformSettings(platformId, value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          throw new Error(`平台 ${platformId} 的配置格式无效`);
+        }
+        const allowed = new Set([
+          'protocol', 'imageModel', 'textModel', 'baseUrl', 'proxyMode', 'aspect', 'resolution',
+          'imageQuality', 'outputFormat', 'imageBackground', 'videoDuration', 'count'
+        ]);
+        const result = {};
+        Object.entries(value).forEach(([key, fieldValue]) => {
+          if (!isSafeObjectKey(key) || !allowed.has(key)) return;
+          if (SETTINGS_STRING_FIELDS.has(key)) {
+            if (typeof fieldValue !== 'string' || fieldValue.length > 2048) {
+              throw new Error(`平台 ${platformId} 的 ${key} 类型无效`);
+            }
+            result[key] = fieldValue;
+            return;
+          }
+          if (key === 'proxyMode') {
+            if (typeof fieldValue !== 'boolean') throw new Error(`平台 ${platformId} 的 proxyMode 类型无效`);
+            result[key] = fieldValue;
+          }
+        });
+        const platformConfig = getPlatformConfig(platformId);
+        if (result.protocol && !platformConfig.protocolOptions.some(option => option.value === result.protocol)) {
+          throw new Error(`平台 ${platformId} 的 API 协议无效`);
+        }
+        if (result.baseUrl && !/^(https?:\/\/|\/)/i.test(result.baseUrl)) {
+          throw new Error(`平台 ${platformId} 的 Base URL 无效`);
+        }
+        return result;
+      }
+
+      function getSafeSettingsExport(includeCredentials = false) {
+        captureSettingsDraftPlatform();
+        const source = settingsDraft || committedSettingsSnapshot || {};
+        const platformSettings = Object.fromEntries(Object.entries(source.platformSettings || {})
+          .filter(([id]) => !!PLATFORM_REGISTRY[id])
+          .map(([id, value]) => [id, getSafePlatformSettings(value)]));
+        const modelLists = Object.fromEntries(Object.entries(source.modelLists || {})
+          .filter(([id]) => !!PLATFORM_REGISTRY[id])
+          .map(([id, models]) => [id, (models || []).map(model => ({ id: model.id, name: model.name || model.id }))]));
+        const payload = {
+          app: 'ai-image-studio',
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          settings: {
+            activePlatformId: source.activePlatformId || activePlatformId,
+            activePlatformKind: source.activePlatformKind || activePlatformKind,
+            platformSettings,
+            modelLists,
+            historyImageRetention: source.historyRetention || getHistoryImageRetention()
+          }
+        };
+        if (includeCredentials) {
+          payload.credentials = {
+            apiKey: source.apiKey || '',
+            textApiKey: source.textApiKey || '',
+            rememberApiKey: !!source.rememberApiKey
+          };
+        }
+        return payload;
+      }
+
+      function validateSettingsImport(payload) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('配置文件格式无效');
+        if (payload.app !== 'ai-image-studio' || payload.version !== 1) throw new Error('不支持的配置文件版本');
+        const settings = payload.settings;
+        if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('配置文件缺少设置数据');
+        const allowedIds = new Set(Object.keys(PLATFORM_REGISTRY));
+        const platformSettings = {};
+        if (settings.platformSettings !== undefined && (!settings.platformSettings || typeof settings.platformSettings !== 'object' || Array.isArray(settings.platformSettings))) {
+          throw new Error('平台配置字段类型无效');
+        }
+        const rawPlatformSettings = settings.platformSettings || {};
+        Object.entries(rawPlatformSettings).forEach(([id, value]) => {
+          if (!isSafeObjectKey(id) || !allowedIds.has(id)) return;
+          platformSettings[id] = validateImportedPlatformSettings(id, value);
+        });
+        const modelLists = {};
+        if (settings.modelLists !== undefined && (!settings.modelLists || typeof settings.modelLists !== 'object' || Array.isArray(settings.modelLists))) {
+          throw new Error('模型列表字段类型无效');
+        }
+        const rawModelLists = settings.modelLists || {};
+        Object.entries(rawModelLists).forEach(([id, models]) => {
+          if (!isSafeObjectKey(id) || !allowedIds.has(id)) return;
+          if (!Array.isArray(models)) throw new Error(`平台 ${id} 的模型列表格式无效`);
+          modelLists[id] = models.map(model => {
+            if (!model || typeof model !== 'object' || Array.isArray(model)) throw new Error(`平台 ${id} 的模型列表格式无效`);
+            if (model.id !== undefined && typeof model.id !== 'string') throw new Error(`平台 ${id} 的模型 ID 类型无效`);
+            if (model.name !== undefined && typeof model.name !== 'string') throw new Error(`平台 ${id} 的模型名称类型无效`);
+            const modelId = (model.id || '').trim();
+            return { id: modelId, name: (model.name || modelId).trim() };
+          }).filter(model => model.id).slice(0, 500);
+        });
+        if (settings.activePlatformId !== undefined && typeof settings.activePlatformId !== 'string') throw new Error('活动平台字段类型无效');
+        if (settings.activePlatformKind !== undefined && settings.activePlatformKind !== 'image' && settings.activePlatformKind !== 'video') throw new Error('活动平台类型无效');
+        if (settings.historyImageRetention !== undefined && settings.historyImageRetention !== 'thumbnail' && settings.historyImageRetention !== 'original') throw new Error('历史保留方式无效');
+        const requestedPlatformId = allowedIds.has(settings.activePlatformId) ? settings.activePlatformId : activePlatformId;
+        const requestedKind = settings.activePlatformKind || getPlatformKind(requestedPlatformId);
+        const normalizedPlatformId = ensurePlatformMatchesKind(requestedPlatformId, requestedKind);
+        const normalizedPlatformKind = getPlatformKind(normalizedPlatformId);
+        const historyImageRetention = settings.historyImageRetention || settingsDraft?.historyRetention || getHistoryImageRetention();
+        if (payload.credentials !== undefined && (!payload.credentials || typeof payload.credentials !== 'object' || Array.isArray(payload.credentials))) {
+          throw new Error('密钥字段类型无效');
+        }
+        const credentials = payload.credentials === undefined ? null : {
+          apiKey: payload.credentials.apiKey === undefined ? '' : payload.credentials.apiKey,
+          textApiKey: payload.credentials.textApiKey === undefined ? '' : payload.credentials.textApiKey,
+          rememberApiKey: payload.credentials.rememberApiKey === undefined ? false : payload.credentials.rememberApiKey
+        };
+        if (credentials && (typeof credentials.apiKey !== 'string' || typeof credentials.textApiKey !== 'string' || typeof credentials.rememberApiKey !== 'boolean')) {
+          throw new Error('密钥字段类型无效');
+        }
+        if (credentials && (credentials.apiKey.length > 4096 || credentials.textApiKey.length > 4096)) throw new Error('密钥字段过长');
+        return {
+          activePlatformId: normalizedPlatformId,
+          activePlatformKind: normalizedPlatformKind,
+          platformSettings,
+          modelLists,
+          historyImageRetention,
+          credentials
+        };
+      }
+
+      function validateSettingsDraft() {
+        captureSettingsDraftPlatform();
+        if (!settingsDraft?.activePlatformId || !PLATFORM_REGISTRY[settingsDraft.activePlatformId]) return '请选择有效的平台';
+        const activeSettings = settingsDraft.platformSettings[settingsDraft.activePlatformId] || {};
+        if (activeSettings.baseUrl && !/^(https?:\/\/|\/)/i.test(activeSettings.baseUrl)) return 'Base URL 需要以 http(s):// 或 / 开头';
+        if (!activeSettings.imageModel || !activeSettings.textModel || !activeSettings.protocol) return '请选择完整的模型和 API 协议';
+        return '';
+      }
+
+      async function commitSettingsDraft() {
+        if (!settingsDraft) return;
+        const validationError = validateSettingsDraft();
+        if (validationError) {
+          flashStatus(validationError, 'danger');
+          return;
+        }
+        const draft = settingsDraft;
+        const previous = committedSettingsSnapshot ? JSON.parse(JSON.stringify(committedSettingsSnapshot)) : null;
+        const safeMap = clonePlatformSettingsMap(draft.platformSettings);
+        const previousPlatformId = activePlatformId;
+        const previousFolderHandle = folderHandle;
+        const rollbackStorageKeys = [
+          PLATFORM_SETTINGS_STORAGE_KEY, ACTIVE_PLATFORM_STORAGE_KEY, ACTIVE_PLATFORM_KIND_STORAGE_KEY,
+          API_PROXY_MODE_KEY, 'api_protocol', 'image_aspect', 'image_resolution', 'image_quality',
+          'output_format', 'image_background', 'video_duration', 'image_count', HISTORY_IMAGE_RETENTION_KEY,
+          API_KEY_STORAGE_KEY, API_KEY_REMEMBER_KEY, TEXT_API_KEY_STORAGE_KEY,
+          MODEL_LIST_STORAGE_PREFIX, IMAGE_MODEL_STORAGE_PREFIX, TEXT_MODEL_STORAGE_PREFIX
+        ];
+        Object.keys(PLATFORM_REGISTRY).forEach(platformId => {
+          rollbackStorageKeys.push(
+            getPlatformStorageKey(MODEL_LIST_STORAGE_PREFIX, platformId),
+            getPlatformStorageKey(IMAGE_MODEL_STORAGE_PREFIX, platformId),
+            getPlatformStorageKey(TEXT_MODEL_STORAGE_PREFIX, platformId)
+          );
+        });
+        const rollbackStorage = Object.fromEntries(rollbackStorageKeys.map(key => [key, {
+          local: localStorage.getItem(key),
+          session: sessionStorage.getItem(key)
+        }]));
+        try {
+          writeStoredPlatformSettingsMap(safeMap);
+          Object.entries(draft.modelLists || {}).forEach(([platformId, models]) => {
+            if (PLATFORM_REGISTRY[platformId]) setStoredModels(models, platformId);
+          });
+          persistApiKey(draft.apiKey || '', !!draft.rememberApiKey);
+          persistTextApiKey(draft.textApiKey || '', !!draft.rememberApiKey);
+          localStorage.setItem(ACTIVE_PLATFORM_STORAGE_KEY, draft.activePlatformId);
+          localStorage.setItem(ACTIVE_PLATFORM_KIND_STORAGE_KEY, draft.activePlatformKind);
+          localStorage.setItem(API_PROXY_MODE_KEY, safeMap[draft.activePlatformId]?.proxyMode ? '1' : '0');
+          const activeSettings = safeMap[draft.activePlatformId] || {};
+          localStorage.setItem(getPlatformStorageKey(IMAGE_MODEL_STORAGE_PREFIX, draft.activePlatformId), activeSettings.imageModel || '');
+          localStorage.setItem(getPlatformStorageKey(TEXT_MODEL_STORAGE_PREFIX, draft.activePlatformId), activeSettings.textModel || '');
+          localStorage.setItem(IMAGE_MODEL_STORAGE_PREFIX, activeSettings.imageModel || '');
+          localStorage.setItem(TEXT_MODEL_STORAGE_PREFIX, activeSettings.textModel || '');
+          localStorage.setItem(MODEL_LIST_STORAGE_PREFIX, JSON.stringify(draft.modelLists[draft.activePlatformId] || []));
+          localStorage.setItem('api_protocol', activeSettings.protocol || '');
+          ['aspect', 'resolution', 'imageQuality', 'outputFormat', 'imageBackground', 'videoDuration', 'count'].forEach(key => {
+            const legacyKey = {
+              aspect: 'image_aspect', resolution: 'image_resolution', imageQuality: 'image_quality', outputFormat: 'output_format', imageBackground: 'image_background', videoDuration: 'video_duration', count: 'image_count'
+            }[key];
+            if (legacyKey && activeSettings[key] !== undefined) localStorage.setItem(legacyKey, activeSettings[key]);
+          });
+          localStorage.setItem(HISTORY_IMAGE_RETENTION_KEY, draft.historyRetention === 'thumbnail' ? 'thumbnail' : 'original');
+
+          if (draft.folderAction === 'reset' || draft.folderAction === 'default') {
+            folderHandle = null;
+            await clearSavedFolderHandle();
+          } else if (draft.folderAction === 'set' && draft.folderHandle) {
+            folderHandle = draft.folderHandle;
+            await saveFolderHandle(folderHandle);
+          }
+
+          activePlatformId = draft.activePlatformId;
+          activePlatformKind = getPlatformKind(activePlatformId);
+          apiKeyValue = draft.apiKey || '';
+          textApiKeyValue = draft.textApiKey || '';
+          committedSettingsSnapshot = {
+            activePlatformId,
+            activePlatformKind,
+            platformSettings: clonePlatformSettingsMap(safeMap),
+            apiKey: apiKeyValue,
+            textApiKey: textApiKeyValue,
+            rememberApiKey: !!draft.rememberApiKey,
+            historyRetention: draft.historyRetention
+          };
+          applyPlatformSettings(getActivePlatformConfig(), safeMap[activePlatformId]);
+          renderPlatformSwitcher();
+          renderPlatformParams(getActivePlatformConfig());
+          syncPromptHints(getActivePlatformConfig());
+          syncPlatformBaseUrl(getActivePlatformConfig());
+          updateReferenceImageLimitText();
+          updatePlatformActionAvailability();
+          syncPlatformSummary();
+          flashStatus('设置已保存', 'success');
+          closeSettingsDrawer({ force: true });
+        } catch (error) {
+          console.error('保存设置失败', error);
+          Object.entries(rollbackStorage).forEach(([key, values]) => {
+            try {
+              if (values.local === null) localStorage.removeItem(key); else localStorage.setItem(key, values.local);
+              if (values.session === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, values.session);
+            } catch {}
+          });
+          if (previous) committedSettingsSnapshot = previous;
+          folderHandle = previousFolderHandle;
+          try {
+            if (folderHandle) await saveFolderHandle(folderHandle);
+            else await clearSavedFolderHandle();
+          } catch {}
+          activePlatformId = previous?.activePlatformId || previousPlatformId;
+          activePlatformKind = previous?.activePlatformKind || getPlatformKind(activePlatformId);
+          settingsDraft = null;
+          if (previous) {
+            apiKeyValue = previous.apiKey || '';
+            textApiKeyValue = previous.textApiKey || '';
+            applyPlatformSettings(getActivePlatformConfig(), previous.platformSettings?.[activePlatformId] || {});
+            renderPlatformParams(getActivePlatformConfig());
+            syncPromptHints(getActivePlatformConfig());
+            syncPlatformBaseUrl(getActivePlatformConfig());
+            updateReferenceImageLimitText();
+            updatePlatformActionAvailability();
+            syncPlatformSummary();
+          }
+          settingsDraft = createSettingsDraft();
+          renderSettingsDraftPlatform();
+          flashStatus('设置保存失败，已保留原配置', 'danger');
+        }
+      }
+
+      async function runConnectionTest() {
+        if (!settingsDraft || !testConnectionBtn) return;
+        captureSettingsDraftPlatform();
+        const platformId = settingsDraft.activePlatformId;
+        const settings = settingsDraft.platformSettings[platformId] || {};
+        const key = settingsDraft.apiKey || '';
+        if (!settings.baseUrl || !key) {
+          setConnectionStatus('请先填写 Base URL 和 API Key', 'danger');
+          return;
+        }
+        const originalText = testConnectionBtn.textContent;
+        testConnectionBtn.disabled = true;
+        updateModelsBtn && (updateModelsBtn.hidden = true);
+        setConnectionStatus('检测中…');
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        settingsConnectionOverride = { platformId, settings, apiKey: key, textApiKey: settingsDraft.textApiKey || '' };
+        try {
+          const endpoints = getModelListEndpoints(settings.protocol || 'openai-chat');
+          let response = null;
+          let lastError = null;
+          for (const endpoint of endpoints) {
+            try {
+              response = await fetch(endpoint, { method: 'GET', headers: buildRequestHeaders(key, settings.protocol), signal: controller.signal });
+              if (response.ok) break;
+              lastError = new Error(`HTTP ${response.status}`);
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          if (!response || !response.ok) throw lastError || new Error('连接失败');
+          let data = null;
+          try { data = await response.json(); } catch {}
+          const models = data?.data?.filter(item => item?.id).map(item => ({ id: item.id, name: item.id }))
+            || data?.models?.map(item => ({ id: String(item.name || item.id || '').replace(/^models\//, ''), name: item.displayName || item.name || item.id })).filter(item => item.id)
+            || [];
+          settingsDraft.pendingModels = models;
+          setConnectionStatus(
+            models.length ? `连接可用，发现 ${models.length} 个模型` : '连接可用，未返回兼容模型列表',
+            models.length ? 'success' : 'warning'
+          );
+          if (updateModelsBtn) updateModelsBtn.hidden = models.length === 0;
+        } catch (error) {
+          setConnectionStatus(error?.name === 'AbortError' ? '连接超时（15 秒）' : '连接失败，请检查配置', 'danger');
+        } finally {
+          clearTimeout(timeout);
+          settingsConnectionOverride = null;
+          testConnectionBtn.disabled = false;
+          testConnectionBtn.querySelector('span')?.replaceChildren('检测连接');
+          if (!testConnectionBtn.querySelector('span')) testConnectionBtn.textContent = originalText;
+        }
+      }
+
+      function applyPendingModelList() {
+        if (!settingsDraft?.pendingModels?.length) return;
+        const models = settingsDraft.pendingModels.map(model => ({ ...model }));
+        const platform = getPlatformConfig(settingsDraft.activePlatformId);
+        settingsDraft.modelLists[settingsDraft.activePlatformId] = models;
+        const currentImage = imageModelSelect.value;
+        const currentText = textModelSelect.value;
+        imageModelSelect.innerHTML = '';
+        textModelSelect.innerHTML = '';
+        models.forEach(model => {
+          imageModelSelect.add(new Option(model.name, model.id));
+          textModelSelect.add(new Option(model.name, model.id));
+        });
+        if (platform.defaultImageModel) {
+          ensureModelOption(imageModelSelect, platform.defaultImageModel, platform.defaultImageModel);
+        }
+        if (platform.defaultTextModel) {
+          ensureModelOption(textModelSelect, platform.defaultTextModel, platform.defaultTextModel);
+        }
+        if ([...imageModelSelect.options].some(option => option.value === currentImage)) imageModelSelect.value = currentImage;
+        if ([...textModelSelect.options].some(option => option.value === currentText)) textModelSelect.value = currentText;
+        settingsDraft.modelLists[settingsDraft.activePlatformId] = getCurrentModelListFromControls();
+        settingsDraft.pendingModels = null;
+        updateModelsBtn.hidden = true;
+        markSettingsDirty();
+      }
+
+      function downloadSettingsBackup() {
+        const payload = getSafeSettingsExport(!!includeCredentialsInput?.checked);
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const stamp = payload.exportedAt.replace(/[:.]/g, '-');
+        link.href = url;
+        link.download = `ai-image-studio-settings-${stamp}.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function openSettingsImportPicker() {
+        settingsImportFile?.click();
+      }
+
+      async function importSettingsBackup(file) {
+        if (!settingsDraft || !file) return;
+        if (file.size > 1024 * 1024) throw new Error('配置文件不能超过 1MB');
+        const payload = JSON.parse(await file.text());
+        const imported = validateSettingsImport(payload);
+        const summaryModels = Object.values(imported.modelLists).reduce((sum, list) => sum + list.length, 0);
+        if (settingsImportSummary) {
+          settingsImportSummary.hidden = false;
+          settingsImportSummary.textContent = `将导入 ${Object.keys(imported.platformSettings).length} 个平台、${summaryModels} 个模型${imported.credentials ? '，包含密钥' : '，不包含密钥'}`;
+        }
+        if (!confirm('确认将配置载入设置草稿？载入后仍需点击保存。')) return;
+        settingsDraft.activePlatformId = imported.activePlatformId;
+        settingsDraft.activePlatformKind = imported.activePlatformKind;
+        settingsDraft.platformSettings = {
+          ...settingsDraft.platformSettings,
+          ...imported.platformSettings
+        };
+        settingsDraft.modelLists = {
+          ...settingsDraft.modelLists,
+          ...imported.modelLists
+        };
+        settingsDraft.historyRetention = imported.historyImageRetention;
+        if (imported.credentials) {
+          settingsDraft.apiKey = imported.credentials.apiKey;
+          settingsDraft.textApiKey = imported.credentials.textApiKey;
+          settingsDraft.rememberApiKey = imported.credentials.rememberApiKey;
+        }
+        settingsDraft.dirtyPlatforms?.add(imported.activePlatformId);
+        markSettingsDirty();
+        renderSettingsDraftPlatform();
       }
 
       // Lightbox 事件监听
@@ -1430,7 +2326,33 @@
           closeAnnouncementModal();
         }
         if (e.key === 'Escape' && settingsDrawer?.classList.contains('active')) {
+          if (settingsMoreMenu && !settingsMoreMenu.hidden) {
+            settingsMoreMenu.hidden = true;
+            settingsMoreBtn?.setAttribute('aria-expanded', 'false');
+            settingsMoreBtn?.focus();
+            return;
+          }
+          if (isMobileSettingsLayout() && mobilePlatformPickerExpanded) {
+            setMobilePlatformPickerExpanded(false);
+            mobilePlatformPickerToggle?.focus();
+            return;
+          }
           closeSettingsDrawer();
+        }
+        if (e.key === 'Tab' && settingsDrawer?.classList.contains('active')) {
+          const focusable = [...settingsDrawer.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), a[href]:not([hidden]), [contenteditable="true"]:not([hidden]), [tabindex]:not([tabindex="-1"]):not([hidden])')]
+            .filter(element => element.offsetParent !== null);
+          if (focusable.length > 0) {
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
         }
       });
 
@@ -1444,6 +2366,84 @@
       settingsOpenBtn?.addEventListener('click', openSettingsDrawer);
       settingsCloseBtn?.addEventListener('click', closeSettingsDrawer);
       settingsDrawerOverlay?.addEventListener('click', closeSettingsDrawer);
+      settingsCancelBtn?.addEventListener('click', closeSettingsDrawer);
+      mobilePlatformPickerToggle?.addEventListener('click', () => {
+        setMobilePlatformPickerExpanded(!mobilePlatformPickerExpanded);
+      });
+      window.matchMedia?.('(max-width: 599px)')?.addEventListener?.('change', () => {
+        setMobilePlatformPickerExpanded(false);
+      });
+      document.addEventListener('click', event => {
+        if (!settingsMoreMenu || settingsMoreMenu.hidden) return;
+        if (settingsMoreMenu.contains(event.target) || settingsMoreBtn?.contains(event.target)) return;
+        settingsMoreMenu.hidden = true;
+        settingsMoreBtn?.setAttribute('aria-expanded', 'false');
+      });
+      settingsConfirmCancel?.addEventListener('click', () => {
+        hideSettingsDiscardConfirm();
+        settingsCloseBtn?.focus();
+      });
+      settingsConfirmDiscard?.addEventListener('click', () => closeSettingsDrawer({ force: true }));
+      settingsTabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => setSettingsTab(tab.dataset.settingsTab));
+        tab.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? settingsTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + settingsTabs.length) % settingsTabs.length;
+          settingsTabs[nextIndex]?.focus();
+          setSettingsTab(settingsTabs[nextIndex]?.dataset.settingsTab);
+        });
+      });
+      settingsMoreBtn?.addEventListener('click', () => {
+        const open = settingsMoreMenu?.hidden !== false;
+        if (settingsMoreMenu) settingsMoreMenu.hidden = !open;
+        settingsMoreBtn.setAttribute('aria-expanded', String(open));
+      });
+      testConnectionBtn?.addEventListener('click', runConnectionTest);
+      updateModelsBtn?.addEventListener('click', applyPendingModelList);
+      resetPlatformSettingsBtn?.addEventListener('click', () => {
+        if (!settingsDraft) return;
+        const platformId = settingsDraft.activePlatformId;
+        const platform = getPlatformConfig(platformId);
+        const current = settingsDraft.platformSettings[platformId] || {};
+        settingsDraft.platformSettings[platformId] = {
+          ...current,
+          protocol: platform.defaultProtocol,
+          imageModel: platform.defaultImageModel || current.imageModel || 'gpt-image-2',
+          textModel: platform.defaultTextModel || current.textModel || DEFAULT_TEXT_MODEL,
+          baseUrl: platform.baseUrlValue || defaultBaseUrl,
+          proxyMode: false,
+          aspect: platform.kind === 'video'
+            ? (platform.id === 'grokVideo' ? '3:2' : '16:9')
+            : 'auto',
+          resolution: platform.kind === 'video' ? '720P' : '2K',
+          imageQuality: 'auto',
+          outputFormat: '',
+          imageBackground: 'auto',
+          videoDuration: '10',
+          count: '1'
+        };
+        settingsMoreMenu.hidden = true;
+        settingsMoreBtn?.setAttribute('aria-expanded', 'false');
+        markSettingsDirty();
+        renderSettingsDraftPlatform();
+      });
+      exportSettingsBtn?.addEventListener('click', downloadSettingsBackup);
+      importSettingsBtn?.addEventListener('click', openSettingsImportPicker);
+      settingsImportFile?.addEventListener('change', async () => {
+        const file = settingsImportFile.files?.[0];
+        settingsImportFile.value = '';
+        if (!file) return;
+        try {
+          await importSettingsBackup(file);
+        } catch (error) {
+          console.error('导入设置失败', error);
+          flashStatus(error?.message || '配置导入失败', 'danger');
+        }
+      });
+      includeCredentialsInput?.addEventListener('change', () => {
+        if (sensitiveExportWarning) sensitiveExportWarning.hidden = !includeCredentialsInput.checked;
+      });
 
       // ========== IndexedDB 历史记录模块 ==========
       const DB_NAME = 'GeminiImageHistory';
@@ -1456,8 +2456,11 @@
       // 历史记录相关 DOM 元素
       const historyGrid = document.getElementById('history-grid');
       const historyCountEl = document.getElementById('history-count');
+      const historyActionsEl = document.getElementById('history-actions');
+      const historyMoreMenu = document.getElementById('history-more-menu');
       const clearHistoryBtn = document.getElementById('clear-history');
       const exportHistoryBtn = document.getElementById('export-history');
+      const sendHistoryBtn = document.getElementById('send-history-to-canvas');
       const importHistoryBtn = document.getElementById('import-history');
       const historyImportFileInput = document.getElementById('history-import-file');
       const historyPaginationEl = document.getElementById('history-pagination');
@@ -1472,6 +2475,31 @@
       let historyCurrentPage = 1;
       let historyLastPageSize = 0;
       let historyResizeTimer = null;
+
+      function renderHistoryEmptyState(kind = 'empty') {
+        if (!historyGrid) return;
+        if (kind === 'error') {
+          historyGrid.innerHTML = '<div class="history-empty" data-history-state="error"><strong>加载历史记录失败</strong><p>请重试，或稍后再导入历史记录。</p><div class="history-empty-actions"><button class="btn" id="history-retry" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>重试</span></button></div></div>';
+        } else {
+          historyGrid.innerHTML = '<div class="history-empty" data-history-state="empty"><strong>暂无历史记录</strong><p>导入或生成图片后，历史记录会显示在这里。</p><div class="history-empty-actions"><button class="btn" id="history-empty-import" type="button"><i data-lucide="upload" aria-hidden="true"></i><span>导入历史</span></button></div></div>';
+        }
+        try { window.lucide?.createIcons?.(); } catch {}
+      }
+
+      function syncHistoryActions(state = 'loading', recordCount = 0) {
+        const hasTransferableMedia = state === 'ready'
+          && typeof collectHistoryImageSources === 'function'
+          && collectHistoryImageSources().length > 0;
+        const hasRecords = state === 'ready' && recordCount > 0;
+        if (historyActionsEl) historyActionsEl.hidden = !hasRecords;
+        if (sendHistoryBtn) sendHistoryBtn.hidden = !hasTransferableMedia;
+        if (exportHistoryBtn) exportHistoryBtn.hidden = !hasRecords;
+        if (clearHistoryBtn) clearHistoryBtn.hidden = !hasRecords;
+        if (historyMoreMenu) {
+          historyMoreMenu.hidden = !hasRecords;
+          if (!hasRecords) historyMoreMenu.open = false;
+        }
+      }
 
 
       // 文件夹句柄
@@ -1935,17 +2963,6 @@
         return url.toString();
       }
 
-      function getPromptAdminToken() {
-        const savedToken = sessionStorage.getItem(PROMPT_ADMIN_TOKEN_STORAGE_KEY);
-        if (savedToken) return savedToken;
-
-        const token = prompt('请输入提示词库管理密钥（只用于新增、导入、删除公共提示词）');
-        if (!token) throw new Error('已取消管理操作');
-
-        sessionStorage.setItem(PROMPT_ADMIN_TOKEN_STORAGE_KEY, token.trim());
-        return token.trim();
-      }
-
       async function requestPromptApi(method, payload = null, options = {}) {
         const headers = { Accept: 'application/json' };
         const fetchOptions = { method, headers };
@@ -1953,10 +2970,6 @@
         if (payload) {
           headers['Content-Type'] = 'application/json';
           fetchOptions.body = JSON.stringify(payload);
-        }
-
-        if (options.admin) {
-          headers['X-Admin-Token'] = getPromptAdminToken();
         }
 
         const response = await fetch(getPromptApiUrl(options.params || {}), fetchOptions);
@@ -1972,9 +2985,6 @@
         }
 
         if (!response.ok || data.ok === false) {
-          if (response.status === 401 || response.status === 403) {
-            sessionStorage.removeItem(PROMPT_ADMIN_TOKEN_STORAGE_KEY);
-          }
           throw new Error(describeApiError(data.error, `提示词库接口请求失败（${response.status}）`));
         }
 
@@ -1982,18 +2992,35 @@
       }
 
       // 保存提示词到本地库
-      async function savePromptToLocalLibrary(title, content) {
+      async function savePromptToLocalLibrary(title, content, metadata = {}) {
         if (!db) await initDB();
 
         return new Promise((resolve, reject) => {
           const transaction = db.transaction(['prompts'], 'readwrite');
           const store = transaction.objectStore('prompts');
 
+          const rawCoverUrl = String(metadata.coverUrl || '').trim();
+          const coverUrl = /^https?:\/\//i.test(rawCoverUrl)
+            || /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=\s]+$/i.test(rawCoverUrl)
+            ? rawCoverUrl
+            : '';
           const record = {
-            title: title,
-            content: content,
-            createdAt: Date.now(),
-            usageCount: 0
+            title: String(title || '').trim(),
+            content: String(content || '').trim(),
+            createdAt: Number(metadata.createdAt) || Date.now(),
+            updatedAt: Date.now(),
+            usageCount: Number(metadata.usageCount) || 0,
+            tags: Array.isArray(metadata.tags) ? metadata.tags.filter(Boolean).map(String) : [],
+            coverUrl,
+            description: String(metadata.description || '').trim(),
+            referenceImageUrls: Array.isArray(metadata.referenceImageUrls) ? metadata.referenceImageUrls.filter(Boolean).map(String) : [],
+            category: String(metadata.category || '其他').trim() || '其他',
+            author: String(metadata.author || '').trim(),
+            imageModel: String(metadata.imageModel || metadata.model || '').trim(),
+            imageMode: String(metadata.imageMode || '').trim(),
+            sourceId: String(metadata.sourceId || '').trim(),
+            sourceUrl: String(metadata.sourceUrl || '').trim(),
+            attributions: Array.isArray(metadata.attributions) ? metadata.attributions.filter(Boolean) : []
           };
 
           const request = store.add(record);
@@ -2027,9 +3054,17 @@
         return new Promise((resolve, reject) => {
           const transaction = db.transaction(['prompts'], 'readwrite');
           const store = transaction.objectStore('prompts');
-          const request = store.delete(id);
-
-          request.onsuccess = () => resolve();
+          const request = store.getAll();
+          request.onsuccess = () => {
+            const record = request.result.find(item => String(item?.id) === String(id));
+            if (!record) {
+              resolve();
+              return;
+            }
+            const remove = store.delete(record.id);
+            remove.onsuccess = () => resolve();
+            remove.onerror = () => reject(remove.error);
+          };
           request.onerror = () => reject(request.error);
         });
       }
@@ -2041,115 +3076,119 @@
         return new Promise((resolve, reject) => {
           const transaction = db.transaction(['prompts'], 'readwrite');
           const store = transaction.objectStore('prompts');
-          const getRequest = store.get(id);
+          const getRequest = store.getAll();
 
           getRequest.onsuccess = () => {
-            const record = getRequest.result;
-            if (record) {
-              record.usageCount = (record.usageCount || 0) + 1;
-              const updateRequest = store.put(record);
-              updateRequest.onsuccess = () => resolve();
-              updateRequest.onerror = () => reject(updateRequest.error);
-            } else {
+            const record = getRequest.result.find(item => String(item?.id) === String(id));
+            if (!record) {
               resolve();
+              return;
             }
+            record.usageCount = (record.usageCount || 0) + 1;
+            const updateRequest = store.put(record);
+            updateRequest.onsuccess = () => resolve();
+            updateRequest.onerror = () => reject(updateRequest.error);
           };
           getRequest.onerror = () => reject(getRequest.error);
         });
       }
 
-      async function savePromptToLibrary(title, content) {
-        if (!isPromptBackendEnabled()) {
-          return savePromptToLocalLibrary(title, content);
-        }
+      let communityPromptsPromise = null;
 
-        const data = await requestPromptApi('POST', { title, content }, { admin: true });
-        return data.id;
+      async function loadCommunityPrompts() {
+        if (communityPromptsPromise) return communityPromptsPromise;
+        if (!appConfig.communityPromptStaticUrl) return [];
+
+        communityPromptsPromise = fetch(new URL(appConfig.communityPromptStaticUrl, window.location.href).toString())
+          .then(response => {
+            if (!response.ok) throw new Error(`社区提示词目录加载失败：${response.status}`);
+            return response.json();
+          })
+          .then(data => {
+            const items = Array.isArray(data) ? data : (Array.isArray(data.entries) ? data.entries : []);
+            return items.map(item => normalizePromptLibraryEntry(item, 'community')).filter(Boolean);
+          })
+          .catch(error => {
+            communityPromptsPromise = null;
+            console.warn('社区提示词目录加载失败:', error);
+            throw error;
+          });
+        return communityPromptsPromise;
       }
 
-      async function loadStaticPrompts() {
-        if (!appConfig.promptStaticUrl) return [];
+      async function loadPromptLibraryEntries(options = {}) {
+        const localOnly = options.localOnly === true;
+        const includeLocal = localOnly || options.includeLocal !== false;
+        const includeCommunity = !localOnly && options.includeCommunity !== false;
+        const includePublic = !localOnly && options.includePublic !== false && isPromptBackendEnabled();
 
-        try {
-          const response = await fetch(new URL(appConfig.promptStaticUrl, window.location.href).toString());
-          if (!response.ok) return [];
+        const localPromise = includeLocal
+          ? loadAllLocalPrompts().then(items => items
+            .map(item => normalizePromptLibraryEntry({ ...item, source: 'local' }, 'local'))
+            .filter(Boolean))
+          : Promise.resolve([]);
+        const sourceErrors = [];
+        const publicPromise = includePublic
+          ? loadPublicPrompts().catch(error => {
+            sourceErrors.push({ source: 'public', label: '公共库', message: error?.message || String(error) });
+            if (options.strictPublic) throw error;
+            console.warn('公共提示词库加载失败:', error);
+            return [];
+          })
+          : Promise.resolve([]);
+        const communityPromise = includeCommunity
+          ? loadCommunityPrompts().catch(error => {
+            sourceErrors.push({ source: 'community', label: '社区目录', message: error?.message || String(error) });
+            if (options.strictCommunity) throw error;
+            console.warn('社区提示词目录加载失败:', error);
+            return [];
+          })
+          : Promise.resolve([]);
 
-          const data = await response.json();
-          const items = Array.isArray(data) ? data : (Array.isArray(data.prompts) ? data.prompts : []);
-
-          return items
-            .map((item, index) => {
-              const content = typeof item === 'string'
-                ? item.trim()
-                : String(item.content || item.prompt || item.text || '').trim();
-
-              if (!content) return null;
-
-              const title = typeof item === 'string'
-                ? getPromptTitle(content)
-                : String(item.title || item.name || getPromptTitle(content)).trim();
-
-              return {
-                id: `static-${index + 1}`,
-                title,
-                content,
-                createdAt: item.createdAt || item.created_at || 0,
-                usageCount: item.usageCount || item.usage_count || 0,
-                source: 'static'
-              };
-            })
-            .filter(Boolean);
-        } catch (err) {
-          console.warn('静态提示词库加载失败:', err);
-          return [];
-        }
+        const [localEntries, publicEntries, communityEntries] = await Promise.all([
+          localPromise,
+          publicPromise,
+          communityPromise
+        ]);
+        const entries = [...localEntries, ...publicEntries, ...communityEntries];
+        Object.defineProperty(entries, 'sourceErrors', {
+          value: sourceErrors,
+          enumerable: false,
+          configurable: true
+        });
+        return entries;
       }
 
-      async function loadAllPrompts() {
-        if (!isPromptBackendEnabled()) {
-          const [staticPrompts, localPrompts] = await Promise.all([
-            loadStaticPrompts(),
-            loadAllLocalPrompts()
-          ]);
-
-          return [
-            ...localPrompts.map(item => ({ ...item, source: 'local' })),
-            ...staticPrompts
-          ];
+      function setStudioPromptContent(content, options = {}) {
+        const input = document.getElementById('prompt');
+        if (!input) return false;
+        const value = String(content || '');
+        if (options.mode === 'append' && input.value.trim()) {
+          input.value = `${input.value.trim()}\n\n${value}`;
+        } else {
+          input.value = value;
         }
-
-        try {
-          const data = await requestPromptApi('GET');
-          return (data.prompts || []).map(item => ({
-            id: item.id,
-            title: item.title,
-            content: item.content,
-            createdAt: item.createdAt || item.created_at || Date.now(),
-            usageCount: item.usageCount || item.usage_count || 0,
-            source: 'static'
-          }));
-        } catch (err) {
-          console.warn('公共提示词库加载失败，改用本地提示词库:', err);
-          const localPrompts = await loadAllLocalPrompts();
-          return localPrompts.map(item => ({ ...item, source: 'local' }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (options.focus !== false) {
+          input.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+          input.focus();
         }
+        return true;
       }
 
-      async function deletePrompt(id) {
-        if (String(id).startsWith('static-')) {
-          throw new Error('静态公共提示词需要在 data/prompts.json 中删除');
-        }
-
-        if (!isPromptBackendEnabled()) {
-          return deleteLocalPrompt(id);
-        }
-
-        return requestPromptApi('DELETE', null, { admin: true, params: { id } });
+      async function loadPublicPrompts() {
+        if (!isPromptBackendEnabled()) return [];
+        const data = await requestPromptApi('GET');
+        return (data.prompts || []).map(item => normalizePromptLibraryEntry({
+          ...item,
+          source: 'public',
+          origin: 'public',
+          createdAt: item.createdAt || item.created_at || Date.now(),
+          usageCount: item.usageCount || item.usage_count || 0
+        }, 'public')).filter(Boolean);
       }
 
       async function incrementPromptUsage(id) {
-        if (String(id).startsWith('static-')) return;
-
         if (!isPromptBackendEnabled()) {
           return incrementLocalPromptUsage(id);
         }
@@ -2209,6 +3248,8 @@
       }
 
       function getHistoryImageRetention() {
+        if (settingsIsOpen && !settingsDraft) return committedSettingsSnapshot?.historyRetention || 'original';
+        if (settingsIsOpen && settingsDraft?.historyRetention) return settingsDraft.historyRetention;
         const activeOption = historyImageRetentionSelect?.querySelector('.history-retention-option.active');
         return activeOption?.dataset.value || 'original';
       }
@@ -2645,17 +3686,17 @@
 
       // 渲染历史记录
       async function renderHistory() {
+        syncHistoryActions('loading');
         try {
           const records = await loadHistory();
           historyCountEl.textContent = `${records.length} 条`;
-          clearHistoryBtn.hidden = records.length === 0;
-          if (exportHistoryBtn) exportHistoryBtn.hidden = records.length === 0;
 
           if (records.length === 0) {
             historyCurrentPage = 1;
             historyLastPageSize = 0;
-            historyGrid.innerHTML = '<div class="history-empty">暂无历史记录</div>';
+            renderHistoryEmptyState('empty');
             updateHistoryPagination(0, 1);
+            syncHistoryActions('empty');
             return;
           }
 
@@ -2773,13 +3814,14 @@
                   const hdImage = await loadImageFromFolder(localFilename);
 
                   // 添加到参考图
-                  state.images.push({
+                  const addedReference = {
                     name: localFilename,
                     mime: 'image/png',
                     dataUrl: hdImage
-                  });
+                  };
+                  state.images.push(addedReference);
 
-                  renderUploads();
+                  renderUploads({ reason: 'added', added: [addedReference] });
                   flashStatus(`已添加到参考图（共 ${state.images.length} 张）`, 'success');
 
                   setHistoryActionButtonContent(addBtn, '✓', '已添加');
@@ -2856,7 +3898,12 @@
             if (savePromptBtn && record.prompt) {
               savePromptBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                showSavePromptDialog(record.prompt);
+                openPromptSaveEditor(record.prompt, {
+                  context: 'history',
+                  coverUrl: getHistoryPromptCover(record),
+                  coverFallbackUrls: getHistoryPromptCoverCandidates(record).slice(1),
+                  coverSource: 'history'
+                });
               });
             }
 
@@ -2924,10 +3971,13 @@
           }
 
           updateHistoryPagination(records.length, pageSize);
+          syncHistoryActions('ready', records.length);
         } catch (err) {
           console.error('加载历史记录失败:', err);
-          historyGrid.innerHTML = '<div class="history-empty">加载历史记录失败</div>';
+          historyCountEl.textContent = '加载失败';
+          renderHistoryEmptyState('error');
           updateHistoryPagination(0, 1);
+          syncHistoryActions('error');
         }
       }
 
@@ -3129,6 +4179,12 @@
 
       async function runAgentGeneration(mediaType, prompt, options = {}) {
         const kind = mediaType === 'video' ? 'video' : 'image';
+        const signal = options.signal;
+        const throwIfAborted = () => {
+          if (!signal?.aborted) return;
+          throw signal.reason || new DOMException('Generation cancelled', 'AbortError');
+        };
+        throwIfAborted();
         if (!String(prompt || '').trim()) {
           throw new Error(kind === 'video' ? '视频提示词不能为空' : '图片提示词不能为空');
         }
@@ -3156,14 +4212,16 @@
             if (typeof callVideoAPI !== 'function') {
               throw new Error('当前页面未暴露视频生成方法');
             }
-            const result = await callVideoAPI(prompt, images);
+            const result = await callVideoAPI(prompt, images, signal);
+            throwIfAborted();
             return { result, params };
           }
 
           if (typeof callImageAPI !== 'function') {
             throw new Error('当前页面未暴露图片生成方法');
           }
-          const result = await callImageAPI(prompt, images);
+          const result = await callImageAPI(prompt, images, signal);
+          throwIfAborted();
           return { result, params };
         } finally {
           restore();
@@ -3244,296 +4302,35 @@
 
       // ========== 提示词库 UI 交互 ==========
 
-      // 显示保存提示词对话框
-      function showSavePromptDialog(promptContent) {
-        // 创建对话框 HTML
-        const dialogOverlay = document.createElement('div');
-        dialogOverlay.className = 'dialog-overlay active';
-
-        // 自动生成标题（取前 24 个字符）
-        const autoTitle = getPromptTitle(promptContent);
-
-        dialogOverlay.innerHTML = `
-          <div class="dialog-content">
-            <div class="dialog-title">💾 保存提示词到库</div>
-            <input class="dialog-input" type="text" placeholder="输入提示词标题" value="${escapeHtml(autoTitle)}" />
-            <div class="dialog-actions">
-              <button class="dialog-btn dialog-btn-cancel">取消</button>
-              <button class="dialog-btn dialog-btn-confirm">保存</button>
-            </div>
-          </div>
-        `;
-
-        document.body.appendChild(dialogOverlay);
-
-        const input = dialogOverlay.querySelector('.dialog-input');
-        const cancelBtn = dialogOverlay.querySelector('.dialog-btn-cancel');
-        const confirmBtn = dialogOverlay.querySelector('.dialog-btn-confirm');
-
-        // 输入框自动获焦
-        setTimeout(() => input.focus(), 100);
-        input.select();
-
-        // 取消按钮
-        cancelBtn.addEventListener('click', () => {
-          dialogOverlay.remove();
-        });
-
-        // 保存按钮
-        confirmBtn.addEventListener('click', async () => {
-          const title = input.value.trim();
-          if (!title) {
-            alert('请输入提示词标题');
-            return;
-          }
-
-          try {
-            confirmBtn.disabled = true;
-            confirmBtn.textContent = '保存中...';
-
-            // 保存到 IndexedDB
-            await savePromptToLibrary(title, promptContent);
-
-            // 刷新提示词库列表
-            await renderPromptLibrary();
-
-            // 显示成功反馈
-            dialogOverlay.remove();
-            flashStatus('✓ 已保存到提示词库', 'success');
-
-          } catch (err) {
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = '保存';
-            console.error('保存失示词失败:', err);
-            alert('保存失败: ' + err.message);
-          }
-        });
-
-        // Enter 键保存
-        input.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter') {
-            confirmBtn.click();
-          }
-        });
-
-        // Escape 键取消
-        dialogOverlay.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape') {
-            cancelBtn.click();
+      function openPromptSaveEditor(promptContent, options = {}) {
+        const content = String(promptContent || '').trim();
+        if (!content) return null;
+        const coverUrl = String(options.coverUrl || '').trim();
+        return openPromptLibraryFromHost({
+          context: options.context || 'studio',
+          tab: 'mine',
+          draft: {
+            title: String(options.title || getPromptTitle(content)).trim(),
+            content,
+            category: String(options.category || '其他'),
+            coverUrl,
+            coverFallbackUrls: Array.isArray(options.coverFallbackUrls) ? options.coverFallbackUrls : [],
+            coverSource: String(options.coverSource || '').trim()
           }
         });
       }
 
-      function parsePromptImportText(text, fileName = '') {
-        const trimmed = text.trim();
-        if (!trimmed) return [];
-
-        if (/\.json$/i.test(fileName)) {
-          const data = JSON.parse(trimmed);
-          const items = Array.isArray(data) ? data : (Array.isArray(data.prompts) ? data.prompts : []);
-
-          return items
-            .map(item => {
-              if (typeof item === 'string') {
-                const content = item.trim();
-                return content ? { title: getPromptTitle(content), content } : null;
-              }
-
-              const content = String(item.content || item.prompt || item.text || '').trim();
-              if (!content) return null;
-
-              return {
-                title: String(item.title || item.name || getPromptTitle(content)).trim(),
-                content
-              };
-            })
-            .filter(Boolean);
-        }
-
-        const blocks = trimmed
-          .split(/\n\s*\n/g)
-          .map(block => block.trim())
-          .filter(Boolean);
-
-        const rows = blocks.length > 1 ? blocks : trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-
-        return rows.map(row => {
-          const csvMatch = /\.csv$/i.test(fileName) ? row.match(/^([^,，]{1,40})[,，](.+)$/) : null;
-          if (csvMatch) {
-            return {
-              title: csvMatch[1].trim(),
-              content: csvMatch[2].trim()
-            };
-          }
-
-          return {
-            title: getPromptTitle(row),
-            content: row
-          };
-        });
+      function getHistoryPromptCoverCandidates(record = {}) {
+        const values = String(record.mediaType || '').toLowerCase() === 'video'
+          ? [record.thumbnail]
+          : [record.imageSrc, record.imageUrl, record.thumbnail];
+        return [...new Set(values.map(value => String(value || '').trim()))].filter(value => (
+          /^https?:\/\//i.test(value) || /^data:image\//i.test(value)
+        ));
       }
 
-      async function importPromptFiles(files) {
-        let importedCount = 0;
-
-        for (const file of files) {
-          const text = await file.text();
-          const prompts = parsePromptImportText(text, file.name);
-
-          for (const prompt of prompts) {
-            if (prompt.content) {
-              await savePromptToLibrary(prompt.title || getPromptTitle(prompt.content), prompt.content);
-              importedCount += 1;
-            }
-          }
-        }
-
-        await renderPromptLibrary();
-        flashStatus(importedCount ? `已导入 ${importedCount} 条提示词` : '未找到可导入的提示词', importedCount ? 'success' : 'danger');
-      }
-
-      function filterPromptLibraryItems(prompts, keyword) {
-        const normalizedKeyword = String(keyword || '').trim().toLowerCase();
-        if (!normalizedKeyword) return prompts;
-
-        return prompts.filter(prompt => {
-          const title = String(prompt.title || '').toLowerCase();
-          const content = String(prompt.content || '').toLowerCase();
-          return title.includes(normalizedKeyword) || content.includes(normalizedKeyword);
-        });
-      }
-
-      async function exportLocalPromptLibrary() {
-        const prompts = await loadAllLocalPrompts();
-        if (!prompts.length) {
-          flashStatus('当前没有可导出的本地提示词', 'danger');
-          return false;
-        }
-
-        const exportPayload = {
-          source: 'local',
-          exportedAt: new Date().toISOString(),
-          count: prompts.length,
-          prompts: prompts.map(prompt => ({
-            id: prompt.id,
-            title: prompt.title || '',
-            content: prompt.content || '',
-            createdAt: prompt.createdAt || 0,
-            usageCount: prompt.usageCount || 0
-          }))
-        };
-
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json;charset=utf-8' });
-        const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = objectUrl;
-        link.download = `local-prompts-${timestamp}.json`;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-
-        setTimeout(() => {
-          URL.revokeObjectURL(objectUrl);
-          link.remove();
-        }, 1000);
-
-        flashStatus(`已导出 ${prompts.length} 条本地提示词`, 'success');
-        return true;
-      }
-
-      // 渲染提示词库列表
-      async function renderPromptLibrary() {
-        try {
-          const prompts = await loadAllPrompts();
-          const libraryList = document.querySelector('.prompt-library-list');
-          const libraryEmpty = document.querySelector('.prompt-library-empty');
-          const searchInput = document.getElementById('prompt-library-search');
-          const keyword = searchInput?.value || '';
-          const filteredPrompts = filterPromptLibraryItems(prompts, keyword);
-
-          if (prompts.length === 0) {
-            libraryList.innerHTML = '';
-            libraryEmpty.textContent = '暂无保存的提示词';
-            libraryEmpty.style.display = 'block';
-            return;
-          }
-
-          if (filteredPrompts.length === 0) {
-            libraryList.innerHTML = '';
-            libraryEmpty.textContent = '没有匹配的提示词';
-            libraryEmpty.style.display = 'block';
-            return;
-          }
-
-          libraryEmpty.style.display = 'none';
-          libraryList.innerHTML = '';
-
-          filteredPrompts.forEach(prompt => {
-            const item = document.createElement('div');
-            item.className = 'prompt-lib-item';
-            const isLocalPrompt = prompt.source === 'local';
-            const sourceLabel = isLocalPrompt ? '本地' : '云端';
-            const sourceClass = isLocalPrompt ? 'local' : 'cloud';
-
-            item.innerHTML = `
-              <div class="prompt-lib-item-title">
-                <span class="prompt-lib-title-text">${escapeHtml(prompt.title)}</span>
-                <span class="prompt-source-badge ${sourceClass}">${sourceLabel}</span>
-              </div>
-              <div class="prompt-lib-item-content" title="点击复制完整内容">${escapeHtml(prompt.content)}</div>
-              <div class="prompt-lib-actions">
-                <button class="prompt-lib-btn" data-action="copy" data-id="${prompt.id}" title="复制到剪贴板">📋 复制</button>
-                ${isLocalPrompt ? `<button class="prompt-lib-btn prompt-lib-btn-delete" data-action="delete" data-id="${prompt.id}" title="删除此提示词">🗑️ 删除</button>` : ''}
-              </div>
-            `;
-
-            const contentEl = item.querySelector('.prompt-lib-item-content');
-
-            async function copyPromptContent(feedbackEl) {
-              try {
-                await copyTextToClipboard(prompt.content);
-                await incrementPromptUsage(prompt.id);
-
-                const originalText = feedbackEl.textContent;
-                feedbackEl.textContent = '✓ 已复制';
-                feedbackEl.style.color = 'var(--success)';
-                setTimeout(() => {
-                  feedbackEl.textContent = originalText;
-                  feedbackEl.style.color = '';
-                }, 1500);
-              } catch (err) {
-                alert('复制失败：' + err.message);
-              }
-            }
-
-            contentEl.addEventListener('click', () => copyPromptContent(contentEl));
-
-            // 复制按钮
-            const copyBtn = item.querySelector('[data-action="copy"]');
-            copyBtn.addEventListener('click', () => copyPromptContent(copyBtn));
-
-            // 删除按钮
-            const deleteBtn = item.querySelector('[data-action="delete"]');
-            if (deleteBtn) {
-              deleteBtn.addEventListener('click', async () => {
-                if (confirm('确定删除此提示词吗？')) {
-                  try {
-                    await deletePrompt(prompt.id);
-                    await renderPromptLibrary();
-                    flashStatus('已删除提示词', 'success');
-                  } catch (err) {
-                    alert('删除失败：' + err.message);
-                  }
-                }
-              });
-            }
-
-            libraryList.appendChild(item);
-          });
-        } catch (err) {
-          console.error('加载提示词库失败:', err);
-        }
+      function getHistoryPromptCover(record = {}) {
+        return getHistoryPromptCoverCandidates(record)[0] || '';
       }
 
       // ========== 文件夹选择模块 ==========
@@ -3581,6 +4378,26 @@
 
       // 选择保存文件夹
       async function selectSaveFolder() {
+        if (settingsDraft) {
+          if (isMobileDevice() || !('showDirectoryPicker' in window)) {
+            settingsDraft.folderHandle = null;
+            settingsDraft.folderAction = 'default';
+            markSettingsDirty();
+            syncSettingsFolderUi();
+            flashStatus('当前环境将使用浏览器默认下载位置', 'success');
+            return;
+          }
+          try {
+            settingsDraft.folderHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            settingsDraft.folderAction = 'set';
+            markSettingsDirty();
+            syncSettingsFolderUi();
+            flashStatus(`已选择保存文件夹：${settingsDraft.folderHandle.name}`, 'success');
+          } catch (err) {
+            if (err?.name !== 'AbortError') console.error('选择文件夹失败', err);
+          }
+          return;
+        }
         try {
           if (isMobileDevice()) {
             savePathEl.textContent = '手机相册/下载';
@@ -3611,6 +4428,13 @@
 
       // 重置保存位置
       async function resetSaveFolder() {
+        if (settingsDraft) {
+          settingsDraft.folderHandle = null;
+          settingsDraft.folderAction = 'reset';
+          markSettingsDirty();
+          syncSettingsFolderUi();
+          return;
+        }
         folderHandle = null;
         savePathEl.textContent = '未选择';
         resetFolderBtn.style.display = 'none';
@@ -3865,6 +4689,7 @@
           await renderHistory();
           flashStatus('已清空历史记录', 'success');
         }
+        if (historyMoreMenu) historyMoreMenu.open = false;
       });
 
       exportHistoryBtn?.addEventListener('click', async () => {
@@ -3873,11 +4698,26 @@
         } catch (err) {
           console.error('导出历史记录失败:', err);
           alert(err.message || '导出历史记录失败');
+        } finally {
+          if (historyMoreMenu) historyMoreMenu.open = false;
         }
       });
 
-      importHistoryBtn?.addEventListener('click', () => {
+      function openHistoryImportPicker() {
+        if (historyMoreMenu) historyMoreMenu.open = false;
         historyImportFileInput?.click();
+      }
+
+      importHistoryBtn?.addEventListener('click', openHistoryImportPicker);
+      historyGrid?.addEventListener('click', event => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('#history-empty-import')) {
+          openHistoryImportPicker();
+          return;
+        }
+        if (target?.closest('#history-retry')) {
+          renderHistory();
+        }
       });
 
       historyImportFileInput?.addEventListener('change', async () => {
@@ -3894,7 +4734,6 @@
       });
 
       // 拉取模型列表
-      const fetchModelsBtn = document.getElementById('fetch-models-btn');
       const addModelsBtn = document.getElementById('add-models-btn');
       const deleteImageModelBtn = document.getElementById('delete-image-model-btn');
       const deleteTextModelBtn = document.getElementById('delete-text-model-btn');
@@ -3949,7 +4788,8 @@
       }
 
       function showAddModelsDialog() {
-        if (!isActivePlatformSupported()) {
+        const supported = settingsIsOpen ? !!getPlatformConfig(getSettingsPlatformId()).supported : isActivePlatformSupported();
+        if (!supported) {
           flashStatus('当前平台尚未接入模型管理，请先切换到已接入平台', 'danger');
           return;
         }
@@ -3958,7 +4798,7 @@
         dialogOverlay.innerHTML = `
           <div class="dialog-content">
             <div class="dialog-title">➕ 手动添加模型</div>
-            <div class="dialog-desc">可一次添加生图模型和文本优化模型。两个输入框至少填写一个，添加后会自动选中并保存到浏览器本地历史。</div>
+            <div class="dialog-desc">可一次添加生图模型和文本优化模型。两个输入框至少填写一个，添加后会自动选中，点击设置底部“保存”后生效。</div>
             <input class="dialog-input" id="manual-image-model" type="text" placeholder="生图模型，例如：gpt-image-2" autocomplete="off" />
             <input class="dialog-input" id="manual-text-model" type="text" placeholder="文本优化模型，例如：gpt-5.4-mini" autocomplete="off" />
             <div class="dialog-actions">
@@ -3996,7 +4836,11 @@
         [imageInput, textInput].forEach(input => {
           input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') confirmAdd();
-            if (e.key === 'Escape') closeDialog();
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopPropagation();
+              closeDialog();
+            }
           });
         });
         dialogOverlay.addEventListener('click', (e) => {
@@ -4007,6 +4851,20 @@
       }
 
       function addManualModel(type, modelId) {
+        if (settingsIsOpen && settingsDraft) {
+          const targetSelect = type === 'image' ? imageModelSelect : textModelSelect;
+          ensureModelOption(targetSelect, modelId, modelId);
+          const platformId = settingsDraft.activePlatformId;
+          const models = settingsDraft.modelLists[platformId] || [];
+          if (!models.some(model => model.id === modelId)) models.push({ id: modelId, name: modelId });
+          settingsDraft.modelLists[platformId] = models;
+          settingsDraft.platformSettings[platformId] = {
+            ...(settingsDraft.platformSettings[platformId] || {}),
+            ...(type === 'image' ? { imageModel: modelId } : { textModel: modelId })
+          };
+          markSettingsDirty();
+          return;
+        }
         const label = type === 'image' ? '生图模型' : '文本优化模型';
         const targetSelect = type === 'image' ? imageModelSelect : textModelSelect;
         ensureModelOption(targetSelect, modelId, modelId);
@@ -4028,7 +4886,8 @@
       }
 
       function deleteCurrentModel(type) {
-        if (!isActivePlatformSupported()) {
+        const supported = settingsIsOpen ? !!getPlatformConfig(getSettingsPlatformId()).supported : isActivePlatformSupported();
+        if (!supported) {
           flashStatus('当前平台尚未接入模型管理，请先切换到已接入平台', 'danger');
           return;
         }
@@ -4036,6 +4895,12 @@
         const targetSelect = type === 'image' ? imageModelSelect : textModelSelect;
         const storageKey = type === 'image' ? IMAGE_MODEL_STORAGE_PREFIX : TEXT_MODEL_STORAGE_PREFIX;
         const modelId = targetSelect.value;
+        const platformConfig = getPlatformConfig(settingsIsOpen ? getSettingsPlatformId() : activePlatformId);
+        const defaultModel = type === 'image' ? platformConfig.defaultImageModel : platformConfig.defaultTextModel;
+        if (modelId === defaultModel) {
+          flashStatus('平台注册默认模型不可删除', 'danger');
+          return;
+        }
         if (!modelId) {
           flashStatus(`没有可删除的${label}`, 'danger');
           return;
@@ -4044,105 +4909,24 @@
 
         removeModelOption(imageModelSelect, modelId);
         removeModelOption(textModelSelect, modelId);
+        if (settingsIsOpen && settingsDraft) {
+          const platformId = settingsDraft.activePlatformId;
+          settingsDraft.modelLists[platformId] = (settingsDraft.modelLists[platformId] || []).filter(model => model.id !== modelId);
+          const platform = getPlatformConfig(platformId);
+          settingsDraft.platformSettings[platformId] = {
+            ...(settingsDraft.platformSettings[platformId] || {}),
+            imageModel: imageModelSelect.value || platform.defaultImageModel || 'gpt-image-2',
+            textModel: textModelSelect.value || platform.defaultTextModel || DEFAULT_TEXT_MODEL
+          };
+          markSettingsDirty();
+          return;
+        }
         deleteStoredModel(modelId);
         localStorage.setItem(getPlatformStorageKey(IMAGE_MODEL_STORAGE_PREFIX), imageModelSelect.value || '');
         localStorage.setItem(getPlatformStorageKey(TEXT_MODEL_STORAGE_PREFIX), textModelSelect.value || '');
         localStorage.setItem(getPlatformStorageKey(storageKey), targetSelect.value || '');
         flashStatus(`已删除模型: ${modelId}`, 'success');
       }
-
-      async function fetchModelList() {
-        if (!isActivePlatformSupported()) {
-          flashStatus('当前平台尚未接入模型拉取，请先切换到已接入平台', 'danger');
-          return;
-        }
-        const key = getApiKey();
-        if (!key) { flashStatus('请先填写 API Key', 'danger'); return; }
-        const protocol = getProtocol();
-
-        fetchModelsBtn.disabled = true;
-        fetchModelsBtn.textContent = '拉取中...';
-
-        try {
-          const endpoints = getModelListEndpoints(protocol);
-          const headers = buildRequestHeaders(key, protocol);
-          let data = null;
-          let lastError = null;
-
-          for (const endpoint of endpoints) {
-            try {
-              const res = await fetch(endpoint, { headers });
-              if (!res.ok) {
-                let detail = '';
-                try {
-                  const raw = await res.text();
-                  detail = raw ? ` ${raw.slice(0, 240)}` : '';
-                } catch (_) {
-                  detail = '';
-                }
-                throw new Error(`HTTP ${res.status}${detail}`);
-              }
-              data = await res.json();
-              break;
-            } catch (err) {
-              lastError = err;
-              console.warn('[fetchModelList] endpoint failed:', endpoint, err);
-            }
-          }
-
-          if (!data) throw lastError || new Error('模型列表请求失败');
-
-          let models = [];
-          if (data.data && Array.isArray(data.data)) {
-            // OpenAI 格式: { data: [{ id: "xxx" }] }
-            models = data.data.map(m => ({ id: m.id, name: m.id }));
-          } else if (data.models && Array.isArray(data.models)) {
-            // Gemini 格式: { models: [{ name: "models/xxx" }] }
-            models = data.models.map(m => {
-              const id = m.name?.replace('models/', '') || m.id || m.name;
-              return { id, name: m.displayName || id };
-            });
-          }
-
-          if (models.length === 0) {
-            flashStatus('未获取到模型列表，请检查 API', 'danger');
-            return;
-          }
-
-          const prevImage = imageModelSelect.value;
-          const prevText = textModelSelect.value;
-
-          imageModelSelect.innerHTML = '';
-          textModelSelect.innerHTML = '';
-          models.forEach(m => {
-            imageModelSelect.add(new Option(m.name, m.id));
-            textModelSelect.add(new Option(m.name, m.id));
-          });
-
-          // 恢复之前的选中值
-          if ([...imageModelSelect.options].some(o => o.value === prevImage)) {
-            imageModelSelect.value = prevImage;
-          }
-          if ([...textModelSelect.options].some(o => o.value === prevText)) {
-            textModelSelect.value = prevText;
-          }
-
-          setStoredModels(models);
-          flashStatus(`已获取 ${models.length} 个模型`, 'success');
-        } catch (err) {
-          console.error('拉取模型列表失败:', err);
-          flashStatus(getModelListErrorMessage(err), 'danger');
-        } finally {
-          fetchModelsBtn.disabled = false;
-          fetchModelsBtn.textContent = '拉取列表';
-        }
-      }
-
-      fetchModelsBtn.addEventListener('click', fetchModelList);
-      addModelsBtn.addEventListener('click', showAddModelsDialog);
-      deleteImageModelBtn.addEventListener('click', () => deleteCurrentModel('image'));
-      deleteTextModelBtn.addEventListener('click', () => deleteCurrentModel('text'));
-      setTextKeyBtn?.addEventListener('click', showTextKeyDialog);
 
       function restoreSelectValue(selectEl, value) {
         if (!selectEl || value === null) return;
@@ -4159,7 +4943,10 @@
           rememberApiKeyInput.checked = storedApiKey.remember;
         }
         renderApiKeyMask();
-        updateTextKeyButtonState();
+        if (textApiKeyInput) {
+          textApiKeyInput.value = textApiKeyValue || '';
+          textApiKeyInput.type = 'password';
+        }
         if (proxyModeInput) {
           proxyModeInput.checked = localStorage.getItem(API_PROXY_MODE_KEY) === '1';
         }
@@ -4220,9 +5007,14 @@
 
         const savedHistoryRetention = localStorage.getItem(HISTORY_IMAGE_RETENTION_KEY);
         setHistoryImageRetention(savedHistoryRetention);
+        refreshCommittedSettingsSnapshot();
       }
 
       function saveSettings() {
+        if (settingsIsOpen && settingsDraft) {
+          commitSettingsDraft();
+          return;
+        }
         const apiKey = getApiKey();
         const rememberApiKey = !!rememberApiKeyInput?.checked;
         persistApiKey(apiKey, rememberApiKey);
@@ -4433,24 +5225,95 @@
         return '';
       }
 
-      function getModelListErrorMessage(error) {
-        const message = String(error?.message || '').trim();
-        if (/HTTP 401/i.test(message)) {
-          return '拉取模型列表失败：认证未通过，请检查 API Key、协议类型和请求头配置';
-        }
-        if (/HTTP 403/i.test(message)) {
-          return '拉取模型列表失败：当前接口禁止列出模型（HTTP 403）。很多中转站不开放 /models，请改用“手动添加”填写模型名';
-        }
-        if (/HTTP 404/i.test(message)) {
-          return '拉取模型列表失败：当前接口没有提供模型列表端点（HTTP 404），请改用“手动添加”填写模型名';
-        }
-        if (/Failed to fetch|NetworkError/i.test(message)) {
-          return '拉取模型列表失败：网络连接失败，或目标接口未放行浏览器跨域';
-        }
-        return '拉取模型列表失败: ' + (parseApiError(message) || message || '未知错误');
+      function notifyReferenceImagesChanged(change = {}) {
+        if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+        const added = Array.isArray(change.added)
+          ? change.added
+            .filter(image => image?.dataUrl)
+            .map(image => ({
+              dataUrl: image.dataUrl,
+              mime: image.mime || 'image/png',
+              name: image.name || image.label || ''
+            }))
+          : [];
+        window.dispatchEvent(new CustomEvent('studio-reference-images-changed', {
+          detail: {
+            reason: change.reason || 'refresh',
+            added,
+            autoAttach: Boolean(change.autoAttach)
+          }
+        }));
       }
 
-      function renderUploads() {
+      async function updateLocalPromptRecord(id, patch = {}) {
+        if (!db) await initDB();
+
+        return new Promise((resolve, reject) => {
+          const transaction = db.transaction(['prompts'], 'readwrite');
+          const store = transaction.objectStore('prompts');
+          const request = store.getAll();
+          request.onsuccess = () => {
+            const current = request.result.find(item => String(item?.id) === String(id));
+            if (!current) {
+              resolve(null);
+              return;
+            }
+            const next = {
+              ...current,
+              ...patch,
+              title: String(patch.title ?? current.title ?? '').trim(),
+              content: String(patch.content ?? current.content ?? '').trim(),
+              updatedAt: Date.now()
+            };
+            const update = store.put(next);
+            update.onsuccess = () => resolve(next);
+            update.onerror = () => reject(update.error);
+          };
+          request.onerror = () => reject(request.error);
+        });
+      }
+
+      async function deleteLocalPromptEntry(id) {
+        if (!db) await initDB();
+        return deleteLocalPrompt(id);
+      }
+
+      function normalizePromptLibraryEntry(item = {}, originHint = '') {
+        const content = String(item.content || item.prompt || item.text || '').trim();
+        if (!content) return null;
+        const source = String(item.source || '').trim();
+        const rawOrigin = String(item.origin || originHint || (source === 'local' ? 'local' : source === 'community' ? 'community' : 'public')).trim();
+        const origin = rawOrigin === 'curated' ? 'public' : rawOrigin;
+        const refs = Array.isArray(item.referenceImageUrls) ? item.referenceImageUrls.filter(Boolean).map(String) : [];
+        const attributions = Array.isArray(item.attributions) ? item.attributions.filter(Boolean) : [];
+        const rawCoverUrl = String(item.coverUrl || '').trim();
+        const coverUrl = /^https?:\/\//i.test(rawCoverUrl)
+          || (origin === 'local' && /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=\s]+$/i.test(rawCoverUrl))
+          ? rawCoverUrl
+          : '';
+        return {
+          id: item.id ?? `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          origin,
+          title: String(item.title || content.slice(0, 42)).trim(),
+          content,
+          description: String(item.description || '').trim(),
+          coverUrl,
+          referenceImageUrls: refs,
+          category: String(item.category || '其他').trim() || '其他',
+          tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).map(String) : [],
+          author: String(item.author || '').trim(),
+          sourceId: String(item.sourceId || '').trim(),
+          sourceUrl: String(item.sourceUrl || '').trim(),
+          attributions,
+          imageModel: String(item.imageModel || item.model || '').trim(),
+          imageMode: String(item.imageMode || '').trim(),
+          createdAt: item.createdAt || item.created_at || 0,
+          usageCount: Number(item.usageCount || item.usage_count) || 0,
+          updatedAt: Number(item.updatedAt || item.updated_at) || 0
+        };
+      }
+
+      function renderUploads(change = null) {
         updateReferenceImageLimitText();
         preview.innerHTML = '';
         state.images.forEach((img, idx) => {
@@ -4476,7 +5339,7 @@
           btn.textContent = `删除`;
           btn.onclick = () => {
             state.images.splice(idx, 1);
-            renderUploads();
+            renderUploads({ reason: 'removed' });
           };
           wrapper.appendChild(imageEl);
           wrapper.appendChild(sizeLabel);
@@ -4484,6 +5347,7 @@
           preview.appendChild(wrapper);
         });
         flashStatus(state.images.length ? `已选择 ${state.images.length} 张` : '待发送...');
+        if (change) notifyReferenceImagesChanged(change);
       }
 
       function getCanvasUploadPreviewImageSourcesFromState(images) {
@@ -4545,25 +5409,49 @@
 
       function openCanvasTool(options = {}) {
         if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
-        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260728-1', _appBase).href;
+        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
         return import(canvasUrl)
-          .then(module => module.openCanvasWorkspace(options))
+          .then(module => {
+            const result = module.openCanvasWorkspace(options);
+            setWorkspaceNavActive('canvas');
+            return result;
+          })
           .catch(error => {
             console.error('canvas load failed', error);
+            setWorkspaceNavActive('studio');
             flashStatus('画布模块加载失败：' + (error?.message || error), 'danger');
           });
       }
 
-      async function loadCanvasResumeSummary() {
-        if (!CANVAS_FEATURE_ENABLED) return null;
-        try {
-          const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260728-1', _appBase).href;
-          const module = await import(canvasUrl);
-          return typeof module.getCanvasResumeProject === 'function' ? module.getCanvasResumeProject() : null;
-        } catch (error) {
-          console.warn('canvas resume summary unavailable', error);
-          return null;
+      function closeCanvasTool() {
+        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        return import(canvasUrl)
+          .then(module => module.closeCanvasWorkspace?.())
+          .catch(error => {
+            console.warn('canvas close unavailable', error);
+            return null;
+          });
+      }
+
+      async function getCanvasProjectTargets() {
+        if (!CANVAS_FEATURE_ENABLED) return [];
+        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        const module = await import(canvasUrl);
+        return typeof module.getCanvasProjectTargets === 'function' ? module.getCanvasProjectTargets() : [];
+      }
+
+      function getActiveCanvasProjectId() {
+        return String(window.__activeCanvasProjectId || '');
+      }
+
+      async function addPromptEntryToCanvas(entry, options = {}) {
+        if (!CANVAS_FEATURE_ENABLED) throw new Error(CANVAS_DEV_NOTICE);
+        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        const module = await import(canvasUrl);
+        if (typeof module.addPromptEntryToCanvas !== 'function') {
+          throw new Error('Canvas prompt integration is unavailable');
         }
+        return module.addPromptEntryToCanvas(entry, options);
       }
 
       function sendImagesToCanvas(sources) {
@@ -4604,14 +5492,19 @@
       }
 
       function syncCanvasTransferButtons() {
+        const setTransferLabel = (button, text) => {
+          const label = button?.querySelector('[data-transfer-label]');
+          if (label) label.textContent = text;
+          else if (button) button.textContent = text;
+        };
         const resultsBtn = document.getElementById('send-results-to-canvas');
         if (resultsBtn) {
           resultsBtn.setAttribute('data-canvas-transfer', 'results-batch');
           if (!CANVAS_FEATURE_ENABLED) {
-            resultsBtn.textContent = '全部进画布（开发中）';
+            setTransferLabel(resultsBtn, '全部进画布（开发中）');
             resultsBtn.title = CANVAS_DEV_NOTICE;
           } else {
-            resultsBtn.textContent = '全部进画布';
+            setTransferLabel(resultsBtn, '全部进画布');
             resultsBtn.title = '';
           }
         }
@@ -4619,36 +5512,23 @@
         if (historyBtn) {
           historyBtn.setAttribute('data-canvas-transfer', 'history-batch');
           if (!CANVAS_FEATURE_ENABLED) {
-            historyBtn.textContent = '历史进画布（开发中）';
+            setTransferLabel(historyBtn, '历史进画布（开发中）');
             historyBtn.title = CANVAS_DEV_NOTICE;
           } else {
-            historyBtn.textContent = '历史进画布';
+            setTransferLabel(historyBtn, '历史进画布');
             historyBtn.title = '';
           }
         }
       }
 
       document.querySelectorAll('[data-open-canvas]').forEach(button => {
-        button.addEventListener('click', () => openCanvasTool());
-      });
-      document.getElementById('canvas-tool-btn')?.addEventListener('click', () => openCanvasTool());
-      document.getElementById('hero-canvas-resume-btn')?.addEventListener('click', event => {
-        const projectId = event.currentTarget?.dataset?.projectId || '';
-        openCanvasTool(projectId ? { openProjectId: projectId } : { resumeLast: true });
+        button.addEventListener('click', () => {
+          openCanvasTool();
+        });
       });
       document.getElementById('send-results-to-canvas')?.addEventListener('click', () => sendAllResultsToCanvas());
       document.getElementById('send-history-to-canvas')?.addEventListener('click', () => sendAllHistoryToCanvas());
       syncCanvasTransferButtons();
-      loadCanvasResumeSummary().then(summary => {
-        if (!summary) return;
-        const resumeBtn = document.getElementById('hero-canvas-resume-btn');
-        if (!resumeBtn) return;
-        resumeBtn.hidden = false;
-        resumeBtn.disabled = false;
-        resumeBtn.dataset.projectId = String(summary.id || '');
-        resumeBtn.textContent = '继续上次画布';
-        resumeBtn.title = summary.title ? `继续「${summary.title}」` : '继续上次画布';
-      });
 
       function updateReferenceImageLimitText() {
         const limit = getReferenceImageLimit();
@@ -4672,7 +5552,11 @@
 
         Promise.all(filesToAdd.map(processAndCompressImage)).then(list => {
           state.images = [...state.images, ...list];
-          renderUploads();
+          renderUploads({
+            reason: 'added',
+            added: list,
+            autoAttach: document.body.classList.contains('agent-mode-open')
+          });
           const cacheHits = list.filter(item => item && item.cacheHit).length;
           if (files.length > remaining) {
             flashStatus(`已添加 ${filesToAdd.length} 张，超出的已忽略（最多 ${limit} 张）`, 'success');
@@ -4912,6 +5796,127 @@
 
         // 对于大于 10MB 的图片，进行压缩
         return await compressImageToLimit(file);
+      }
+
+      async function fetchPromptReferenceBlob(url) {
+        const source = String(url || '').trim();
+        if (!source) throw new Error('图片地址为空');
+        const read = async target => {
+          const maxBytes = 15 * 1024 * 1024;
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          const timeout = setTimeout(() => controller?.abort(), 15000);
+          try {
+            const response = await fetch(target, {
+              mode: 'cors',
+              credentials: 'omit',
+              cache: 'force-cache',
+              signal: controller?.signal
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const headerMime = String(response.headers?.get('content-type') || '').split(';')[0].trim().toLowerCase();
+            const declaredSize = Number(response.headers?.get('content-length')) || 0;
+            if (declaredSize > maxBytes) throw new Error('图片超过 15MB');
+            if (headerMime && !headerMime.startsWith('image/')) throw new Error('返回内容不是图片');
+            let blob;
+            if (response.body?.getReader) {
+              const reader = response.body.getReader();
+              const chunks = [];
+              let size = 0;
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  if (!value) continue;
+                  size += value.byteLength;
+                  if (size > maxBytes) {
+                    await reader.cancel().catch(() => {});
+                    throw new Error('图片超过 15MB');
+                  }
+                  chunks.push(value);
+                }
+              } finally {
+                reader.releaseLock?.();
+              }
+              blob = new Blob(chunks, { type: headerMime || 'application/octet-stream' });
+            } else {
+              blob = await response.blob();
+            }
+            if (blob.size > maxBytes) throw new Error('图片超过 15MB');
+            const mime = String(blob.type || headerMime).split(';')[0].trim().toLowerCase();
+            if (!mime.startsWith('image/')) throw new Error('返回内容不是图片');
+            return new Blob([blob], { type: mime });
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+
+        try {
+          return await read(source);
+        } catch (directError) {
+          if (!/^https?:\/\//i.test(source)) throw directError;
+          const proxyUrl = new URL(apiProxyEndpoint, window.location.href);
+          proxyUrl.searchParams.set('media', '1');
+          proxyUrl.searchParams.set('target', source);
+          try {
+            return await read(proxyUrl.toString());
+          } catch (proxyError) {
+            throw new Error(`直连和媒体代理都失败：${proxyError.message || proxyError}`);
+          }
+        }
+      }
+
+      async function addStudioReferenceImages(sources = []) {
+        const result = { added: 0, skipped: 0, warnings: [] };
+        const list = Array.isArray(sources) ? sources : [];
+        const unique = [];
+        const seen = new Set();
+        list.forEach((item, index) => {
+          const url = String(item?.url || item?.dataUrl || '').trim();
+          if (!url || seen.has(url)) {
+            result.skipped += 1;
+            return;
+          }
+          seen.add(url);
+          unique.push({ url, name: String(item?.name || `提示词参考图 ${index + 1}`).trim() });
+        });
+
+        const limit = getReferenceImageLimit();
+        for (const source of unique) {
+          if (state.images.length >= limit) {
+            result.skipped += 1;
+            result.warnings.push({ name: source.name, reason: `已达到当前平台的 ${limit} 张上限` });
+            continue;
+          }
+          try {
+            const blob = await fetchPromptReferenceBlob(source.url);
+            const mime = String(blob.type || '').toLowerCase();
+            if (!mime.startsWith('image/')) throw new Error('不是可用图片');
+            const file = new File([blob], source.name || 'prompt-reference', { type: mime });
+            const prepared = await processAndCompressImage(file);
+            const dataUrl = String(prepared?.dataUrl || '').trim();
+            if (!dataUrl) throw new Error('图片处理没有返回数据');
+            if (state.images.some(image => image?.dataUrl === dataUrl || image?.sourceUrl === source.url)) {
+              result.skipped += 1;
+              continue;
+            }
+            const added = {
+              ...prepared,
+              name: source.name || prepared.name || '提示词参考图',
+              sourceUrl: source.url,
+              mime: prepared.mime || mime
+            };
+            state.images.push(added);
+            result.added += 1;
+          } catch (error) {
+            result.skipped += 1;
+            result.warnings.push({ name: source.name, reason: error?.message || '图片加载失败' });
+          }
+        }
+
+        if (result.added) {
+          renderUploads({ reason: 'prompt-library-added', added: state.images.slice(-result.added) });
+        }
+        return result;
       }
 
       function readFileAsDataUrl(file) {
@@ -5975,7 +6980,7 @@
         return `top=[${topFields}] detail=[${detailFields}] output=[${outputFields}]`;
       }
 
-      async function sendVideoRequest(request, label = 'video') {
+      async function sendVideoRequest(request, label = 'video', externalSignal) {
         debugLog('[callVideoAPI] request:', {
           label,
           endpoint: request.endpoint,
@@ -5984,6 +6989,11 @@
         });
 
         const controller = new AbortController();
+        const propagateAbort = () => {
+          try { controller.abort(externalSignal?.reason); } catch { controller.abort(); }
+        };
+        if (externalSignal?.aborted) propagateAbort();
+        else externalSignal?.addEventListener('abort', propagateAbort, { once: true });
         const timeoutId = setTimeout(() => controller.abort(), 600000);
         let res;
         try {
@@ -5995,10 +7005,13 @@
           });
         } catch (fetchErr) {
           clearTimeout(timeoutId);
+          externalSignal?.removeEventListener('abort', propagateAbort);
+          if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
           if (fetchErr.name === 'AbortError') throw new Error('视频请求超时（10分钟），请稍后重试');
           throw fetchErr;
         }
         clearTimeout(timeoutId);
+        externalSignal?.removeEventListener('abort', propagateAbort);
 
         const raw = await res.text();
         debugLog(`[callVideoAPI] raw response (${label}):`, raw.slice(0, 2000));
@@ -6007,20 +7020,21 @@
         return { ok: res.ok, status: res.status, raw, data };
       }
 
-      async function sendVideoGet(endpoint, key, label = 'video-poll') {
+      async function sendVideoGet(endpoint, key, label = 'video-poll', signal) {
         return sendVideoRequest({
           method: 'GET',
           endpoint,
           headers: { 'Authorization': `Bearer ${key}`, 'Accept': 'application/json' }
-        }, label);
+        }, label, signal);
       }
 
-      async function fetchVideoContentUrl(videoId, key) {
+      async function fetchVideoContentUrl(videoId, key, signal) {
         if (!videoId) return '';
         const endpoint = buildApiUrl(`/v1/videos/${encodeURIComponent(videoId)}/content`);
         const res = await fetch(endpoint, {
           method: 'GET',
-          headers: { 'Authorization': `Bearer ${key}` }
+          headers: { 'Authorization': `Bearer ${key}` },
+          signal
         });
         if (!res.ok) return '';
         const contentType = res.headers.get('Content-Type') || '';
@@ -6037,7 +7051,7 @@
         return URL.createObjectURL(blob);
       }
 
-      async function pollVideoTask(initialResponse, key, protocol) {
+      async function pollVideoTask(initialResponse, key, protocol, signal) {
         if (!initialResponse.ok) return initialResponse;
         if (protocol === 'openai-video-chat') return initialResponse;
 
@@ -6060,7 +7074,7 @@
           if (videoUrl || (isVideoSuccessStatus(status) && !requiresVideoUrl)) {
             let finalUrl = videoUrl;
             if (!finalUrl && protocol === 'openai-videos') {
-              finalUrl = await fetchVideoContentUrl(id, key);
+              finalUrl = await fetchVideoContentUrl(id, key, signal);
             }
             return {
               ok: true,
@@ -6116,7 +7130,16 @@
             throw new Error('视频生成任务超时（10分钟），请稍后到平台控制台查看结果');
           }
 
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          if (signal?.aborted) throw signal.reason || new DOMException('Generation cancelled', 'AbortError');
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, 3000);
+            const onAbort = () => {
+              clearTimeout(timer);
+              reject(signal.reason || new DOMException('Generation cancelled', 'AbortError'));
+            };
+            signal?.addEventListener('abort', onAbort, { once: true });
+            setTimeout(() => signal?.removeEventListener('abort', onAbort), 3001);
+          });
           const endpoint = isVeoProtocol
             ? buildApiUrl(`/v1/video/query?id=${encodeURIComponent(id)}`)
             : isHappyHorseProtocol
@@ -6126,7 +7149,7 @@
                 : isGrokVideoCreateProtocol
                   ? buildApiUrl(`/v1/video/query?id=${encodeURIComponent(id)}`)
             : buildApiUrl(`/v1/videos/${encodeURIComponent(id)}`);
-          const pollResponse = await sendVideoGet(endpoint, key, isVeoProtocol ? 'veo-video-query' : (isHappyHorseProtocol ? 'aliyun-happyhorse-query' : (isDoubaoSeedanceProtocol ? 'doubao-seedance-query' : (isGrokVideoCreateProtocol ? 'grok-video-query' : 'openai-videos-query'))));
+          const pollResponse = await sendVideoGet(endpoint, key, isVeoProtocol ? 'veo-video-query' : (isHappyHorseProtocol ? 'aliyun-happyhorse-query' : (isDoubaoSeedanceProtocol ? 'doubao-seedance-query' : (isGrokVideoCreateProtocol ? 'grok-video-query' : 'openai-videos-query'))), signal);
           if (!pollResponse.ok) return pollResponse;
           data = pollResponse.data;
         }
@@ -6153,7 +7176,7 @@
         return retryPatterns.some(pattern => pattern.test(text));
       }
 
-      async function sendImageRequest(request, label = 'default') {
+      async function sendImageRequest(request, label = 'default', externalSignal) {
         debugLog('[callImageAPI] request:', {
           label,
           endpoint: request.endpoint,
@@ -6162,6 +7185,11 @@
         });
 
         const controller = new AbortController();
+        const propagateAbort = () => {
+          try { controller.abort(externalSignal?.reason); } catch { controller.abort(); }
+        };
+        if (externalSignal?.aborted) propagateAbort();
+        else externalSignal?.addEventListener('abort', propagateAbort, { once: true });
         const timeoutId = setTimeout(() => controller.abort(), 600000); // 10分钟超时
         let res;
         try {
@@ -6173,10 +7201,13 @@
           });
         } catch (fetchErr) {
           clearTimeout(timeoutId);
+          externalSignal?.removeEventListener('abort', propagateAbort);
+          if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
           if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
           throw fetchErr;
         }
         clearTimeout(timeoutId);
+        externalSignal?.removeEventListener('abort', propagateAbort);
 
         const raw = await res.text();
         debugLog(`[callImageAPI] raw response (${label}):`, raw.slice(0, 2000));
@@ -7864,7 +8895,7 @@ ${chinesePrompt}
 
         saveBtn?.addEventListener('click', () => {
           const value = textarea.value.trim();
-          if (value) showSavePromptDialog(value);
+          if (value) openPromptSaveEditor(value, { context: 'reverse-prompt' });
         });
 
         textarea.value = '';
@@ -8232,7 +9263,7 @@ ${chinesePrompt}
 
       // 生成单个分镜图片
       // 通用的生图API调用（分镜、多角度等都用这个）
-      async function callImageAPI(prompt, images) {
+      async function callImageAPI(prompt, images, signal) {
         const key = getApiKey();
         if (!key) throw new Error('请先配置 API Key');
 
@@ -8248,7 +9279,7 @@ ${chinesePrompt}
           if (imgs.length > 0) {
             const editsRequest = await buildOpenAIImageEditsRequest(prompt, imgs, imageModel, key);
             debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', editsRequest.endpoint, 'hasImages:', true);
-            response = await sendImageRequest(editsRequest, 'openai-images-edits');
+            response = await sendImageRequest(editsRequest, 'openai-images-edits', signal);
 
             if (!response.ok) {
               const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
@@ -8257,7 +9288,7 @@ ${chinesePrompt}
               if (shouldRetryOpenAIImageWithRelay(response.status, errorText)) {
                 const relayRequest = buildOpenAIImageRelayGenerationsRequest(prompt, imgs, imageModel, key);
                 debugLog('[callImageAPI] retrying with relay generations endpoint');
-                response = await sendImageRequest(relayRequest, 'openai-images-relay-generations');
+                response = await sendImageRequest(relayRequest, 'openai-images-relay-generations', signal);
               } else {
                 throw new Error(errorText || `API 错误: ${response.status}`);
               }
@@ -8274,20 +9305,20 @@ ${chinesePrompt}
               body: JSON.stringify(payload)
             };
             debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', false);
-            response = await sendImageRequest(request, 'openai-images-generations');
+            response = await sendImageRequest(request, 'openai-images-generations', signal);
           }
         } else if (protocol === 'aliyun-images') {
           const request = buildAliyunImageRequest(prompt, imgs, imageModel, key);
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, 'aliyun-images');
+          response = await sendImageRequest(request, 'aliyun-images', signal);
         } else if (protocol === 'doubao-images') {
           const request = buildDoubaoImageRequest(prompt, imgs, imageModel, key);
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, 'doubao-images');
+          response = await sendImageRequest(request, 'doubao-images', signal);
         } else if (protocol === 'replicate-flux') {
           const request = buildReplicateFluxRequest(prompt, imgs, imageModel, key);
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, 'replicate-flux-create');
+          response = await sendImageRequest(request, 'replicate-flux-create', signal);
           response = await pollReplicateFluxPrediction(response, key);
         } else if (protocol === 'open-images') {
           const activePlatform = getActivePlatformConfig().id;
@@ -8298,7 +9329,7 @@ ${chinesePrompt}
           const label = (activePlatform === 'qwen' || activePlatform === 'doubao' || activePlatform === 'flux')
             ? 'open-images-generations'
             : (imgs.length > 0 ? 'open-images-edits' : 'open-images-generations');
-          response = await sendImageRequest(request, label);
+          response = await sendImageRequest(request, label, signal);
         } else if (protocol === 'openai-chat') {
           const payload = buildOpenAIChatImagePayload(prompt, imgs, imageModel);
           const request = {
@@ -8307,7 +9338,7 @@ ${chinesePrompt}
             body: JSON.stringify(payload)
           };
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, protocol);
+          response = await sendImageRequest(request, protocol, signal);
         } else if (protocol === 'openai-responses') {
           const payload = buildOpenAIResponsesImagePayload(prompt, imgs, imageModel);
           const request = {
@@ -8316,7 +9347,7 @@ ${chinesePrompt}
             body: JSON.stringify(payload)
           };
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, 'openai-responses');
+          response = await sendImageRequest(request, 'openai-responses', signal);
         } else {
           // Gemini 原生
           const payload = buildGeminiImagePayload(prompt, imgs);
@@ -8326,7 +9357,7 @@ ${chinesePrompt}
             body: JSON.stringify(payload)
           };
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
-          response = await sendImageRequest(request, 'gemini');
+          response = await sendImageRequest(request, 'gemini', signal);
         }
 
         if (!response.ok) {
@@ -8353,7 +9384,7 @@ ${chinesePrompt}
         return callImageAPI(prompt, getReferenceImagesForRequest());
       }
 
-      async function callVideoAPI(prompt, images) {
+      async function callVideoAPI(prompt, images, signal) {
         const key = getApiKey();
         if (!key) throw new Error('请先配置 API Key');
         if (activePlatformId !== 'openaiVideo' && activePlatformId !== 'geminiVideo' && activePlatformId !== 'qwenVideo' && activePlatformId !== 'doubaoVideo' && activePlatformId !== 'grokVideo') {
@@ -8383,13 +9414,13 @@ ${chinesePrompt}
           request = await buildOpenAIVideosRequest(prompt, imgs, videoModel, key);
         }
 
-        let response = await sendVideoRequest(request, protocol);
+        let response = await sendVideoRequest(request, protocol, signal);
         if (!response.ok) {
           const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
           throw new Error(errorText || `API 错误: ${response.status}`);
         }
 
-        response = await pollVideoTask(response, key, protocol);
+        response = await pollVideoTask(response, key, protocol, signal);
         if (!response.ok) {
           const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
           throw new Error(errorText || `API 错误: ${response.status}`);
@@ -8428,6 +9459,7 @@ ${chinesePrompt}
         // 创建分组容器
         const groupContainer = createResultGroup(taskInfo);
         resultsEl.insertBefore(groupContainer, resultsEl.firstChild);
+        syncResultsEmptyState();
 
         // 为每个分镜创建占位符
         const placeholders = [];
@@ -9123,7 +10155,7 @@ ${chinesePrompt}
           }
         }
         resultsEl.prepend(card);
-        resultCountEl.textContent = `${resultsEl.children.length} 条`;
+        syncResultsEmptyState();
       }
 
       // 基于图片继续生成
@@ -9181,7 +10213,8 @@ ${chinesePrompt}
           delete card.dataset.intervalId;
         });
         resultsEl.innerHTML = '';
-        resultCountEl.textContent = '0 条';
+        if (resultsEmptyEl) resultsEl.appendChild(resultsEmptyEl);
+        syncResultsEmptyState();
         flashStatus('已清空结果', 'success');
       }
 
@@ -9309,7 +10342,7 @@ ${chinesePrompt}
         for (let i = 0; i < count; i++) {
           const placeholderCard = createLoadingPlaceholder(i + 1);
           resultsEl.insertBefore(placeholderCard, resultsEl.firstChild);
-          resultCountEl.textContent = `${resultsEl.children.length} 条`;
+          syncResultsEmptyState();
           jobs.push({ index: i, placeholderCard });
         }
         await mapPool(jobs, concurrency, async (job) => {
@@ -9891,6 +10924,7 @@ ${chinesePrompt}
         // 创建结果分组容器
         const groupContainer = createResultGroup(taskInfo);
         resultsEl.insertBefore(groupContainer, resultsEl.firstChild);
+        syncResultsEmptyState();
 
         // 创建占位符卡片
         const gridEl = groupContainer.querySelector('.result-group-grid');
@@ -10331,57 +11365,26 @@ ${chinesePrompt}
 
       const clearResultsBtn = document.getElementById('clear-results');
       const savePromptFromInputBtn = document.getElementById('save-prompt-from-input');
-      const promptLibraryOpenBtn = document.getElementById('prompt-library-open-btn');
-      const promptLibraryDialog = document.getElementById('prompt-library-dialog');
-      const promptLibraryCloseBtn = document.getElementById('prompt-library-close-btn');
-      const promptLibraryPanel = document.getElementById('prompt-library-panel');
-      const promptLibraryToggleBtn = document.getElementById('prompt-library-toggle');
-      const promptLibrarySearchInput = document.getElementById('prompt-library-search');
-      const importPromptsBtn = document.getElementById('import-prompts-btn');
-      const exportLocalPromptsBtn = document.getElementById('export-local-prompts-btn');
-      const importPromptsFile = document.getElementById('import-prompts-file');
       const optimizePromptBtn = document.getElementById('optimize-prompt-btn');
       const advancedToolsPanel = document.getElementById('advanced-tools-panel');
       const advancedToolsToggleBtn = document.getElementById('advanced-tools-toggle');
+      const advancedToolsBody = document.getElementById('advanced-tools-body');
       const storyboardToolBtn = document.getElementById('storyboard-tool-btn');
       const angleToolBtn = document.getElementById('angle-tool-btn');
       const reversePromptToolBtn = document.getElementById('reverse-prompt-tool-btn');
       const gifToolBtn = document.getElementById('gif-tool-btn');
 
-      function setPromptLibraryCollapsed(collapsed) {
-        if (!promptLibraryPanel || !promptLibraryToggleBtn) return;
-        promptLibraryPanel.classList.toggle('collapsed', collapsed);
-        promptLibraryToggleBtn.setAttribute('aria-expanded', String(!collapsed));
-      }
-
-      function openPromptLibraryDialog() {
-        if (!promptLibraryDialog) return;
-        promptLibraryDialog.classList.add('active');
-        promptLibraryDialog.setAttribute('aria-hidden', 'false');
-        document.body.classList.add('dialog-open');
-        setPromptLibraryCollapsed(false);
-        renderPromptLibrary();
-        setTimeout(() => promptLibrarySearchInput?.focus(), 80);
-      }
-
-      function closePromptLibraryDialog() {
-        if (!promptLibraryDialog) return;
-        promptLibraryDialog.classList.remove('active');
-        promptLibraryDialog.setAttribute('aria-hidden', 'true');
-        document.body.classList.remove('dialog-open');
-      }
-
       function setAdvancedToolsCollapsed(collapsed) {
         if (!advancedToolsPanel || !advancedToolsToggleBtn) return;
         advancedToolsPanel.classList.toggle('collapsed', collapsed);
         advancedToolsToggleBtn.setAttribute('aria-expanded', String(!collapsed));
+        if (advancedToolsBody) advancedToolsBody.hidden = collapsed;
       }
 
       function updateProviderStudioStatus() {
         syncPlatformSummary();
       }
 
-      setPromptLibraryCollapsed(false);
       setAdvancedToolsCollapsed(advancedToolsPanel?.classList.contains('collapsed'));
 
       fileInput.addEventListener('change', e => handleFiles(e.target.files));
@@ -10396,7 +11399,11 @@ ${chinesePrompt}
       saveKeyBtn.addEventListener('click', saveSettings);
       historyImageRetentionSelect?.querySelectorAll('.history-retention-option').forEach(option => {
         option.addEventListener('click', () => {
-          setHistoryImageRetention(option.dataset.value, { persist: true, notify: true });
+          setHistoryImageRetention(option.dataset.value, { persist: !settingsIsOpen, notify: !settingsIsOpen });
+          if (settingsIsOpen && settingsDraft) {
+            settingsDraft.historyRetention = option.dataset.value === 'thumbnail' ? 'thumbnail' : 'original';
+            markSettingsDirty();
+          }
         });
       });
       runBtn.addEventListener('click', handleRun);
@@ -10411,6 +11418,18 @@ ${chinesePrompt}
       proxyModeInput?.addEventListener('change', () => {
         persistActivePlatformSnapshot();
         updateProviderStudioStatus();
+      });
+      apiKeyInput?.addEventListener('input', () => {
+        if (settingsIsOpen) {
+          captureSettingsDraftPlatform();
+          markSettingsDirty();
+        }
+      });
+      rememberApiKeyInput?.addEventListener('change', () => {
+        if (settingsIsOpen) {
+          settingsDraft.rememberApiKey = !!rememberApiKeyInput.checked;
+          markSettingsDirty();
+        }
       });
       imageModelSelect?.addEventListener('change', () => {
         persistActivePlatformSnapshot();
@@ -10457,26 +11476,7 @@ ${chinesePrompt}
           return;
         }
 
-        showSavePromptDialog(promptContent);
-      });
-
-      promptLibrarySearchInput?.addEventListener('input', () => {
-        renderPromptLibrary();
-      });
-
-      promptLibraryOpenBtn?.addEventListener('click', openPromptLibraryDialog);
-      promptLibraryCloseBtn?.addEventListener('click', closePromptLibraryDialog);
-      promptLibraryDialog?.addEventListener('click', (e) => {
-        if (e.target === promptLibraryDialog) closePromptLibraryDialog();
-      });
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && promptLibraryDialog?.classList.contains('active')) {
-          closePromptLibraryDialog();
-        }
-      });
-
-      promptLibraryToggleBtn?.addEventListener('click', () => {
-        setPromptLibraryCollapsed(!promptLibraryPanel?.classList.contains('collapsed'));
+        openPromptSaveEditor(promptContent, { context: 'studio' });
       });
       advancedToolsToggleBtn?.addEventListener('click', () => {
         setAdvancedToolsCollapsed(!advancedToolsPanel?.classList.contains('collapsed'));
@@ -10497,44 +11497,6 @@ ${chinesePrompt}
         showGifToolDialog();
       });
 
-      importPromptsBtn?.addEventListener('click', () => {
-        importPromptsFile?.click();
-      });
-
-      importPromptsFile?.addEventListener('change', async () => {
-        const files = Array.from(importPromptsFile.files || []);
-        if (!files.length) return;
-
-        importPromptsBtn.disabled = true;
-        importPromptsBtn.textContent = '导入中...';
-
-        try {
-          await importPromptFiles(files);
-        } catch (err) {
-          console.error('导入提示词失败:', err);
-          alert('导入失败：' + err.message);
-        } finally {
-          importPromptsBtn.disabled = false;
-          importPromptsBtn.textContent = '📥 导入提示词';
-          importPromptsFile.value = '';
-        }
-      });
-
-      exportLocalPromptsBtn?.addEventListener('click', async () => {
-        exportLocalPromptsBtn.disabled = true;
-        exportLocalPromptsBtn.textContent = '导出中...';
-
-        try {
-          await exportLocalPromptLibrary();
-        } catch (err) {
-          console.error('导出本地提示词失败:', err);
-          alert('导出失败：' + err.message);
-        } finally {
-          exportLocalPromptsBtn.disabled = false;
-          exportLocalPromptsBtn.textContent = '📦 导出本地';
-        }
-      });
-
       optimizePromptBtn?.addEventListener('click', () => {
         const promptContent = promptInput.value.trim();
 
@@ -10550,6 +11512,15 @@ ${chinesePrompt}
       platformKindButtons.forEach(button => {
         button.addEventListener('click', () => {
           setActivePlatformKind(button.dataset.platformKind);
+        });
+        button.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const index = platformKindButtons.indexOf(button);
+          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? platformKindButtons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + platformKindButtons.length) % platformKindButtons.length;
+          const next = platformKindButtons[nextIndex];
+          next?.focus();
+          if (next?.dataset.platformKind) setActivePlatformKind(next.dataset.platformKind);
         });
       });
 
@@ -10615,14 +11586,13 @@ ${chinesePrompt}
         });
 
         scheduleNonCriticalTask(() => {
-          renderPromptLibrary();
-        }, 150);
-
-        scheduleNonCriticalTask(() => {
           renderHistory();
         }, 300);
       }).catch(err => {
         console.error('初始化数据库失败:', err);
+        historyCountEl.textContent = '加载失败';
+        renderHistoryEmptyState('error');
+        syncHistoryActions('error');
       });
     })();
   

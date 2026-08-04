@@ -8,3 +8,11 @@ License: GNU Affero General Public License v3.0
 
 The adapted implementation keeps this project's native JavaScript architecture and
 existing canvas data model. React-specific code and dependencies were not imported.
+
+This distribution also vendors the following browser dependencies under
+assets/vendor/. Their license notices are preserved in the distributed files and
+summarized in THIRD_PARTY_NOTICES.md:
+
+- Marked 18.0.7, MIT License
+- DOMPurify 3.4.12, Apache License 2.0 / Mozilla Public License 2.0
+- Lucide 1.27.0, ISC License (with Feather-derived icon notices)

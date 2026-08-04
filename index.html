@@ -8,20 +8,22 @@
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Ai 绘图助手</title>
-  <link rel="icon" href="assets/icons/favicon-32.png" type="image/png">
-  <link rel="stylesheet" href="assets/css/main.css?v=20260713-9">
+  <link rel="icon" href="assets/icons/favicon.ico?v=20260804-2" type="image/x-icon">
+  <link rel="stylesheet" href="assets/css/main.css?v=20260804-1">
+  <link rel="stylesheet" href="assets/css/prompt-library.css?v=20260731-3">
   <link rel="stylesheet" href="assets/css/agent.css?v=20260715-3">
-  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260715-3">
-  <link rel="stylesheet" href="assets/css/canvas.css?v=20260711-95">
+  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260731-1">
+  <link rel="stylesheet" href="assets/css/canvas.css?v=20260731-1">
+  <link rel="stylesheet" href="assets/css/settings.css?v=20260804-1">
 
   <script>
     window.APP_CONFIG = window.APP_CONFIG || {
       // 默认使用 https://api.openai.com；用户也可以在页面里改成自己的 API 中转地址。
       defaultBaseUrl: 'https://api.openai.com',
       apiHomeUrl: 'https://api.openai.com',
-      // 纯静态公共提示词库：编辑 data/prompts.json 即可更新所有用户可见的提示词。
       promptApiUrl: false,
-      promptStaticUrl: 'data/prompts.json?v=20260428-4',
+      communityPromptStaticUrl: 'data/community-prompts.json?v=20260731-1',
+      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260731-1',
       forceDefaultBaseUrl: false,
       apiProxyEndpoint: 'api-proxy.php'
     };
@@ -54,12 +56,28 @@
               </div>
             </div>
             <div class="workspace-hero-tools" data-role="studio-hero-tools">
-              <button class="hero-canvas-resume-btn" id="hero-canvas-resume-btn" type="button" hidden disabled data-resume-canvas data-project-id="" title="继续上次画布">继续上次画布</button>
-              <button class="hero-canvas-btn" id="hero-canvas-btn" type="button" title="打开无限画布" data-open-canvas>∞ 无限画布</button>
-              <button class="settings-open-btn" id="settings-open-btn" type="button" aria-haspopup="dialog" aria-controls="settings-drawer">⚙ 设置</button>
-              <button class="announcement-trigger" id="announcement-btn" type="button" aria-haspopup="dialog" aria-controls="announcement-modal">🔔 公告</button>
+              <button class="settings-open-btn icon-action-btn" id="settings-open-btn" type="button" aria-label="打开设置" title="设置" aria-haspopup="dialog" aria-controls="settings-drawer">
+                <i data-lucide="settings" aria-hidden="true"></i>
+              </button>
+              <button class="announcement-trigger icon-action-btn" id="announcement-btn" type="button" aria-label="查看公告" title="公告" aria-haspopup="dialog" aria-controls="announcement-modal">
+                <i data-lucide="bell" aria-hidden="true"></i>
+              </button>
             </div>
           </div>
+          <nav class="workspace-nav" aria-label="工作区导航">
+            <button type="button" class="workspace-nav-btn is-active" data-workspace-nav="studio">
+              <i data-lucide="pen-line" aria-hidden="true"></i><span>Studio</span>
+            </button>
+            <button type="button" class="workspace-nav-btn" data-workspace-nav="prompts" data-open-prompt-library>
+              <i data-lucide="library" aria-hidden="true"></i><span>提示词库</span>
+            </button>
+            <button type="button" class="workspace-nav-btn" data-workspace-nav="canvas" data-open-canvas>
+              <i data-lucide="infinity" aria-hidden="true"></i><span>无限画布</span>
+            </button>
+            <button type="button" class="workspace-nav-btn" data-workspace-nav="agent" data-open-agent>
+              <i data-lucide="sparkles" aria-hidden="true"></i><span>Agent</span>
+            </button>
+          </nav>
         </div>
 
         <section class="surface-block prompt-studio-block">
@@ -68,7 +86,6 @@
               <span class="section-kicker">Prompt Studio</span>
               <h2>提示词创作区</h2>
             </div>
-            <button class="prompt-library-open-btn" id="prompt-library-open-btn" type="button" aria-haspopup="dialog" aria-controls="prompt-library-dialog">📚 提示词库</button>
           </div>
 
           <div class="prompt-studio-grid">
@@ -77,8 +94,8 @@
               <div class="prompt-platform-hint" id="prompt-platform-hint"></div>
               <textarea id="prompt" placeholder="例如：生成你认为日系二次元 DeepSeek 拟人角色海报，比 3:4 竖版，保留科技感与舞台灯光。"></textarea>
               <div class="prompt-buttons-container">
-                <button class="save-prompt-from-input-btn" id="save-prompt-from-input" title="保存当前提示词到库">💾 保存到提示词库</button>
-                <button class="optimize-prompt-btn" id="optimize-prompt-btn" title="使用AI优化提示词">✨ 优化提示词</button>
+                <button class="save-prompt-from-input-btn" id="save-prompt-from-input" type="button" title="保存当前提示词到库"><i data-lucide="save" aria-hidden="true"></i><span>保存到提示词库</span></button>
+                <button class="optimize-prompt-btn" id="optimize-prompt-btn" type="button" title="使用 AI 优化提示词"><i data-lucide="wand-sparkles" aria-hidden="true"></i><span>优化提示词</span></button>
               </div>
             </div>
           </div>
@@ -204,63 +221,44 @@
           </section>
         </div>
 
-        <section class="surface-block advanced-tools" id="advanced-tools-panel">
-          <button class="advanced-tools-heading" id="advanced-tools-toggle" type="button" aria-expanded="true">
+        <section class="surface-block advanced-tools collapsed" id="advanced-tools-panel">
+          <button class="advanced-tools-heading" id="advanced-tools-toggle" type="button" aria-expanded="false" aria-controls="advanced-tools-body">
             <span>
               <span class="section-kicker">Advanced</span>
               <strong>高级能力</strong>
             </span>
-            <span class="prompt-library-toggle-icon" aria-hidden="true">▼</span>
+            <i class="advanced-tools-toggle-icon" data-lucide="chevron-down" aria-hidden="true"></i>
           </button>
-          <div class="advanced-tools-body">
-            <p class="advanced-tools-copy">高级能力集中在这里，可按创作任务选择使用。</p>
+          <div class="advanced-tools-body" id="advanced-tools-body" hidden>
             <div class="advanced-tools-grid">
-              <button class="advanced-tool-btn" id="canvas-tool-btn" type="button">
-                <span class="advanced-tool-icon">∞</span>
-                <span>
-                  <strong>无限画布</strong>
-                  <small>自由编排素材、提示词与生成流程</small>
-                </span>
-              </button>
-              <button class="advanced-tool-btn" id="agent-tool-btn" type="button">
-                <span class="advanced-tool-icon">🤖</span>
-                <span>
-                  <strong>Agent 智能体</strong>
-                  <small>与 AI 多轮聊天后自动出图</small>
-                </span>
-              </button>
               <button class="advanced-tool-btn" id="storyboard-tool-btn" type="button">
-                <span class="advanced-tool-icon">🎬</span>
+                <i class="advanced-tool-icon" data-lucide="clapperboard" aria-hidden="true"></i>
                 <span>
                   <strong>分镜生成</strong>
                   <small>从脚本中识别分镜并批量出图</small>
                 </span>
               </button>
               <button class="advanced-tool-btn" id="angle-tool-btn" type="button">
-                <span class="advanced-tool-icon">📐</span>
+                <i class="advanced-tool-icon" data-lucide="box" aria-hidden="true"></i>
                 <span>
                   <strong>产品角度</strong>
                   <small>使用 3D 角度工具生成镜头提示词</small>
                 </span>
               </button>
               <button class="advanced-tool-btn" id="reverse-prompt-tool-btn" type="button">
-                <span class="advanced-tool-icon">🔎</span>
+                <i class="advanced-tool-icon" data-lucide="search" aria-hidden="true"></i>
                 <span>
                   <strong>反推提示词</strong>
                   <small>根据当前参考图生成提示词</small>
                 </span>
               </button>
               <button class="advanced-tool-btn" id="gif-tool-btn" type="button">
-                <span class="advanced-tool-icon">🎞️</span>
+                <i class="advanced-tool-icon" data-lucide="film" aria-hidden="true"></i>
                 <span>
                   <strong>动图生成</strong>
                   <small>把参考图或输出图合成为 GIF</small>
                 </span>
               </button>
-              <div class="advanced-tool-placeholder">
-                <strong>平台专属参数</strong>
-                <small>按平台放置专属参数与预设入口</small>
-              </div>
             </div>
           </div>
         </section>
@@ -276,18 +274,17 @@
             <h2>当前输出</h2>
           </div>
           <span class="muted" id="result-count">0 条</span>
-          <div class="output-panel-actions">
-            <button class="btn canvas-transfer-btn" id="send-results-to-canvas" type="button">全部进画布</button>
-            <button class="btn output-clear-btn" id="clear-results">清空结果</button>
+          <div class="output-panel-actions" id="results-actions" hidden>
+            <button class="btn canvas-transfer-btn" id="send-results-to-canvas" type="button"><i data-lucide="panels-top-left" aria-hidden="true"></i><span data-transfer-label>全部进画布</span></button>
+            <button class="btn output-clear-btn" id="clear-results" type="button"><i data-lucide="trash-2" aria-hidden="true"></i><span>清空结果</span></button>
           </div>
         </div>
         <div class="results" id="results">
           <div class="results-empty" id="results-empty">
             <strong>还没有输出</strong>
-            <p>生成后的图片会显示在这里，也可以直接打开无限画布开始创作。</p>
+            <p>生成后的图片会显示在这里。</p>
             <div class="results-empty-actions">
               <button type="button" class="btn" id="results-empty-focus-prompt">去填写提示词</button>
-              <button type="button" class="btn" id="results-empty-open-canvas" data-open-canvas>打开无限画布</button>
             </div>
           </div>
         </div>
@@ -300,16 +297,29 @@
             <h2>历史记录</h2>
           </div>
           <span class="muted" id="history-count">0 条</span>
-          <div class="history-header-actions">
-            <button class="btn canvas-transfer-btn" id="send-history-to-canvas" type="button">历史进画布</button>
-            <button class="btn history-transfer-btn" id="export-history" type="button" hidden>导出历史</button>
-            <button class="btn history-transfer-btn" id="import-history" type="button">导入历史</button>
-            <button class="btn output-clear-btn" id="clear-history" hidden>清空历史</button>
+          <div class="history-header-actions" id="history-actions" hidden>
+            <button class="btn canvas-transfer-btn" id="send-history-to-canvas" type="button" hidden><i data-lucide="panels-top-left" aria-hidden="true"></i><span data-transfer-label>历史进画布</span></button>
+            <details class="history-more-menu" id="history-more-menu">
+              <summary class="icon-action-btn" aria-label="更多历史操作" title="更多操作">
+                <i data-lucide="ellipsis" aria-hidden="true"></i>
+              </summary>
+              <div class="history-more-content">
+                <button class="btn history-transfer-btn" id="export-history" type="button" hidden><i data-lucide="download" aria-hidden="true"></i><span>导出历史</span></button>
+                <button class="btn history-transfer-btn" id="import-history" type="button"><i data-lucide="upload" aria-hidden="true"></i><span>导入历史</span></button>
+                <button class="btn output-clear-btn" id="clear-history" type="button" hidden><i data-lucide="trash-2" aria-hidden="true"></i><span>清空历史</span></button>
+              </div>
+            </details>
           </div>
           <input id="history-import-file" type="file" accept="application/json,.json" hidden>
         </div>
         <div class="history-grid" id="history-grid">
-          <div class="history-empty">暂无历史记录</div>
+          <div class="history-empty" data-history-state="empty">
+            <strong>暂无历史记录</strong>
+            <p>导入或生成图片后，历史记录会显示在这里。</p>
+            <div class="history-empty-actions">
+              <button class="btn" id="history-empty-import" type="button"><i data-lucide="upload" aria-hidden="true"></i><span>导入历史</span></button>
+            </div>
+          </div>
         </div>
         <div class="history-pagination" id="history-pagination" hidden>
           <button class="history-page-btn" id="history-prev" type="button">上一页</button>
@@ -327,172 +337,217 @@
     <button class="btn mobile-generate-btn" id="mobile-generate-btn" type="button">发送请求</button>
   </div>
   <div id="canvas-workspace-root" hidden></div>
-
-  <div class="dialog-overlay prompt-library-dialog-overlay" id="prompt-library-dialog" aria-hidden="true">
-    <div class="dialog-content prompt-library-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-library-dialog-title">
-      <div class="prompt-library-dialog-head">
-        <div>
-          <span class="section-kicker">Prompt Library</span>
-          <div class="dialog-title" id="prompt-library-dialog-title">提示词库</div>
-        </div>
-        <button class="settings-close-btn" id="prompt-library-close-btn" type="button" aria-label="关闭提示词库">✕</button>
-      </div>
-      <div class="prompt-library-panel collapsed" id="prompt-library-panel">
-        <button class="prompt-library-heading" id="prompt-library-toggle" type="button" aria-expanded="false">
-          <span>📚 提示词库</span>
-          <span class="prompt-library-toggle-icon" aria-hidden="true">▼</span>
-        </button>
-        <div class="prompt-library-container">
-          <div class="prompt-library-tools">
-            <input id="prompt-library-search" type="text" placeholder="搜索标题或内容" autocomplete="off">
-            <button class="prompt-lib-btn" id="import-prompts-btn" type="button" title="导入 txt、md、csv 或 json 提示词文件">📥 导入提示词</button>
-            <button class="prompt-lib-btn" id="export-local-prompts-btn" type="button" title="仅导出本地">📦 导出本地</button>
-            <input id="import-prompts-file" type="file" accept=".txt,.md,.csv,.json,application/json,text/plain,text/markdown,text/csv" multiple hidden>
-          </div>
-          <div class="prompt-library-empty">暂无保存的提示词</div>
-          <div class="prompt-library-list"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <div id="prompt-library-root" hidden></div>
 
   <div class="settings-drawer-overlay" id="settings-drawer-overlay" aria-hidden="true"></div>
-  <aside class="settings-drawer" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true">
-    <div class="settings-drawer-head">
+  <aside class="settings-drawer settings-dialog" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">
+    <header class="settings-drawer-head">
       <div>
-        <span class="section-kicker">Settings</span>
         <h2 id="settings-drawer-title">工作台设置</h2>
       </div>
-      <button class="settings-close-btn" id="settings-close-btn" type="button" aria-label="关闭设置">✕</button>
+      <button class="settings-close-btn icon-action-btn" id="settings-close-btn" type="button" aria-label="关闭设置" title="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </header>
+
+    <nav class="settings-tabs" id="settings-tabs" role="tablist" aria-label="设置分类">
+      <button type="button" class="settings-tab is-active" id="settings-tab-platform" role="tab" aria-selected="true" aria-controls="settings-panel-platform" data-settings-tab="platform">平台模型</button>
+      <button type="button" class="settings-tab" id="settings-tab-storage" role="tab" aria-selected="false" aria-controls="settings-panel-storage" data-settings-tab="storage">存储历史</button>
+      <button type="button" class="settings-tab" id="settings-tab-backup" role="tab" aria-selected="false" aria-controls="settings-panel-backup" data-settings-tab="backup">备份恢复</button>
+    </nav>
+
+    <div class="settings-drawer-body" id="settings-drawer-body">
+      <section class="settings-panel is-active" id="settings-panel-platform" role="tabpanel" aria-labelledby="settings-tab-platform" data-settings-panel="platform">
+        <div class="platform-layout">
+          <aside class="platform-sidebar" aria-label="平台列表">
+            <button class="mobile-platform-picker-toggle" id="mobile-platform-picker-toggle" type="button" aria-expanded="false" aria-controls="platform-switcher">
+              <span class="mobile-platform-picker-copy">
+                <strong id="mobile-platform-picker-name">OpenAI</strong>
+                <span id="mobile-platform-picker-meta">图片平台</span>
+              </span>
+              <span class="mobile-platform-picker-status" id="mobile-platform-picker-status" aria-hidden="true"></span>
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </button>
+            <div class="platform-kind-toggle" role="tablist" aria-label="平台类型">
+              <button type="button" class="platform-kind-btn active" data-platform-kind="image" role="tab" tabindex="0" aria-selected="true">图片</button>
+              <button type="button" class="platform-kind-btn" data-platform-kind="video" role="tab" tabindex="-1" aria-selected="false">视频</button>
+            </div>
+            <div class="platform-switcher" id="platform-switcher" role="tablist" aria-label="平台选择"></div>
+          </aside>
+
+          <div class="platform-editor">
+            <div class="platform-meta-strip">
+              <div class="platform-meta-main">
+                <strong id="platform-title">OpenAI</strong>
+                <span class="platform-type-badge" id="platform-type-badge">图片平台</span>
+              </div>
+              <span class="platform-meta-note" id="platform-meta-note"></span>
+            </div>
+            <div class="platform-template-panel" hidden>
+              <p id="platform-template-hint"></p>
+              <div class="platform-support-note" id="platform-support-note"></div>
+            </div>
+
+            <section class="settings-group" aria-labelledby="settings-connection-title">
+              <div class="settings-group-heading">
+                <h3 id="settings-connection-title">连接配置</h3>
+                <span class="settings-group-note">仅在保存后应用</span>
+              </div>
+              <div class="settings-form-grid connection-grid">
+                <div class="config-field connection-url-field" id="base-url-field">
+                  <label for="base-url">Base URL</label>
+                  <input id="base-url" type="url" placeholder="https://api.openai.com" value="https://api.openai.com" autocomplete="off">
+                </div>
+                <label class="settings-check-row settings-switch-row proxy-toggle" title="遇到跨域或 Failed to fetch 时通过站点代理请求">
+                  <input id="proxy-mode" type="checkbox">
+                  <span class="settings-switch" aria-hidden="true"></span>
+                  <span>兼容代理模式</span>
+                </label>
+                <div class="config-field" id="api-key-field">
+                  <label for="api-key">API Key <a id="api-link" href="https://api.openai.com" target="_blank" rel="noopener noreferrer" class="api-link-inline">获取</a></label>
+                  <div class="secret-input-wrap">
+                    <input id="api-key" type="password" placeholder="输入 API Key" autocomplete="off">
+                    <button class="secret-toggle icon-action-btn" id="api-key-toggle" type="button" title="显示 API Key" aria-label="显示 API Key"><i data-lucide="eye" aria-hidden="true"></i></button>
+                  </div>
+                </div>
+                <div class="config-field" id="text-api-key-field">
+                  <label for="text-api-key">文本专用 Key <span class="field-hint">留空使用通用 Key</span></label>
+                  <div class="secret-input-wrap">
+                    <input id="text-api-key" type="password" placeholder="可选" autocomplete="off">
+                    <button class="secret-toggle icon-action-btn" id="text-api-key-toggle" type="button" title="显示文本 Key" aria-label="显示文本 Key"><i data-lucide="eye" aria-hidden="true"></i></button>
+                  </div>
+                </div>
+                <label class="settings-check-row settings-switch-row remember-api-key" title="关闭页面后仍保留密钥">
+                  <input id="remember-api-key" type="checkbox">
+                  <span class="settings-switch" aria-hidden="true"></span>
+                  <span>记住 API Key</span>
+                </label>
+              </div>
+              <div class="connection-actions">
+                <button class="btn btn-secondary" id="test-connection-btn" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>检测连接</span></button>
+                <button class="btn btn-quiet" id="update-models-btn" type="button" hidden>更新模型列表</button>
+                <span class="connection-status" id="connection-status" role="status" aria-live="polite" hidden>
+                  <i class="connection-status-icon" data-lucide="circle-dashed" aria-hidden="true"></i>
+                  <span class="connection-status-text" id="connection-status-text"></span>
+                </span>
+              </div>
+            </section>
+
+            <section class="settings-group model-settings-group" aria-labelledby="settings-model-title">
+              <div class="settings-group-heading">
+                <h3 id="settings-model-title">模型选择</h3>
+                <button class="icon-action-btn" id="settings-more-btn" type="button" title="更多平台操作" aria-label="更多平台操作" aria-expanded="false" aria-controls="settings-more-menu"><i data-lucide="ellipsis" aria-hidden="true"></i></button>
+              </div>
+              <div class="settings-form-grid model-grid">
+                <div id="image-model-field" class="config-field">
+                  <label for="image-model">生图模型</label>
+                  <div class="model-select-wrap">
+                    <select id="image-model"><option value="gpt-image-2" selected>gpt-image-2</option></select>
+                    <button id="delete-image-model-btn" class="delete-model-btn icon-action-btn" title="删除当前生图模型" aria-label="删除当前生图模型" type="button"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+                  </div>
+                </div>
+                <div id="text-model-field" class="config-field">
+                  <label for="text-model">文本优化模型</label>
+                  <div class="model-select-wrap">
+                    <select id="text-model"><option value="gpt-5.4-mini" selected>gpt-5.4-mini</option></select>
+                    <button id="delete-text-model-btn" class="delete-model-btn icon-action-btn" title="删除当前文本模型" aria-label="删除当前文本模型" type="button"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+                  </div>
+                </div>
+                <div id="api-protocol-field" class="config-field">
+                  <label for="api-protocol">API 协议</label>
+                  <select id="api-protocol"><option value="gemini">Gemini 原生</option><option value="openai-chat">OpenAI Chat</option><option value="openai-images" selected>OpenAI Images</option></select>
+                </div>
+              </div>
+              <div class="model-actions">
+                <button class="btn btn-quiet" id="add-models-btn" type="button"><i data-lucide="plus" aria-hidden="true"></i><span>手动添加模型</span></button>
+              </div>
+              <div class="settings-more-menu" id="settings-more-menu" role="menu" hidden>
+                <button class="btn btn-quiet" id="reset-platform-settings" role="menuitem" type="button"><i data-lucide="rotate-ccw" aria-hidden="true"></i><span>恢复当前平台默认值</span></button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-panel" id="settings-panel-storage" role="tabpanel" aria-labelledby="settings-tab-storage" data-settings-panel="storage" hidden>
+        <div class="storage-settings-grid">
+          <section class="settings-group storage-section">
+            <div class="settings-group-heading">
+              <h3>保存位置</h3>
+              <span class="settings-group-note">保存后生效</span>
+            </div>
+            <div class="save-location-controls">
+              <div class="path-row">
+                <i data-lucide="folder" aria-hidden="true"></i>
+                <div>
+                  <span class="path-label">保存文件夹</span>
+                  <strong class="path-value" id="save-path">浏览器默认下载位置</strong>
+                </div>
+              </div>
+              <div class="storage-action-row">
+                <button class="btn btn-secondary" id="select-folder" type="button"><i data-lucide="folder-open" aria-hidden="true"></i><span>选择文件夹</span></button>
+                <button class="icon-action-btn" id="reset-folder" type="button" title="重置保存位置" aria-label="重置保存位置" hidden><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
+              </div>
+            </div>
+          </section>
+          <section class="settings-group storage-section history-retention-control">
+            <div class="settings-group-heading">
+              <h3>历史图片保留</h3>
+              <span class="settings-group-note">图片质量</span>
+            </div>
+            <div id="history-image-retention" class="history-retention-options" role="group" aria-label="历史图片保留">
+              <button type="button" class="history-retention-option" data-value="original" aria-pressed="false" title="保留原图，文件更大但可下载原图">原图</button>
+              <button type="button" class="history-retention-option active" data-value="thumbnail" aria-pressed="true" title="仅保留预览图，节省空间">缩略图</button>
+            </div>
+          </section>
+        </div>
+        <p class="settings-note" id="folder-support-note">支持 File System Access 的浏览器可选择文件夹；其他环境使用浏览器默认下载位置。</p>
+      </section>
+
+      <section class="settings-panel" id="settings-panel-backup" role="tabpanel" aria-labelledby="settings-tab-backup" data-settings-panel="backup" hidden>
+        <section class="settings-group backup-group">
+          <div class="backup-action-list">
+            <div class="backup-action-row">
+              <div class="backup-action-copy">
+                <h3>导出配置</h3>
+                <span>JSON · 当前草稿</span>
+              </div>
+              <div class="backup-action-controls">
+                <label class="settings-check-row settings-switch-row">
+                  <input id="include-credentials" type="checkbox">
+                  <span class="settings-switch" aria-hidden="true"></span>
+                  <span>包含 API Key</span>
+                </label>
+                <button class="btn btn-secondary" id="export-settings-btn" type="button"><i data-lucide="download" aria-hidden="true"></i><span>导出配置</span></button>
+              </div>
+            </div>
+            <p class="sensitive-warning" id="sensitive-export-warning" hidden>配置文件包含敏感密钥，请仅保存到可信位置。</p>
+            <div class="backup-action-row">
+              <div class="backup-action-copy">
+                <h3>导入配置</h3>
+                <span>JSON · 最大 1 MB</span>
+              </div>
+              <button class="btn btn-secondary" id="import-settings-btn" type="button"><i data-lucide="upload" aria-hidden="true"></i><span>导入配置</span></button>
+              <input id="settings-import-file" type="file" accept="application/json,.json" hidden>
+            </div>
+          </div>
+          <div class="import-summary" id="settings-import-summary" hidden></div>
+        </section>
+      </section>
     </div>
 
-    <div class="settings-drawer-body">
-      <section class="settings-section provider-hub">
-        <div class="settings-section-heading">
-          <div>
-            <span class="section-kicker">Platform</span>
-            <h3>平台与模型</h3>
-          </div>
-          <div class="platform-kind-toggle" role="tablist" aria-label="平台类型">
-            <button type="button" class="platform-kind-btn active" data-platform-kind="image" aria-selected="true">图片</button>
-            <button type="button" class="platform-kind-btn" data-platform-kind="video" aria-selected="false">视频</button>
-          </div>
-        </div>
-
-        <div class="platform-switcher" id="platform-switcher" role="tablist" aria-label="平台选择"></div>
-
-        <div class="platform-meta-strip">
-          <div class="platform-meta-main">
-            <strong id="platform-title">OpenAI</strong>
-            <span class="platform-type-badge" id="platform-type-badge">图片平台</span>
-          </div>
-          <div class="platform-meta-note" id="platform-meta-note"></div>
-        </div>
-
-        <div class="platform-template-panel">
-          <p id="platform-template-hint"></p>
-          <div class="platform-support-note" id="platform-support-note"></div>
-        </div>
-
-        <div class="config-row runtime-config-row">
-          <div id="image-model-field" style="flex:1.5;">
-            <label for="image-model">
-              生图模型
-              <button id="fetch-models-btn" class="label-action-btn fetch" type="button">拉取列表</button>
-              <button id="add-models-btn" class="label-action-btn add" type="button">手动添加</button>
-            </label>
-            <div class="model-select-wrap">
-              <select id="image-model">
-                <option value="gpt-image-2" selected>gpt-image-2</option>
-              </select>
-              <button id="delete-image-model-btn" class="delete-model-btn" title="删除当前生图模型" type="button">×</button>
-            </div>
-          </div>
-          <div id="text-model-field" style="flex:1.5;">
-            <label for="text-model">
-              文本优化模型
-              <button id="set-text-key-btn" class="label-action-btn fetch" type="button">设置key</button>
-            </label>
-            <div class="model-select-wrap">
-              <select id="text-model">
-                <option value="gpt-5.4-mini" selected>gpt-5.4-mini</option>
-              </select>
-              <button id="delete-text-model-btn" class="delete-model-btn" title="删除当前文本优化模型" type="button">×</button>
-            </div>
-          </div>
-          <div id="api-protocol-field" style="flex:1;">
-            <label for="api-protocol">API 协议</label>
-            <select id="api-protocol">
-              <option value="gemini">Gemini 原生</option>
-              <option value="openai-chat">OpenAI Chat</option>
-              <option value="openai-images" selected>OpenAI Images</option>
-            </select>
-          </div>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-heading">
-          <div>
-            <span class="section-kicker">Access</span>
-            <h3>接入密钥</h3>
-          </div>
-        </div>
-
-        <div class="config-row provider-config-row">
-          <div class="config-field" id="base-url-field" style="flex: 1.5;">
-            <label for="base-url">Base URL</label>
-            <input id="base-url" type="text" placeholder="https://api.openai.com" value="https://api.openai.com" autocomplete="off">
-            <label class="inline-setting-toggle" title="遇到 Failed to fetch 或 CORS 报错时开启，由本站服务器转发请求">
-              <input id="proxy-mode" type="checkbox">
-              <span class="remember-api-key-switch" aria-hidden="true"></span>
-              <span class="remember-api-key-text">兼容代理模式</span>
-            </label>
-          </div>
-
-          <div class="config-field" id="api-key-field" style="flex: 2;">
-            <label for="api-key">
-              API Key
-              <a id="api-link" href="https://api.openai.com" target="_blank" class="api-link-inline">前往获取 →</a>
-            </label>
-            <input id="api-key" type="text" placeholder="输入 API Key..." autocomplete="off">
-            <label class="remember-api-key">
-              <input id="remember-api-key" type="checkbox">
-              <span class="remember-api-key-switch" aria-hidden="true"></span>
-              <span class="remember-api-key-text">记住 API Key</span>
-            </label>
-          </div>
-
-          <div class="config-actions provider-actions">
-            <button class="btn" id="save-key">保存设置</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="settings-section save-settings studio-save-settings">
-        <div class="settings-section-heading">
-          <div>
-            <span class="section-kicker">Storage</span>
-            <h3>存储与历史</h3>
-          </div>
-        </div>
-
-        <div class="save-location-controls">
-          <span class="path-label">📁 保存位置：</span>
-          <span class="path-value" id="save-path">未选择</span>
-          <button class="mini-btn" id="select-folder">选择文件夹</button>
-          <button class="mini-btn" id="reset-folder" style="display:none;">重置</button>
-        </div>
-        <div class="history-retention-control">
-          <span class="history-retention-label">🖼️ 历史图片保留：</span>
-          <div id="history-image-retention" class="history-retention-options" role="group" aria-label="历史图片保留">
-            <button type="button" class="history-retention-option" data-value="original" aria-pressed="false" title="历史记录保存原图，可直接从历史下载原图，占用空间较多。">原图</button>
-            <button type="button" class="history-retention-option active" data-value="thumbnail" aria-pressed="true" title="历史记录保存预览图，占用空间小；如果没有选择保存文件夹，就不能下载原图。">缩略图</button>
-          </div>
-        </div>
-      </section>
+    <footer class="settings-drawer-footer">
+      <span class="settings-dirty-status" id="settings-dirty-status" role="status" aria-live="polite">未修改</span>
+      <div class="settings-footer-actions">
+        <button class="btn btn-quiet" id="settings-cancel-btn" type="button">取消</button>
+        <button class="btn btn-primary" id="save-key" type="button" disabled>保存</button>
+      </div>
+    </footer>
+    <div class="settings-confirm" id="settings-confirm" role="alertdialog" aria-modal="true" aria-labelledby="settings-confirm-title" hidden>
+      <div class="settings-confirm-dialog"><h3 id="settings-confirm-title">放弃未保存修改？</h3><p>当前修改尚未保存，关闭后将恢复原配置。</p><div class="settings-confirm-actions"><button class="btn btn-quiet" id="settings-confirm-cancel" type="button">继续编辑</button><button class="btn btn-danger" id="settings-confirm-discard" type="button">放弃修改</button></div></div>
     </div>
   </aside>
+
 
   <div class="dialog-overlay" id="announcement-modal" aria-hidden="true">
     <div class="dialog-content announcement-dialog" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
@@ -577,7 +632,8 @@
       </div>
     </div>
   </div>
-    <script src="assets/js/app.js?v=20260728-1"></script>
+  <script src="assets/vendor/lucide.min.js?v=1.27.0"></script>
+  <script src="assets/js/app.js?v=20260804-1"></script>
   <script>
     // 诊断：捕获加载错误，弹窗告诉你
     window.addEventListener('error', (e) => {

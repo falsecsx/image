@@ -10,7 +10,7 @@ import {
   createCanvasProject,
   createCanvasTextNode,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260626-2';
+} from './canvas-model.js?v=20260803-4';
 
 function readJSON(key, fallback) {
   try {

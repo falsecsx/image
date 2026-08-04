@@ -3,8 +3,8 @@ export const CANVAS_EXPORT_VERSION = 3;
 
 const DEFAULT_GROUP_TITLE = '分组';
 const DEFAULT_NOTE_TITLE = '注释';
-const DEFAULT_TEXT_TITLE = 'ı';
-const DEFAULT_MEDIA_TITLE = 'ý';
+const DEFAULT_TEXT_TITLE = '文本';
+const DEFAULT_MEDIA_TITLE = '图片';
 const DEFAULT_CONFIG_TITLE = '编排节点';
 const MAX_EMBEDDED_MEDIA_SRC_LENGTH = 4096;
 
@@ -618,4 +618,3 @@ export function normalizeCanvasProject(project = {}) {
   }
   return nextProject;
 }
-

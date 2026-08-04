@@ -1,7 +1,8 @@
 const KEY_SESSION = 'agent_session_v1';
 const KEY_IMAGES = 'agent_image_v1';
 const KEY_V1_BACKUP = 'agent_session_v1.v1-backup';
-const CURRENT_VERSION = 2;
+const KEY_V2_BACKUP = 'agent_session_v1.v2-backup';
+const CURRENT_VERSION = 3;
 const IMAGE_DB_NAME = 'AgentImageStore';
 const IMAGE_DB_VERSION = 1;
 const IMAGE_STORE = 'images';
@@ -51,30 +52,142 @@ function uuid() {
   return 'a-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
+const PROPOSAL_STATES = new Set(['pending', 'generating', 'completed', 'failed', 'cancelled', 'interrupted']);
+
+function emptyDraft() {
+  return { text: '', referenceImageIds: [], updatedAt: 0 };
+}
+
+function normalizeDraft(draft) {
+  const value = draft && typeof draft === 'object' ? draft : {};
+  return {
+    text: typeof value.text === 'string' ? value.text : '',
+    referenceImageIds: Array.isArray(value.referenceImageIds)
+      ? [...new Set(value.referenceImageIds.filter(id => typeof id === 'string' && id))]
+      : [],
+    updatedAt: Number(value.updatedAt) || 0
+  };
+}
+
+function normalizeMessage(message) {
+  if (!message || typeof message !== 'object') return null;
+  const status = message.status === 'failed' || message.status === 'cancelled'
+    ? message.status
+    : message.status === 'generating' || message.status === 'pending'
+      ? 'interrupted'
+      : 'completed';
+  return {
+    ...message,
+    status,
+    sources: normalizeSources(message.sources)
+  };
+}
+
+function normalizeSources(sources) {
+  const seen = new Set();
+  const normalized = [];
+  for (const source of Array.isArray(sources) ? sources : []) {
+    let url;
+    try { url = new URL(String(source?.url || '')); } catch { continue; }
+    if (!['http:', 'https:'].includes(url.protocol) || seen.has(url.href)) continue;
+    seen.add(url.href);
+    normalized.push({
+      title: String(source?.title || url.hostname || url.href).trim().slice(0, 240),
+      url: url.href
+    });
+  }
+  return normalized;
+}
+
+function normalizeProposal(proposal) {
+  if (!proposal || typeof proposal !== 'object') return null;
+  let executionState = PROPOSAL_STATES.has(proposal.executionState)
+    ? proposal.executionState
+    : 'pending';
+  if (executionState === 'generating') executionState = 'interrupted';
+  return {
+    ...proposal,
+    executionState,
+    progress: {
+      completed: Math.max(0, Number(proposal.progress?.completed) || 0),
+      total: Math.max(1, Number(proposal.progress?.total) || Number(proposal.raw?.parallel_count) || 1)
+    }
+  };
+}
+
+function normalizeAgent(agent, id, fallback = {}) {
+  const value = agent && typeof agent === 'object' ? agent : {};
+  const proposals = {};
+  for (const [proposalId, proposal] of Object.entries(value.proposals || {})) {
+    const normalized = normalizeProposal(proposal);
+    if (normalized) proposals[proposalId] = normalized;
+  }
+  return {
+    ...value,
+    id: value.id || id,
+    title: String(value.title || fallback.title || '新会话').slice(0, 60),
+    contextScope: value.contextScope || fallback.contextScope || 'minimal',
+    contextTurns: Number.isFinite(Number(value.contextTurns))
+      ? Math.max(0, Math.floor(Number(value.contextTurns)))
+      : 12,
+    webSearchEnabled: value.webSearchEnabled !== false,
+    draft: normalizeDraft(value.draft),
+    messages: (Array.isArray(value.messages) ? value.messages : []).map(normalizeMessage).filter(Boolean),
+    proposals,
+    createdAt: Number(value.createdAt) || Number(fallback.createdAt) || Date.now(),
+    updatedAt: Number(value.updatedAt) || Number(fallback.updatedAt) || Date.now()
+  };
+}
+
+function createAgentRecord(id, title = '新会话', settings = {}) {
+  return normalizeAgent({
+    id,
+    title,
+    contextScope: settings.contextScope || 'minimal',
+    contextTurns: settings.contextTurns,
+    webSearchEnabled: settings.webSearchEnabled !== false,
+    draft: emptyDraft(),
+    messages: [],
+    proposals: {},
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  }, id);
+}
+
 function newAgentList() {
   const id = 'default';
   return {
     version: CURRENT_VERSION,
     activeAgentId: id,
     agents: {
-      [id]: {
-        id,
-        title: '新会话',
-        contextScope: 'minimal',
-        contextTurns: 12,
-        webSearchEnabled: true,
-        messages: [],
-        proposals: {},
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      }
+      [id]: createAgentRecord(id)
     }
   };
 }
 
 function migrateIfNeeded(raw) {
   if (!raw) return newAgentList();
-  if (raw.version === CURRENT_VERSION) return raw;
+  if (raw.version === CURRENT_VERSION) {
+    const agents = {};
+    for (const [id, agent] of Object.entries(raw.agents || {})) agents[id] = normalizeAgent(agent, id);
+    if (!Object.keys(agents).length) return newAgentList();
+    return {
+      version: CURRENT_VERSION,
+      activeAgentId: agents[raw.activeAgentId] ? raw.activeAgentId : Object.keys(agents)[0],
+      agents
+    };
+  }
+  if (raw.version === 2) {
+    try { localStorage.setItem(KEY_V2_BACKUP, JSON.stringify(raw)); } catch {}
+    const agents = {};
+    for (const [id, agent] of Object.entries(raw.agents || {})) agents[id] = normalizeAgent(agent, id);
+    if (!Object.keys(agents).length) return newAgentList();
+    return {
+      version: CURRENT_VERSION,
+      activeAgentId: agents[raw.activeAgentId] ? raw.activeAgentId : Object.keys(agents)[0],
+      agents
+    };
+  }
   if (raw.version === 1) {
     try { localStorage.setItem(KEY_V1_BACKUP, JSON.stringify(raw)); } catch {}
     const id = 'migrated-default';
@@ -82,7 +195,7 @@ function migrateIfNeeded(raw) {
       version: CURRENT_VERSION,
       activeAgentId: id,
       agents: {
-        [id]: {
+        [id]: normalizeAgent({
           id,
           title: '默认会话',
           contextScope: raw.contextScope || 'minimal',
@@ -92,7 +205,7 @@ function migrateIfNeeded(raw) {
           proposals: raw.proposals && typeof raw.proposals === 'object' ? raw.proposals : {},
           createdAt: raw.updatedAt || Date.now(),
           updatedAt: raw.updatedAt || Date.now()
-        }
+        }, id)
       }
     };
   }
@@ -118,6 +231,7 @@ function saveList(list) {
   }
   memoryList = list;
   writeJSON(KEY_SESSION, list);
+  try { window.dispatchEvent(new CustomEvent('agent-session-updated')); } catch {}
 }
 
 export function getActiveAgentId() {
@@ -156,17 +270,11 @@ export function createAgent(title) {
   const id = uuid();
   const parent = list.agents[list.activeAgentId] || {};
   const parentTurns = Number(parent.contextTurns);
-  list.agents[id] = {
-    id,
-    title: title || '新会话',
+  list.agents[id] = createAgentRecord(id, title || '新会话', {
     contextScope: parent.contextScope || 'minimal',
     contextTurns: Number.isFinite(parentTurns) ? Math.max(0, Math.floor(parentTurns)) : 12,
-    webSearchEnabled: true,
-    messages: [],
-    proposals: {},
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
+    webSearchEnabled: parent.webSearchEnabled !== false
+  });
   list.activeAgentId = id;
   saveList(list);
   return id;
@@ -178,6 +286,67 @@ export function renameAgent(id, title) {
     list.agents[id].title = String(title || '新会话').slice(0, 60);
     saveList(list);
   }
+}
+
+export function duplicateAgent(id) {
+  const list = loadAgentList();
+  const source = list.agents[id];
+  if (!source) return null;
+  const nextId = uuid();
+  const copy = normalizeAgent(JSON.parse(JSON.stringify(source)), nextId);
+  copy.id = nextId;
+  copy.title = `${source.title || '新会话'} 副本`.slice(0, 60);
+  copy.createdAt = Date.now();
+  copy.updatedAt = copy.createdAt;
+  copy.messages = copy.messages.map(message => ({ ...message, id: message.id ? `${message.id}-copy-${nextId}` : message.id }));
+  const proposalIdMap = new Map();
+  const proposals = {};
+  for (const [oldId, proposal] of Object.entries(copy.proposals)) {
+    const proposalId = `${oldId}-copy-${nextId}`;
+    proposalIdMap.set(oldId, proposalId);
+    proposals[proposalId] = { ...proposal, id: proposalId };
+  }
+  copy.proposals = proposals;
+  copy.messages = copy.messages.map(message => ({
+    ...message,
+    proposalId: message.proposalId ? proposalIdMap.get(message.proposalId) || message.proposalId : undefined
+  }));
+  list.agents[nextId] = copy;
+  list.activeAgentId = nextId;
+  saveList(list);
+  return nextId;
+}
+
+export function saveAgentDraft(text, referenceImageIds = []) {
+  mutateActive(session => {
+    session.draft = normalizeDraft({
+      text: String(text || ''),
+      referenceImageIds,
+      updatedAt: Date.now()
+    });
+  });
+}
+
+export function clearAgentDraft() {
+  mutateActive(session => { session.draft = emptyDraft(); });
+}
+
+export function getAgentResumeSummary() {
+  const list = loadAgentList();
+  const candidates = Object.values(list.agents)
+    .filter(agent => (agent.messages || []).length || agent.draft?.text?.trim() || agent.draft?.referenceImageIds?.length)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  const agent = candidates[0] || list.agents[list.activeAgentId] || null;
+  const hasResume = !!(agent && (
+    (agent.messages || []).length || agent.draft?.text?.trim() || agent.draft?.referenceImageIds?.length
+  ));
+  return {
+    hasResume,
+    agentId: agent?.id || list.activeAgentId || null,
+    title: agent?.title || '新会话',
+    draft: normalizeDraft(agent?.draft),
+    updatedAt: Number(agent?.updatedAt) || 0
+  };
 }
 
 function collectImageIdsFromAgent(agent) {
@@ -209,17 +378,7 @@ export function deleteAgent(id) {
   delete list.agents[id];
   if (Object.keys(list.agents).length === 0) {
     const nid = 'default';
-    list.agents[nid] = {
-      id: nid,
-      title: '新会话',
-      contextScope: 'minimal',
-      contextTurns: 12,
-      webSearchEnabled: true,
-      messages: [],
-      proposals: {},
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
+    list.agents[nid] = createAgentRecord(nid);
     list.activeAgentId = nid;
   } else if (list.activeAgentId === id) {
     list.activeAgentId = fallbackActiveId && list.agents[fallbackActiveId]
@@ -267,6 +426,7 @@ export function loadAgentSession() {
     contextScope: sess.contextScope,
     contextTurns: Number.isFinite(turns) ? Math.max(0, Math.floor(turns)) : 12,
     webSearchEnabled: sess.webSearchEnabled !== false,
+    draft: normalizeDraft(sess.draft),
     messages: sess.messages,
     proposals: sess.proposals
   };
@@ -323,6 +483,7 @@ export function clearAgentSession() {
       ...list.agents[id],
       messages: [],
       proposals: {},
+      draft: emptyDraft(),
       updatedAt: Date.now()
     };
     saveList(list);
@@ -359,7 +520,13 @@ function ensureImageMemory() {
       const tx = db.transaction(IMAGE_STORE, 'readwrite');
       const store = tx.objectStore(IMAGE_STORE);
       for (const [id, entry] of Object.entries(imageMemory)) {
-        store.put({ id, base64: entry.base64, mime: entry.mime || 'image/png', updatedAt: Date.now() });
+        store.put({
+          id,
+          base64: entry.base64,
+          mime: entry.mime || 'image/png',
+          meta: normalizeImageMeta(entry.meta),
+          updatedAt: Date.now()
+        });
       }
       tx.oncomplete = () => {
         try { localStorage.removeItem(KEY_IMAGES); } catch {}
@@ -369,26 +536,38 @@ function ensureImageMemory() {
   return imageMemory;
 }
 
-function persistImageToDb(imgId, base64, mime) {
+function normalizeImageMeta(meta, previous = {}) {
+  const value = meta && typeof meta === 'object' ? meta : {};
+  return {
+    label: String(value.label ?? previous.label ?? '').slice(0, 240),
+    source: String(value.source ?? previous.source ?? '').slice(0, 120),
+    note: String(value.note ?? previous.note ?? '').slice(0, 2000),
+    caption: String(value.caption ?? previous.caption ?? '').slice(0, 2000),
+    createdAt: Number(value.createdAt) || Number(previous.createdAt) || Date.now()
+  };
+}
+
+function persistImageToDb(imgId, base64, mime, meta) {
   return openImageDb().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(IMAGE_STORE, 'readwrite');
-    tx.objectStore(IMAGE_STORE).put({ id: imgId, base64, mime: mime || 'image/png', updatedAt: Date.now() });
+    tx.objectStore(IMAGE_STORE).put({ id: imgId, base64, mime: mime || 'image/png', meta, updatedAt: Date.now() });
     tx.oncomplete = () => resolve(true);
     tx.onerror = () => reject(tx.error);
   })).catch(error => {
     // Fallback to localStorage if IDB unavailable.
     const all = ensureImageMemory();
-    all[imgId] = { base64, mime: mime || 'image/png' };
+    all[imgId] = { base64, mime: mime || 'image/png', meta };
     if (!writeJSON(KEY_IMAGES, all)) throw error;
     return false;
   });
 }
 
-export function storeAgentImage(imgId, base64, mime, _meta) {
+export function storeAgentImage(imgId, base64, mime, meta = {}) {
   const all = ensureImageMemory();
-  all[imgId] = { base64, mime: mime || 'image/png' };
+  const normalizedMeta = normalizeImageMeta(meta, all[imgId]?.meta);
+  all[imgId] = { base64, mime: mime || 'image/png', meta: normalizedMeta };
   // Prefer IndexedDB; keep memory hot for sync reads.
-  persistImageToDb(imgId, base64, mime).catch(error => notifyStorageError(error, IMAGE_STORE));
+  persistImageToDb(imgId, base64, mime, normalizedMeta).catch(error => notifyStorageError(error, IMAGE_STORE));
   // Avoid bloating localStorage once IDB path is available.
   try {
     if (typeof indexedDB !== 'undefined') localStorage.removeItem(KEY_IMAGES);
@@ -404,7 +583,21 @@ export function getAgentImage(imgId) {
 }
 
 export function getAgentImageMeta(imgId) {
-  return null;
+  const entry = ensureImageMemory()[imgId];
+  return entry ? { ...normalizeImageMeta(entry.meta) } : null;
+}
+
+export function updateAgentImageMeta(imgId, patch = {}) {
+  const all = ensureImageMemory();
+  const entry = all[imgId];
+  if (!entry) return false;
+  const meta = normalizeImageMeta({ ...entry.meta, ...patch }, entry.meta);
+  entry.meta = meta;
+  persistImageToDb(imgId, entry.base64, entry.mime, meta).catch(error => notifyStorageError(error, IMAGE_STORE));
+  try {
+    if (localStorage.getItem(KEY_IMAGES)) writeJSON(KEY_IMAGES, all);
+  } catch {}
+  return true;
 }
 
 export function deleteAgentImage(imgId) {
@@ -433,7 +626,11 @@ export function hydrateAgentImages() {
     req.onsuccess = () => {
       const map = ensureImageMemory();
       for (const row of req.result || []) {
-        if (row?.id) map[row.id] = { base64: row.base64, mime: row.mime || 'image/png' };
+        if (row?.id) map[row.id] = {
+          base64: row.base64,
+          mime: row.mime || 'image/png',
+          meta: normalizeImageMeta(row.meta, { createdAt: row.updatedAt })
+        };
       }
       resolve(Object.keys(map).length);
     };

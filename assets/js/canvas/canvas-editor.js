@@ -21,7 +21,7 @@
   extractNodeReferenceIds,
   getNodeReferenceToken,
   createNodeReferenceSnapshot
-} from './canvas-model.js';
+} from './canvas-model.js?v=20260803-4';
 import {
   renderCanvasGrid,
   renderCanvasNodes,
@@ -33,14 +33,19 @@ import {
   resolveCanvasEdgeGeometry,
   buildCanvasNodeRenderSignature,
   buildCanvasNodeMarkup
-} from './canvas-renderer.js';
-import { createCanvasInteractionScheduler } from './canvas-interactions.js';
+} from './canvas-renderer.js?v=20260803-4';
+import { createCanvasInteractionScheduler } from './canvas-interactions.js?v=20260803-4';
 import {
   createCanvasResourceRecord,
   getCanvasImportSourcesFromBridge,
   getCanvasResourceStore,
-  importCanvasResourcesFromBridge
-} from './canvas-resources.js';
+  getCanvasResourceDisplaySource,
+  importCanvasResourcesFromBridge,
+  cacheCanvasResourceRecord,
+  garbageCollectCanvasResources,
+  prepareCanvasResourceRecord
+} from './canvas-resources.js?v=20260803-4';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260803-4';
 import {
   createCanvasProjectSnapshot,
   removeCanvasNode,
@@ -49,20 +54,20 @@ import {
   upsertCanvasEdge,
   upsertCanvasNode,
   duplicateCanvasNode
-} from './canvas-store.js';
+} from './canvas-store.js?v=20260803-4';
 import {
   getCanvasAssetStore,
   createCanvasAsset,
   extractAssetReferenceIds,
   assetToReferenceImage
-} from './canvas-assets.js';
+} from './canvas-assets.js?v=20260803-4';
 import {
   cropImage,
   upscaleImage,
   buildMaskFromStrokes,
   composeOutpaint,
   composeOutpaintMask
-} from './canvas-edit.js';
+} from './canvas-edit.js?v=20260803-4';
 import {
   splitImage,
   buildAngleLabel,
@@ -70,8 +75,8 @@ import {
   loadImageQuickTools,
   saveImageQuickTools,
   DEFAULT_IMAGE_QUICK_TOOLS
-} from './canvas-image-tools.js';
-import { mountCanvasAssistant } from './canvas-assistant.js';
+} from './canvas-image-tools.js?v=20260803-4';
+import { mountCanvasAssistant } from './canvas-assistant.js?v=20260803-4';
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 5;
@@ -118,7 +123,7 @@ export function buildCanvasContextMenuMarkup() {
   return `<div class="canvas-context-menu" hidden data-role="context-menu" data-canvas-no-zoom data-legacy-label="新建文本">
       <button type="button" class="canvas-context-menu-root" data-menu-section="create">
         <span>新建节点</span>
-        <small>03 / 05 / 智能</small>
+        <small>文本 / 媒体 / 智能</small>
       </button>
       <div class="canvas-context-menu-submenu" data-menu-submenu="create" hidden>
         <button type="button" data-action="new-text">添加文本节点</button>
@@ -132,7 +137,7 @@ export function buildCanvasContextMenuMarkup() {
       </div>
       <button type="button" class="canvas-context-menu-root" data-menu-section="selection">
         <span>选中操作</span>
-        <small>复制 / 对齐 / 01</small>
+        <small>复制 / 对齐 / 删除</small>
       </button>
       <div class="canvas-context-menu-submenu" data-menu-submenu="selection" hidden>
         <button type="button" data-action="duplicate-selected">复制所选</button>
@@ -181,7 +186,7 @@ export function buildCanvasContextMenuMarkup() {
         <button type="button" data-action="run-llm-selected">运行智能文本</button>
       </div>
       <button type="button" class="canvas-context-menu-root" data-menu-section="view">
-        <span>00</span>
+        <span>视图</span>
         <small>适配 / 重置</small>
       </button>
       <div class="canvas-context-menu-submenu" data-menu-submenu="view" hidden>
@@ -201,6 +206,7 @@ export function mountCanvasEditor(root, options = {}) {
 
   const state = createEditorState(options);
   renderEditorShell(root);
+  try { globalThis.lucide?.createIcons?.(); } catch {}
 
   state.root = root;
   state.stage = root.querySelector('[data-role="stage"]');
@@ -313,7 +319,7 @@ export function mountCanvasEditor(root, options = {}) {
     try { window.addEventListener('pagehide', state._onPersistPageHide); } catch {}
     try { window.addEventListener('beforeunload', state._onPersistPageHide); } catch {}
   }
-  setInteractionMode(state, state.interactionMode || 'select');
+  setInteractionMode(state, state.interactionMode || 'pan');
   maybeShowCanvasOnboarding(state);
   setTimelineCollapsed(state, Boolean(state.timelineCollapsed), { persist: false });
   setSidebarCollapsed(state, Boolean(state.sidebarCollapsed), { persist: false, fromFocusMode: true });
@@ -336,6 +342,7 @@ export function mountCanvasEditor(root, options = {}) {
   // Auto-frame only when the saved camera clearly misses board content.
   try { maybeAutoFrameViewportOnOpen(state); } catch {}
   try { syncModeHud(state); } catch {}
+  void refreshCanvasResourceDisplaySources(state);
   return buildEditorApi(state);
 }
 
@@ -393,13 +400,14 @@ function createEditorState(options) {
     focusFlashUntil: 0,
     resultToastTimer: null,
     resultToastNodeId: '',
+    statusSource: '',
     shortcutsOpen: false,
     onboardingDismissed: false,
     stageCoachDismissed: false,
     clipboardNodes: [],
     clipboardEdges: [],
     clipboardSeedIds: [],
-    interactionMode: 'select',
+    interactionMode: 'pan',
     spacePanActive: false,
     viewportHistory: [],
     viewportHistoryIndex: -1,
@@ -435,6 +443,8 @@ function createEditorState(options) {
     timelineDragState: null,
     contextMenuPoint: { x: 120, y: 120 },
     resourceStore: options.resourceStore || getCanvasResourceStore(),
+    resourceDisplaySources: new Map(),
+    resourceDisplayToken: 0,
     assetStore: null,
     onBack: typeof options.onBack === 'function' ? options.onBack : null,
     onProjectChange: typeof options.onProjectChange === 'function' ? options.onProjectChange : null,
@@ -454,6 +464,73 @@ function createEditorState(options) {
   };
 }
 
+function revokeCanvasResourceDisplaySources(state) {
+  for (const display of state?.resourceDisplaySources?.values?.() || []) {
+    try { display.revoke?.(); } catch {}
+  }
+  if (state) state.resourceDisplaySources = new Map();
+}
+
+function scheduleCanvasResourceGarbageCollection(state) {
+  if (!state?.resourceStore?.list || !state.resourceStore.delete) return Promise.resolve(null);
+  const task = () => garbageCollectCanvasResources(state.resourceStore, [
+    ...(Array.isArray(state.projects) ? state.projects : []),
+    ...(Array.isArray(state.undoStack) ? state.undoStack : []),
+    ...(Array.isArray(state.redoStack) ? state.redoStack : [])
+  ]).catch(error => {
+    console.warn('canvas resource cleanup failed:', error);
+    return null;
+  });
+  state._resourceGcPromise = (state._resourceGcPromise || Promise.resolve()).then(task);
+  return state._resourceGcPromise;
+}
+
+async function refreshCanvasResourceDisplaySources(state) {
+  if (!state || state.destroyed || !state.resourceStore?.get) return;
+  const token = (state.resourceDisplayToken || 0) + 1;
+  state.resourceDisplayToken = token;
+  const nodes = Object.values(state.project?.nodes || {})
+    .filter(node => node?.type === 'media' && node.resourceId);
+  const resourceDisplays = new Map();
+  const resourcePromises = new Map();
+  await Promise.all(nodes.map(async node => {
+    const resourceId = String(node.resourceId || '');
+    if (!resourceId) return;
+    let displayPromise = resourcePromises.get(resourceId);
+    if (!displayPromise) {
+      displayPromise = state.resourceStore.get(resourceId)
+        .then(record => record ? getCanvasResourceDisplaySource(record, { store: state.resourceStore }) : null)
+        .catch(() => null);
+      resourcePromises.set(resourceId, displayPromise);
+    }
+    const display = await displayPromise;
+    if (display?.src) resourceDisplays.set(resourceId, display);
+  }));
+  if (state.destroyed || state.resourceDisplayToken !== token) {
+    for (const display of resourceDisplays.values()) {
+      try { display.revoke?.(); } catch {}
+    }
+    return;
+  }
+
+  const next = new Map();
+  nodes.forEach(node => {
+    const display = resourceDisplays.get(String(node.resourceId || ''));
+    if (display) next.set(node.id, display);
+  });
+  const previous = state.resourceDisplaySources || new Map();
+  const displaySourcesChanged = previous.size !== next.size
+    || [...next].some(([nodeId, display]) => previous.get(nodeId) !== display);
+  if (!displaySourcesChanged) return;
+  for (const [nodeId, display] of previous) {
+    if (next.get(nodeId) !== display) {
+      try { display.revoke?.(); } catch {}
+    }
+  }
+  state.resourceDisplaySources = next;
+  if (!state.destroyed) rerenderEditor(state, { skipPersist: true, forceFull: true });
+}
+
 function renderEditorShell(root) {
   root.innerHTML = `
     <section class="canvas-workspace" aria-label="无限画布编辑器">
@@ -461,6 +538,7 @@ function renderEditorShell(root) {
         <div class="canvas-project-header">
           <strong data-role="project-title">画布项目</strong>
           <div class="canvas-project-header-actions">
+            <button type="button" class="canvas-sidebar-toggle canvas-prompt-library-btn" data-action="prompt-library" title="打开提示词库"><i data-lucide="library" aria-hidden="true"></i><span>提示词库</span></button>
             <button type="button" class="canvas-sidebar-toggle" data-action="toggle-sidebar" data-role="toggle-sidebar-btn" title="折叠侧栏 (B)" aria-pressed="false">折叠侧栏</button>
             <button type="button" class="canvas-close-btn" data-action="back">返回</button>
           </div>
@@ -489,7 +567,7 @@ function renderEditorShell(root) {
                 <div class="canvas-action-guide" data-role="action-guide" data-section="guide">
                   <h3>3 步上手</h3>
                   <ol class="canvas-action-steps" data-role="action-steps">
-                  <li><strong>1. 00</strong><span>本地上传 / Studio 导入 / 拖拽粘贴</span></li>
+                  <li><strong>1. 导入</strong><span>本地上传 / Studio 导入 / 拖拽粘贴</span></li>
                   <li><strong>2. 接线</strong><span>智能接线自动连参考→编排 →结果</span></li>
                   <li><strong>3. 生成</strong><span>选中编排节点后按 G 或点执行生成</span></li>
                 </ol>
@@ -535,7 +613,7 @@ function renderEditorShell(root) {
                   <summary>更多节点</summary>
                   <div class="canvas-action-list">
                     <button type="button" class="canvas-action-btn" data-action="new-audio">音频</button>
-                    <button type="button" class="canvas-action-btn" data-action="new-subtitle">03</button>
+                    <button type="button" class="canvas-action-btn" data-action="new-subtitle">字幕</button>
                     <button type="button" class="canvas-action-btn" data-action="new-loop">循环节点</button>
                     <button type="button" class="canvas-action-btn" data-action="new-llm">智能文本</button>
                   </div>
@@ -547,23 +625,23 @@ function renderEditorShell(root) {
                   </div>
                   <label class="canvas-node-search">
                   <span class="canvas-sr-only">查找节点</span>
-                  <input type="search" data-role="node-search" placeholder="标题 / 02 / 类型 / locked / running" autocomplete="off" />
+                  <input type="search" data-role="node-search" placeholder="标题 / 角色 / 类型 / 锁定 / 生成中" autocomplete="off" />
                 </label>
                   <div class="canvas-node-search-filters" data-role="node-search-filters" aria-label="节点筛选">
-                  <button type="button" class="is-active" data-search-filter="all" aria-pressed="true">00</button>
-                  <button type="button" data-search-filter="media" aria-pressed="false">05</button>
+                  <button type="button" class="is-active" data-search-filter="all" aria-pressed="true">全部</button>
+                  <button type="button" data-search-filter="media" aria-pressed="false">媒体</button>
                   <button type="button" data-search-filter="config" aria-pressed="false">编排</button>
-                  <button type="button" data-search-filter="text" aria-pressed="false">03</button>
+                  <button type="button" data-search-filter="text" aria-pressed="false">文本</button>
                   <button type="button" data-search-filter="group" aria-pressed="false">分组</button>
                   <button type="button" data-search-filter="locked" aria-pressed="false">锁定</button>
                   <button type="button" data-search-filter="running" aria-pressed="false">生成中</button>
-                  <button type="button" data-search-filter="error" aria-pressed="false">02</button>
+                  <button type="button" data-search-filter="error" aria-pressed="false">异常</button>
                 </div>
                   <div class="canvas-node-search-results" data-role="node-search-results" hidden></div>
                 </div>
                 <div class="canvas-action-section canvas-action-section-view" data-section="view" data-role="action-section-view">
                   <div class="canvas-action-section-head">
-                    <h3>00</h3>
+                    <h3>视图</h3>
                     <span>常用</span>
                   </div>
                   <div class="canvas-action-icon-strip" aria-label="画布快捷工具">
@@ -594,7 +672,7 @@ function renderEditorShell(root) {
                     <button type="button" class="canvas-action-btn" data-action="bring-forward-selected">上移</button>
                     <button type="button" class="canvas-action-btn" data-action="send-backward-selected">下移</button>
                     <button type="button" class="canvas-action-btn" data-action="add-selected-to-timeline">加入时间轴</button>
-                    <button type="button" class="canvas-action-btn canvas-action-btn-danger" data-action="delete-selected">01</button>
+                    <button type="button" class="canvas-action-btn canvas-action-btn-danger" data-action="delete-selected">删除</button>
                   </div>
                 </details>
               </div>
@@ -615,12 +693,12 @@ function renderEditorShell(root) {
                 <form class="canvas-inspector-form" data-role="node-form" data-canvas-no-zoom hidden>
                   <div class="canvas-inspector-summary" data-role="inspector-summary">
                     <div class="canvas-inspector-summary-main">
-                      <div class="canvas-inspector-type" data-role="inspector-type" hidden>11</div>
-                      <strong data-role="inspector-summary-title">11</strong>
+                      <div class="canvas-inspector-type" data-role="inspector-type" hidden>节点</div>
+                      <strong data-role="inspector-summary-title">未命名</strong>
                       <span data-role="inspector-summary-meta"></span>
                     </div>
                     <div class="canvas-inspector-quick-actions" data-role="inspector-quick-actions">
-                      <button type="button" data-action="focus-selected" title="定位所选">λ</button>
+                      <button type="button" data-action="focus-selected" title="定位所选">定位</button>
                       <button type="button" data-action="select-connected" title="选中相连节点">相连</button>
                       <button type="button" data-action="duplicate-selected" title="复制所选">复制</button>
                       <button type="button" data-action="generate-selected" data-quick="generate" title="执行生成">生成</button>
@@ -645,16 +723,16 @@ function renderEditorShell(root) {
                           <option value="image">图片</option>
                           <option value="video">视频</option>
                           <option value="audio">音频</option>
-                          <option value="subtitle">03</option>
+                          <option value="subtitle">字幕</option>
                         </select>
                       </label>
                     </div>
                   </div>
                   <details class="canvas-inspector-advanced">
-                    <summary>生成参数<span>00 / 比例 / 张数</span></summary>
+                    <summary>生成参数<span>模型 / 比例 / 张数</span></summary>
                     <div class="canvas-inspector-advanced-body">
-                      <label><span>结果节点 ID</span><input type="text" name="targetNodeId" placeholder="为空则自动创建结果节点 /></label>
-                      <label><span>00</span><input type="text" name="model" placeholder="为空时使用当前默认模型 /></label>
+                      <label><span>结果节点 ID</span><input type="text" name="targetNodeId" placeholder="为空则自动创建结果节点" /></label>
+                      <label><span>模型</span><input type="text" name="model" placeholder="为空时使用当前默认模型" /></label>
                       <div class="canvas-inspector-row">
                         <label><span>比例</span><input type="text" name="aspect" placeholder="如 1:1 / 16:9" /></label>
                         <label><span>清晰度</span><input type="text" name="resolution" placeholder="如 1024 / 720P" /></label>
@@ -666,7 +744,7 @@ function renderEditorShell(root) {
                     </div>
                   </details>
                   <details class="canvas-inspector-advanced">
-                    <summary>位置尺寸<span>坐标 / 宽高 / 08</span></summary>
+                    <summary>位置尺寸<span>坐标 / 宽高 / 旋转</span></summary>
                     <div class="canvas-inspector-advanced-body">
                       <div class="canvas-inspector-row">
                         <label><span>X</span><input type="number" name="x" step="1" /></label>
@@ -674,10 +752,10 @@ function renderEditorShell(root) {
                       </div>
                       <div class="canvas-inspector-row">
                         <label><span>宽度</span><input type="number" name="width" step="1" min="80" /></label>
-                        <label><span>12</span><input type="number" name="height" step="1" min="60" /></label>
+                        <label><span>高度</span><input type="number" name="height" step="1" min="60" /></label>
                       </div>
                       <div class="canvas-inspector-row">
-                        <label><span>08</span><input type="number" name="rotation" step="1" /></label>
+                        <label><span>旋转</span><input type="number" name="rotation" step="1" /></label>
                       </div>
                     </div>
                   </details>
@@ -707,26 +785,26 @@ function renderEditorShell(root) {
           <section class="canvas-editor" aria-label="画布编辑器">
             <div class="canvas-editor-toolbar">
               <div class="canvas-tool-group" role="group" aria-label="交互工具">
-                <button type="button" class="is-active" data-tool="select" title="05 / 框选(V)">05</button>
+                <button type="button" data-tool="select" title="选择 / 框选 (V)">选择</button>
                 <button type="button" data-tool="connect" title="点击连线 (C)：先点源节点，再点目标节点">连线</button>
-                <button type="button" data-tool="pan" title="平移画布 (H / 按住空格)">09</button>
+                <button type="button" class="is-active" data-tool="pan" title="平移画布 (H / 按住空格)">平移</button>
               </div>
-              <div class="canvas-tool-group" role="group" aria-label="00" data-toolbar-tier="nav-dup" title="缩放/适配也可在右下导航使用">
+              <div class="canvas-tool-group" role="group" aria-label="缩放" data-toolbar-tier="nav-dup" title="缩放/适配也可在右下导航使用">
                 <button type="button" data-action="zoom-out" title="缩小">-</button>
                 <button type="button" class="canvas-zoom-chip" data-role="zoom-level" data-action="cycle-zoom" title="点击切换 50% / 100% / 150%，右键重置">100%</button>
-                <button type="button" data-action="zoom-in" title="06">+</button>
+                <button type="button" data-action="zoom-in" title="放大">+</button>
                 <button type="button" data-action="fit-view" title="适配全部 (Shift+1)">适配</button>
-                <button type="button" data-action="fit-selection" data-toolbar-tier="secondary" title="适配所选(Shift+2)">05</button>
+                <button type="button" data-action="fit-selection" data-toolbar-tier="secondary" title="适配所选(Shift+2)">所选</button>
               </div>
               <div class="canvas-tool-group" role="group" aria-label="面板">
                 <button type="button" data-action="toggle-minimap" data-role="toggle-minimap-btn" data-toolbar-tier="secondary" title="小地图 (M)" aria-pressed="false">小地图</button>
                 <button type="button" data-action="toggle-timeline" data-role="toggle-timeline-btn" title="折叠/展开时间轴(T)" aria-pressed="true">时间轴</button>
-                <button type="button" data-action="toggle-sidebar" data-role="toggle-sidebar-btn" title="15/展开侧栏 (B)" aria-pressed="false">侧栏</button>
+                <button type="button" data-action="toggle-sidebar" data-role="toggle-sidebar-btn" title="切换侧栏 (B)" aria-pressed="false">侧栏</button>
                 <button type="button" data-action="toggle-focus-mode" data-role="toggle-focus-mode-btn" title="专注模式 (\\)：折叠侧栏/时间轴，专注画布" aria-pressed="false">专注</button>
                 <button type="button" data-action="toggle-shortcuts" data-toolbar-tier="secondary" title="快捷键帮助(? / F1)">?</button>
                 <button type="button" data-action="toggle-canvas-assistant" title="画布助手" aria-pressed="false">助手</button>
               </div>
-              <div class="canvas-tool-group" role="group" aria-label="08">
+              <div class="canvas-tool-group" role="group" aria-label="编辑">
                 <button type="button" data-action="undo" title="撤销 (Ctrl+Z)">撤销</button>
                 <button type="button" data-action="redo" data-toolbar-tier="secondary" title="重做 (Ctrl+Y)">重做</button>
                 <button type="button" data-action="reset-view" data-toolbar-tier="secondary" title="重置视图">重置</button>
@@ -735,11 +813,11 @@ function renderEditorShell(root) {
                 <span>网格</span>
                 <select data-role="background-mode">
                   <option value="lines">线条</option>
-                  <option value="dots">04</option>
+                  <option value="dots">点阵</option>
                 </select>
               </label>
-              <span class="canvas-editor-hint" data-role="interaction-hint">空白左拖平移 · Ctrl/Cmd 拖动框选 · 滚轮缩放 · F适配 · C连线</span>
-              <span class="canvas-editor-status" data-role="status">就绪</span>
+              <span class="canvas-editor-hint" data-role="interaction-hint">平移：拖动画布 · 滚轮缩放 · Shift+滚轮平移 · V 回选择</span>
+              <span class="canvas-editor-status" data-role="status">平移模式</span>
             </div>
             <div class="canvas-editor-stage" data-role="stage">
               <button type="button" class="canvas-sidebar-reopen" data-action="toggle-sidebar" data-role="sidebar-reopen" title="展开侧栏 (B)" hidden>侧栏</button>
@@ -777,13 +855,13 @@ function renderEditorShell(root) {
               <div class="canvas-stage-nav" data-role="stage-nav" data-canvas-no-zoom>
                 <div class="canvas-stage-nav-meta" data-role="stage-nav-meta" title="画布导航">导航</div>
                 <div class="canvas-stage-nav-actions" role="group" aria-label="舞台导航">
-                  <button type="button" data-action="viewport-back" data-role="viewport-back" title="上一个视角(Alt+→" aria-label="上一个视角">→</button>
-                  <button type="button" data-action="viewport-forward" data-role="viewport-forward" title="下一个视角(Alt+→" aria-label="下一个视角">→</button>
+                  <button type="button" data-action="viewport-back" data-role="viewport-back" title="上一个视角 (Alt+←)" aria-label="上一个视角">←</button>
+                  <button type="button" data-action="viewport-forward" data-role="viewport-forward" title="下一个视角 (Alt+→)" aria-label="下一个视角">→</button>
                   <button type="button" data-action="zoom-out" title="缩小">-</button>
                   <button type="button" class="canvas-stage-nav-zoom" data-role="stage-nav-zoom" data-action="cycle-zoom" title="点击切换 50% / 100% / 150%，右键重置">100%</button>
-                  <button type="button" data-action="zoom-in" title="06">+</button>
-                  <button type="button" data-action="fit-view" title="适配全部 (Shift+1 / F)">00</button>
-                  <button type="button" data-action="fit-selection" title="适配所选(Shift+2 / F)">05</button>
+                  <button type="button" data-action="zoom-in" title="放大">+</button>
+                  <button type="button" data-action="fit-view" title="适配全部 (Shift+1 / F)">适配</button>
+                  <button type="button" data-action="fit-selection" title="适配所选(Shift+2 / F)">所选</button>
                   <button type="button" data-action="reset-view" title="重置视图到原点100%">重置</button>
                   <button type="button" data-action="toggle-minimap" data-role="stage-nav-minimap" title="小地图 (M)" aria-pressed="false">图</button>
                 </div>
@@ -834,21 +912,21 @@ function renderEditorShell(root) {
                   <div class="canvas-stage-search-head">
                     <strong>查找节点</strong>
                     <span>/</span>
-                    <button type="button" class="canvas-stage-search-close" data-action="close-stage-search" aria-label="关闭查找">19</button>
+                    <button type="button" class="canvas-stage-search-close" data-action="close-stage-search" aria-label="关闭查找">关闭</button>
                   </div>
                   <label class="canvas-stage-search-input">
                     <span class="canvas-sr-only">舞台查找节点</span>
-                    <input type="search" data-role="stage-search-input" placeholder="标题 / 02 / 类型 / locked / running / error" autocomplete="off" />
+                    <input type="search" data-role="stage-search-input" placeholder="标题 / 角色 / 类型 / 锁定 / 生成中 / 异常" autocomplete="off" />
                   </label>
                   <div class="canvas-stage-search-filters" data-role="stage-search-filters" aria-label="舞台查找筛选">
-                    <button type="button" class="is-active" data-search-filter="all" aria-pressed="true">00</button>
-                    <button type="button" data-search-filter="media" aria-pressed="false">05</button>
+                    <button type="button" class="is-active" data-search-filter="all" aria-pressed="true">全部</button>
+                    <button type="button" data-search-filter="media" aria-pressed="false">媒体</button>
                     <button type="button" data-search-filter="config" aria-pressed="false">编排</button>
-                    <button type="button" data-search-filter="text" aria-pressed="false">03</button>
+                    <button type="button" data-search-filter="text" aria-pressed="false">文本</button>
                     <button type="button" data-search-filter="group" aria-pressed="false">分组</button>
                     <button type="button" data-search-filter="locked" aria-pressed="false">锁定</button>
                     <button type="button" data-search-filter="running" aria-pressed="false">生成中</button>
-                    <button type="button" data-search-filter="error" aria-pressed="false">02</button>
+                    <button type="button" data-search-filter="error" aria-pressed="false">异常</button>
                   </div>
                   <div class="canvas-stage-search-results" data-role="stage-search-results" hidden></div>
                   <p class="canvas-stage-search-tip">↑↓ 选择 · Enter 定位 · Esc 关闭 · 侧栏折叠时也能查找</p>
@@ -863,11 +941,11 @@ function renderEditorShell(root) {
                   <button type="button" data-action="cancel-connect-mode" data-role="connect-tip-cancel">退出(Esc/V)</button>
                 </div>
               </div>
-              <div class="canvas-mode-hud" data-role="mode-hud" data-canvas-no-zoom data-mode="select" data-focus="0" data-has-selection="0">
+              <div class="canvas-mode-hud" data-role="mode-hud" data-canvas-no-zoom data-mode="pan" data-focus="0" data-has-selection="0">
                 <div class="canvas-mode-hud-main">
-                  <span class="canvas-mode-hud-pill" data-role="mode-hud-mode">选择</span>
-                  <strong data-role="mode-hud-title">选择模式</strong>
-                  <span class="canvas-mode-hud-meta" data-role="mode-hud-meta">框选 / 点选</span>
+                  <span class="canvas-mode-hud-pill" data-role="mode-hud-mode">平移</span>
+                  <strong data-role="mode-hud-title">平移模式</strong>
+                  <span class="canvas-mode-hud-meta" data-role="mode-hud-meta">拖动画布 · 滚轮缩放 · V 回选择</span>
                 </div>
                 <div class="canvas-mode-hud-flags" data-role="mode-hud-flags" hidden></div>
                 <div class="canvas-mode-hud-actions" data-role="mode-hud-actions"></div>
@@ -882,7 +960,7 @@ function renderEditorShell(root) {
                   <button type="button" data-action="use-result-as-reference" data-role="result-toast-as-ref" title="把结果设为参考图，方便继续迭代">作参考</button>
                   <button type="button" data-action="continue-from-result" data-role="result-toast-continue" title="选中结果并打开设置，继续改图">继续改</button>
                   <button type="button" data-action="retry-generation" data-role="result-toast-retry" title="用原编排再生成一次">再生成</button>
-                  <button type="button" data-action="dismiss-result-toast" data-role="result-toast-dismiss" aria-label="关闭结果提示">19</button>
+                  <button type="button" data-action="dismiss-result-toast" data-role="result-toast-dismiss" aria-label="关闭结果提示">关闭</button>
                 </div>
               </div>
               <div class="canvas-run-banner" data-role="run-banner" data-canvas-no-zoom hidden data-tone="">
@@ -915,11 +993,11 @@ function renderEditorShell(root) {
                     <button type="button" data-action="generate-selected" data-toolbar="generate" title="执行生成 (G)">生成</button>
                     <button type="button" data-action="tidy-selected" data-toolbar="tidy" title="网格整理所选">整理</button>
                     <button type="button" data-action="match-size-selected" data-toolbar="size" title="统一为第一个选中节点的尺寸">同尺寸</button>
-                    <button type="button" data-action="cycle-role-selected" data-toolbar="role" title="批量轮换角色 (R)">02</button>
+                    <button type="button" data-action="cycle-role-selected" data-toolbar="role" title="批量轮换角色 (R)">角色</button>
                     <button type="button" data-action="group-selected" data-toolbar="group" title="分组所选 (Ctrl+G)">分组</button>
                     <button type="button" data-action="duplicate-selected" data-toolbar="duplicate" title="复制所选">复制</button>
                     <button type="button" data-action="fit-selection" data-toolbar="fit" title="适配所选(Shift+2)">适配</button>
-                    <button type="button" class="is-danger" data-action="delete-selected" data-toolbar="delete" title="删除所选">01</button>
+                    <button type="button" class="is-danger" data-action="delete-selected" data-toolbar="delete" title="删除所选">删除</button>
                   </div>
                   <div class="canvas-selection-toolbar-row" data-row="align" data-toolbar-group="align">
                     <span class="canvas-selection-toolbar-row-label" data-role="align-row-label">对齐</span>
@@ -927,24 +1005,24 @@ function renderEditorShell(root) {
                     <button type="button" data-action="align-center-h" title="水平居中">水平居中</button>
                     <button type="button" data-action="align-right" title="右对齐">右齐</button>
                     <button type="button" data-action="align-top" title="顶对齐">顶齐</button>
-                    <button type="button" data-action="align-center-v" title="垂直居中">01</button>
+                    <button type="button" data-action="align-center-v" title="垂直居中">居中</button>
                     <button type="button" data-action="align-bottom" title="底对齐">底齐</button>
                     <button type="button" data-action="distribute-h" title="水平均分">均分H</button>
                     <button type="button" data-action="distribute-v" title="垂直分布">均分V</button>
                   </div>
                   <div class="canvas-selection-toolbar-row" data-row="secondary" data-toolbar-group="secondary">
                     <button type="button" data-action="select-connected" data-toolbar="connected" title="选中相连节点 (Ctrl+Shift+E)">相连</button>
-                    <button type="button" data-action="select-group-members" data-toolbar="members" title="选中分组成员">03</button>
+                    <button type="button" data-action="select-group-members" data-toolbar="members" title="选中分组成员">组员</button>
                     <button type="button" data-action="ungroup-selected" data-toolbar="ungroup" title="解散分组 (Ctrl+Shift+G)">解组</button>
-                    <button type="button" data-action="rotate-left-selected" data-toolbar="rotate-left" title="向左旋转 15° ([)">08</button>
-                    <button type="button" data-action="rotate-right-selected" data-toolbar="rotate-right" title="向右旋转 15° (])">08</button>
+                    <button type="button" data-action="rotate-left-selected" data-toolbar="rotate-left" title="向左旋转 15° ([)">左转</button>
+                    <button type="button" data-action="rotate-right-selected" data-toolbar="rotate-right" title="向右旋转 15° (])">右转</button>
                     <button type="button" data-action="toggle-lock-selected" data-toolbar="lock" title="锁定/解锁">锁定</button>
                   </div>
                 </div>
               </div>
               <div class="canvas-node-quickbar" data-role="node-quickbar" data-canvas-no-zoom hidden>
                 <div class="canvas-node-quickbar-meta">
-                  <strong data-role="node-quickbar-title">11</strong>
+                  <strong data-role="node-quickbar-title">未命名</strong>
                   <span data-role="node-quickbar-type">操作</span>
                 </div>
                 <div class="canvas-node-quickbar-actions">
@@ -1078,7 +1156,7 @@ function renderEditorShell(root) {
                   <h3>时间轴</h3>
                   <span class="canvas-timeline-collapsed-summary" data-role="timeline-collapsed-summary" hidden>已折叠 · 点击展开</span>
                 </div>
-                <button type="button" class="canvas-timeline-toggle" data-action="toggle-timeline" data-role="toggle-timeline-btn" title="折叠/展开时间轴(T)">15</button>
+                <button type="button" class="canvas-timeline-toggle" data-action="toggle-timeline" data-role="toggle-timeline-btn" title="折叠/展开时间轴(T)">收起时间轴</button>
               </div>
               <div class="canvas-timeline-head-meta">
                 <div class="canvas-playback-controls" data-role="playback-controls">
@@ -1110,6 +1188,9 @@ function renderEditorShell(root) {
 function bindEditorEvents(state) {
   state.root.querySelector('[data-action="back"]')?.addEventListener('click', () => {
     state.onBack?.();
+  });
+  bindAction(state, 'prompt-library', () => {
+    globalThis.PromptLibraryBridge?.open?.({ context: 'canvas-editor', targetProjectId: state.project?.id || '' });
   });
 
   state.sidebarTabs.forEach(button => {
@@ -1365,7 +1446,7 @@ function bindEditorEvents(state) {
     setSelectedNodesTitle(state, readBatchTitleInput(state), { mode: 'suffix' });
   });
   bindAction(state, 'number-title-selected', () => {
-    const base = readBatchTitleInput(state) || '11';
+    const base = readBatchTitleInput(state) || '节点';
     setSelectedNodesTitle(state, base, { mode: 'number' });
   });
   bindAction(state, 'undo', () => {
@@ -1435,7 +1516,7 @@ function bindEditorEvents(state) {
     // Manual chrome toggles leave focus mode.
     if (state.focusMode) state.focusMode = false;
     setSidebarCollapsed(state, !state.sidebarCollapsed);
-    updateStatus(state, state.sidebarCollapsed ? '侧栏已折叠(B 05)' : '侧栏已展弢 (B 15)');
+    updateStatus(state, state.sidebarCollapsed ? '侧栏已折叠（B 展开）' : '侧栏已展开（B 收起）');
   });
   bindAction(state, 'toggle-focus-mode', () => {
     setFocusMode(state, !state.focusMode);
@@ -1885,14 +1966,14 @@ function bindEditorEvents(state) {
       event.preventDefault();
       if (state.focusMode) state.focusMode = false;
       setTimelineCollapsed(state, !state.timelineCollapsed);
-      updateStatus(state, state.timelineCollapsed ? '时间轴已折叠 (T 05)' : '时间轴已展开 (T 15)');
+      updateStatus(state, state.timelineCollapsed ? '时间轴已折叠（T 展开）' : '时间轴已展开（T 收起）');
       return;
     }
     if (!editing && !event.ctrlKey && !event.metaKey && !event.altKey && key === 'b') {
       event.preventDefault();
       if (state.focusMode) state.focusMode = false;
       setSidebarCollapsed(state, !state.sidebarCollapsed);
-      updateStatus(state, state.sidebarCollapsed ? '侧栏已折叠(B 05)' : '侧栏已展弢 (B 15)');
+      updateStatus(state, state.sidebarCollapsed ? '侧栏已折叠（B 展开）' : '侧栏已展开（B 收起）');
       return;
     }
     if (!editing && !event.ctrlKey && !event.metaKey && !event.altKey && (key === '\\' || event.code === 'Backslash')) {
@@ -1907,7 +1988,7 @@ function bindEditorEvents(state) {
       syncViewToggleButtons(state);
       persistProject(state);
       rerenderEditor(state, { skipPersist: true });
-      updateStatus(state, state.miniMapOpen ? '小地图已打开 (M 19)' : '小地图已关闭 (M 打开)');
+      updateStatus(state, state.miniMapOpen ? '小地图已打开（M 关闭）' : '小地图已关闭（M 打开）');
       return;
     }
     if (!editing && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === '1' && event.shiftKey) {
@@ -2389,7 +2470,9 @@ function pushHistory(state) {
   if (!state.project || state.applyingHistory) return;
   state.undoStack.push(createCanvasProjectSnapshot(state.project));
   if (state.undoStack.length > 50) state.undoStack.shift();
+  const hadRedo = state.redoStack.length > 0;
   state.redoStack.length = 0;
+  if (hadRedo) void scheduleCanvasResourceGarbageCollection(state);
 }
 
 function undo(state) {
@@ -2400,6 +2483,7 @@ function undo(state) {
   const snapshot = state.undoStack.pop();
   state.redoStack.push(createCanvasProjectSnapshot(state.project));
   restoreSnapshot(state, snapshot);
+  void scheduleCanvasResourceGarbageCollection(state);
   updateStatus(state, '已撤锢');
 }
 
@@ -2411,6 +2495,7 @@ function redo(state) {
   const snapshot = state.redoStack.pop();
   state.undoStack.push(createCanvasProjectSnapshot(state.project));
   restoreSnapshot(state, snapshot);
+  void scheduleCanvasResourceGarbageCollection(state);
   updateStatus(state, '已重做');
 }
 
@@ -2429,6 +2514,7 @@ function restoreSnapshot(state, snapshot) {
   };
   state.selectedNodeIds = state.selectedNodeIds.filter(id => state.project?.nodes?.[id]);
   persistProject(state);
+  void scheduleCanvasResourceGarbageCollection(state);
   rerenderEditor(state, { skipPersist: true });
   state.applyingHistory = false;
 }
@@ -2563,7 +2649,7 @@ function startNodeDrag(state, nodeId, event) {
   const memberExtra = Math.max(0, dragIds.length - selectedUnlocked.length);
   const base = memberExtra > 0
     ? `已复制 ${selectedUnlocked.length} 个节点（含组内 ${memberExtra} 个成员）`
-    : `04 ${dragIds.length} 个节点`;
+    : `已复制 ${dragIds.length} 个节点`;
   updateStatus(state, lockedSkipped > 0 ? `${base}（已跳过锁定）` : base);
 }
 
@@ -2848,7 +2934,7 @@ function startNodeConnection(state, nodeId, side, event) {
     clickPreview: false
   };
   try { state.stage?.setPointerCapture?.(event.pointerId); } catch {}
-  updateStatus(state, '拖到目标节点后松弢即可连线（靠近自动吸附）');
+  updateStatus(state, '拖到目标节点后松开即可连线（靠近自动吸附）');
   renderLiveConnectionFrame(state);
 }
 
@@ -2889,7 +2975,7 @@ function updateConnectionState(state, event) {
         ? (resolved.snapped ? `已吸附：${title}（松开创建连接）` : `可连接到「${title}」`)
         : `无法连接到：${title}`);
     } else {
-      updateStatus(state, '拖到目标节点后松弢即可连线（靠近自动吸附）');
+      updateStatus(state, '拖到目标节点后松开即可连线（靠近自动吸附）');
     }
   }
   ensureEdgeAutoPanLoop(state);
@@ -3295,15 +3381,15 @@ function openContextMenu(state, clientX, clientY, options = {}) {
     const small = button.querySelector('small');
     if (!small) return;
     if (section === 'selection') {
-      small.textContent = selectedCount ? `已选${selectedCount}` : '复制 / 设置 / 01';
+      small.textContent = selectedCount ? `已选${selectedCount}` : '复制 / 设置 / 删除';
     } else if (section === 'align') {
       small.textContent = selectedCount >= 2 ? `多选 ${selectedCount}` : '多选后可用';
     } else if (section === 'smart') {
       small.textContent = hasConfigLike ? '生成 / 接线' : (hasMedia ? '裁剪 / 放大 / 接线' : '生成 / 裁剪 / 放大');
     } else if (section === 'create') {
-      small.textContent = selectedCount ? '继续添加' : '03 / 05 / 智能';
+      small.textContent = selectedCount ? '继续添加' : '文本 / 媒体 / 智能';
     } else if (section === 'view') {
-      small.textContent = selectedCount ? '适配所选/ 00' : '适配 / 重置';
+      small.textContent = selectedCount ? '适配所选 / 重置' : '适配 / 重置';
     }
   });
 }
@@ -3585,7 +3671,7 @@ async function openCropDialog(state) {
     <label>比例 <select name="ratio">${ratios.map(r => `<option value="${r[0]}">${r[1]}</option>`).join('')}</select></label>
     <div class="canvas-crop-preview" data-role="crop-preview"><img src="${escapeHtmlAttr(picked.src)}" alt=""></div>
     <div class="canvas-crop-controls"><label>X <input type="number" name="cx" min="0" max="100" value="5" step="1"></label><label>Y <input type="number" name="cy" min="0" max="100" value="5" step="1"></label><label>W <input type="number" name="cw" min="10" max="100" value="90" step="1"></label><label>H <input type="number" name="ch" min="10" max="100" value="90" step="1"></label></div>
-    <div class="canvas-modal-actions"><button type="button" data-role="crop-confirm">确认裁剪</button><button type="button" data-role="modal-cancel">00</button></div>
+    <div class="canvas-modal-actions"><button type="button" data-role="crop-confirm">确认裁剪</button><button type="button" data-role="modal-cancel">取消</button></div>
     </div>`);
   if (!overlay) return;
   const previewBox = overlay.querySelector('[data-role="crop-preview"]');
@@ -3697,8 +3783,8 @@ async function openUpscaleDialog(state) {
   if (!picked) { updateStatus(state, '请选中一个图片节点'); return; }
   const overlay = openCanvasModal(state, `<div class="canvas-modal-card"><h3>放大图片</h3>
     <label>目标长边 <select name="target"><option value="1024">1024px</option><option value="2048" selected>2048px</option><option value="3072">3072px</option><option value="4096">4096px</option></select></label>
-    <label>算法 <select name="algo"><option value="high" selected>高质量</option><option value="bilinear">双线性</option><option value="nearest">朢近邻</option></select></label>
-    <div class="canvas-modal-actions"><button type="button" data-role="upscale-confirm">确认放大</button><button type="button" data-role="modal-cancel">00</button></div>
+    <label>算法 <select name="algo"><option value="high" selected>高质量</option><option value="bilinear">双线性</option><option value="nearest">最近邻</option></select></label>
+    <div class="canvas-modal-actions"><button type="button" data-role="upscale-confirm">确认放大</button><button type="button" data-role="modal-cancel">取消</button></div>
     </div>`);
   if (!overlay) return;
   overlay.querySelector('[data-role="modal-cancel"]').addEventListener('click', () => closeCanvasModal(state));
@@ -3709,7 +3795,7 @@ async function openUpscaleDialog(state) {
       updateStatus(state, '正在放大…');
       const result = await upscaleImage(picked.src, target, algo);
       pushHistory(state);
-      await applyEditResultAsNode(state, picked.node, result, '06');
+      await applyEditResultAsNode(state, picked.node, result, '放大');
       closeCanvasModal(state);
       updateStatus(state, '放大完成');
     } catch (error) {
@@ -3972,9 +4058,9 @@ async function openLoopEditDialog(state) {
     <div class="canvas-modal-card">
       <h3>编辑循环节点</h3>
       <label>基础提示词 <textarea name="basePrompt" rows="3">${escapeHtmlAttr(node.basePrompt || '')}</textarea></label>
-      <label>变化项（每行丢条） <textarea name="variations" rows="6">${escapeHtmlAttr(variations)}</textarea></label>
+      <label>变化项（每行一条） <textarea name="variations" rows="6">${escapeHtmlAttr(variations)}</textarea></label>
       <p class="canvas-crop-hint">每行一个变化项，运行时会与基础提示词拼接后逐条生成，结果自动加入时间轴。</p>
-      <div class="canvas-modal-actions"><button type="button" data-role="loop-save">保存</button><button type="button" data-role="modal-cancel">00</button></div>
+      <div class="canvas-modal-actions"><button type="button" data-role="loop-save">保存</button><button type="button" data-role="modal-cancel">取消</button></div>
     </div>`);
   if (!overlay) return;
   overlay.querySelector('[data-role="modal-cancel"]').addEventListener('click', () => closeCanvasModal(state));
@@ -3997,14 +4083,14 @@ async function openAssetLibrary(state) {
       <div class="canvas-asset-thumb">${a.kind === 'text' ? '<span>文</span>' : (a.src ? `<img src="${escapeHtmlAttr(a.src)}" alt="">` : '<span>素</span>')}</div>
       <div class="canvas-asset-meta"><strong>${escapeHtmlAttr(a.title)}</strong><span>${escapeHtmlAttr(a.kind)} · ${(a.tags || []).join('/') || '无标签'}</span></div>
       <button type="button" data-role="asset-insert" data-id="${a.id}">引用</button>
-      <button type="button" data-role="asset-delete" data-id="${a.id}">01</button>
+      <button type="button" data-role="asset-delete" data-id="${a.id}">删除</button>
     </div>`).join('') : '<p class="canvas-asset-empty">还没有收藏的素材。右键节点选「收藏到素材库」即可加入。</p>';
   const overlay = openCanvasModal(state, `
     <div class="canvas-modal-card canvas-asset-card">
       <h3>素材库（跨画布）</h3>
       <p class="canvas-crop-hint">共 ${assets.length} 个素材。点击「引用」复制 <code>@[asset:id]</code>，粘贴到编排节点提示词即可作为参考图。</p>
       <div class="canvas-asset-list">${items}</div>
-      <div class="canvas-modal-actions"><button type="button" data-role="modal-cancel">19</button></div>
+      <div class="canvas-modal-actions"><button type="button" data-role="modal-cancel">关闭</button></div>
     </div>`);
   if (!overlay) return;
   overlay.querySelector('[data-role="modal-cancel"]').addEventListener('click', () => closeCanvasModal(state));
@@ -4051,7 +4137,7 @@ async function openInpaintDialog(state) {
       <label>提示词<textarea name="prompt" rows="3" placeholder="描述你想要在红色区域生成的内容"></textarea></label>
       <div class="canvas-modal-actions">
         <button type="button" data-role="inpaint-submit">提交生成</button>
-        <button type="button" data-role="modal-cancel">00</button>
+        <button type="button" data-role="modal-cancel">取消</button>
       </div>
     </div>`);
   if (!overlay) return;
@@ -4152,11 +4238,11 @@ async function openInpaintDialog(state) {
         : (payload?.imageUrl || '');
       if (!src) throw new Error('生成接口未返回图片');
       pushHistory(state);
-      await applyEditResultAsNode(state, picked.node, src, '19');
+      await applyEditResultAsNode(state, picked.node, src, '局部重绘');
       closeCanvasModal(state);
       updateStatus(state, '局部重绘完成');
     } catch (error) {
-      updateStatus(state, `屢部重绘失败：${error.message || error}`);
+      updateStatus(state, `局部重绘失败：${error.message || error}`);
     }
   });
 }
@@ -4192,7 +4278,7 @@ async function openOutpaintDialog(state) {
 
   const overlay = openCanvasModal(state, `
     <div class="canvas-modal-card canvas-mask-card">
-      <h3>00</h3>
+      <h3>扩图</h3>
       <p class="canvas-crop-hint">按方向设置扩展像素，原图会居中嵌入扩展画布，外围作为 mask 重绘。提交时调用 bridge.runGeneration('image', prompt, { images:[合成图], mask:[外围mask] })。</p>
       <div class="canvas-outpaint-grid">
         <label>上 <input type="number" name="top" min="0" max="512" value="64" step="8">px</label>
@@ -4204,7 +4290,7 @@ async function openOutpaintDialog(state) {
       <label>提示词<textarea name="prompt" rows="3" placeholder="描述外围要补全的内容"></textarea></label>
       <div class="canvas-modal-actions">
         <button type="button" data-role="outpaint-submit">提交扩图</button>
-        <button type="button" data-role="modal-cancel">00</button>
+        <button type="button" data-role="modal-cancel">取消</button>
       </div>
     </div>`);
   if (!overlay) return;
@@ -4242,7 +4328,7 @@ async function openOutpaintDialog(state) {
         : (payload?.imageUrl || '');
       if (!src) throw new Error('生成接口未返回图片');
       pushHistory(state);
-      await applyEditResultAsNode(state, picked.node, src, '00');
+      await applyEditResultAsNode(state, picked.node, src, '扩图');
       closeCanvasModal(state);
       updateStatus(state, '扩图完成');
     } catch (error) {
@@ -4264,7 +4350,7 @@ const CANVAS_IMPORT_ORIGIN_OPTIONS = [
 
 function resolveImportOriginLabel(origin) {
   const found = CANVAS_IMPORT_ORIGIN_OPTIONS.find(item => item.id === origin);
-  return found?.label || origin || '05';
+  return found?.label || origin || '其他来源';
 }
 
 function groupImportSourcesByOrigin(sources = []) {
@@ -4337,7 +4423,7 @@ async function chooseCanvasImportSelection(state, sourceGroups, options = {}) {
         <div class="canvas-import-origin-tabs" data-role="import-origin-tabs" role="tablist" aria-label="导入来源"></div>
         <div class="canvas-import-toolbar">
           <div class="canvas-import-toolbar-left">
-            <strong data-role="import-origin-title">06</strong>
+            <strong data-role="import-origin-title">导入来源</strong>
             <span data-role="import-selection-count">已选0</span>
           </div>
           <div class="canvas-import-toolbar-actions">
@@ -4353,7 +4439,7 @@ async function chooseCanvasImportSelection(state, sourceGroups, options = {}) {
         </label>
         <div class="canvas-modal-actions">
           <button type="button" class="is-primary" data-role="import-confirm">导入所选</button>
-          <button type="button" data-role="modal-cancel">00</button>
+          <button type="button" data-role="modal-cancel">取消</button>
         </div>
       </div>
     `);
@@ -4741,6 +4827,7 @@ function importSourceRecordsIntoCanvas(state, sources = [], point = null, option
         ? `已导入${createdIds.length} 张图片并自动整理`
         : `已导入 ${createdIds.length} 张图片`);
     updateStatus(state, statusText, { tone: 'success', stickyMs: 2400 });
+    void refreshCanvasResourceDisplaySources(state);
   } else {
     updateStatus(state, '导入失败：没有创建节点');
   }
@@ -4800,7 +4887,7 @@ async function importMediaNodesFromBridge(state, point, options = {}) {
   });
   if (!createdIds.length) return [];
 
-  const originText = (selectedOrigins.length ? selectedOrigins : ['05'])
+  const originText = (selectedOrigins.length ? selectedOrigins : ['其他来源'])
     .map(resolveImportOriginLabel)
     .join(' / ');
   const extra = sources.length < selectedSources.length
@@ -5074,7 +5161,7 @@ function smartWireSelectedNodes(state) {
   const sourceNodes = mediaNodes.filter(node => node.canvasRole !== 'target' && !/结果图|输出/.test(String(node.title || '')));
   const targetNodes = mediaNodes.filter(node => node.canvasRole === 'target' || /结果图|输出/.test(String(node.title || '')));
   const textNodes = (selectedNodes.length ? selectedNodes : allNodes)
-    .filter(node => (node.type === 'text' || node.type === 'note') && /05|prompt|补充/.test(String(node.title || node.text || '')));
+    .filter(node => (node.type === 'text' || node.type === 'note') && /文本|prompt|补充/.test(String(node.title || node.text || '')));
 
   if (!sourceNodes.length && !targetNodes.length && !textNodes.length) {
     updateStatus(state, selectedNodes.length
@@ -5237,7 +5324,7 @@ function addSelectedNodesToTimeline(state) {
   syncPlayheadToSelectedNode(state);
   persistProject(state);
   rerenderEditor(state);
-  updateStatus(state, `03 ${mediaNodeIds.length} 个媒体节点加入时间轴`);
+  updateStatus(state, `已将 ${mediaNodeIds.length} 个媒体节点加入时间轴`);
 }
 
 function zoomViewportByStep(state, factor) {
@@ -5258,7 +5345,7 @@ function setSelectedEdge(state, edgeId = '') {
     state.selectedNodeIds = [];
     setSidebarTab(state, 'inspector');
     const info = describeSelectedEdge(state);
-    updateStatus(state, info?.status || '已选中连线，按 Delete 01');
+    updateStatus(state, info?.status || '已选中连线，按 Delete 删除');
   }
   const midGesture = Boolean(state.dragState || state.boxState || state.panState || state.pinchState);
   rerenderEditor(state, {
@@ -5369,7 +5456,7 @@ function syncEdgeQuickbar(state, options = {}) {
   const fromNode = state.project?.nodes?.[edge.fromNodeId];
   const toNode = state.project?.nodes?.[edge.toNodeId];
   const fromTitle = String(fromNode?.title || edge.fromNodeId || '起点').replace(/\s+/g, ' ').trim();
-  const toTitle = String(toNode?.title || edge.toNodeId || '01').replace(/\s+/g, ' ').trim();
+  const toTitle = String(toNode?.title || edge.toNodeId || '目标节点').replace(/\s+/g, ' ').trim();
   const title = (fromTitle.length > 8 ? fromTitle.slice(0, 8) + '…' : fromTitle)
     + ' →'
     + (toTitle.length > 8 ? toTitle.slice(0, 8) + '…' : toTitle);
@@ -5453,7 +5540,7 @@ function summarizeDeleteSelection(state, seedIds = [], deleteIds = [], options =
   const titles = seedNodes
     .filter(node => options.includeLocked === true || !node.locked)
     .slice(0, 3)
-    .map(node => node.title || (node.type === 'group' ? '分组' : '11'));
+    .map(node => node.title || (node.type === 'group' ? '分组' : '未命名'));
   const more = seedNodes.length > 3 ? ` 等 ${seedNodes.length} 项` : '';
   const detailParts = [];
   if (groupCount > 0) detailParts.push(`${groupCount} 个分组`);
@@ -5487,8 +5574,8 @@ function confirmDeleteSelection(state, summary) {
         <p class="canvas-delete-detail">${escapeHtml(summary.detailText)}：${escapeHtml(summary.titleText || '未命名')}</p>
         ${lockedNote}
         <div class="canvas-modal-actions">
-          <button type="button" class="is-danger" data-role="delete-confirm">01</button>
-          <button type="button" data-role="delete-cancel">00</button>
+          <button type="button" class="is-danger" data-role="delete-confirm">删除</button>
+          <button type="button" data-role="delete-cancel">取消</button>
         </div>
       </div>
     `);
@@ -5534,7 +5621,7 @@ async function deleteSelectedNodes(state, options = {}) {
   const deleteIds = collectDeleteNodeIds(state, seedIds, { includeLocked });
   if (!deleteIds.length) {
     const lockedOnly = seedIds.some(id => state.project?.nodes?.[id]?.locked);
-    updateStatus(state, lockedOnly ? '扢选节点已锁定，请先解锁再删除' : '没有可删除的节点');
+    updateStatus(state, lockedOnly ? '所选节点已锁定，请先解锁再删除' : '没有可删除的节点');
     return [];
   }
   const summary = summarizeDeleteSelection(state, seedIds, deleteIds, { includeLocked });
@@ -5558,6 +5645,7 @@ async function deleteSelectedNodes(state, options = {}) {
   state.selectedNodeIds = seedIds.filter(id => state.project?.nodes?.[id]);
   state.selectedEdgeId = '';
   persistProject(state, { immediate: true });
+  void scheduleCanvasResourceGarbageCollection(state);
   rerenderEditor(state);
   const skippedNote = summary.lockedSkipped > 0 && !includeLocked ? `，跳过 ${summary.lockedSkipped} 个锁定` : '';
   if (summary.groupCount > 0 && summary.memberExtra > 0) {
@@ -5620,9 +5708,9 @@ function clonePayloadIntoProject(state, payload, options = {}) {
       groupId: '',
       title: rename
         ? ((node.type === 'group' || !String(node.title || '').includes('副本'))
-          ? `${node.title || '11'} 副本`
-          : (node.title || '11'))
-        : (node.title || '11'),
+          ? `${node.title || '未命名'} 副本`
+          : (node.title || '未命名'))
+        : (node.title || '未命名'),
       generationTaskId: '',
       generationStartedAt: 0,
       generationStatus: 'idle',
@@ -6701,6 +6789,69 @@ function cssEscape(value) {
   const text = String(value || '');
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(text);
   return text.replace(/["\\]/g, '\\$&');
+}
+
+async function addPromptEntryToCanvasState(state, entry, options = {}) {
+  if (!state?.project) throw new Error('canvas project is unavailable');
+  pushHistory(state);
+  const point = options.point || {
+    x: (state.stage.clientWidth / 2 - state.viewport.x) / state.viewport.scale - 240,
+    y: (state.stage.clientHeight / 2 - state.viewport.y) / state.viewport.scale - 120
+  };
+  const branch = createPromptBranch(state.project, entry, {
+    point,
+    referenceUrls: options.referenceUrls,
+    useCoverAsReference: options.useCoverAsReference === true
+  });
+  const cacheWarnings = [];
+  const omittedNodeIds = new Set();
+  for (let index = 0; index < (branch.resourceRecords || []).length; index += 1) {
+    let record = branch.resourceRecords[index];
+    try {
+      record = await prepareCanvasResourceRecord(record, { maxDimension: 320 });
+      branch.resourceRecords[index] = record;
+      const embedded = /^data:image\//i.test(String(record?.source?.src || ''));
+      Object.values(state.project.nodes || {}).forEach(node => {
+        if (node?.resourceId !== record.id) return;
+        if (embedded) node.resourceSrc = '';
+        if (record.source?.thumbnailSrc) node.thumbnailSrc = record.source.thumbnailSrc;
+      });
+      const result = await cacheCanvasResourceRecord(record, {
+        store: state.resourceStore,
+        proxyEndpoint: options.proxyEndpoint || 'api-proxy.php'
+      });
+      if (Array.isArray(result.cacheWarnings)) cacheWarnings.push(...result.cacheWarnings);
+      if (result?.record) await state.resourceStore.put(result.record);
+    } catch (error) {
+      cacheWarnings.push(error?.message || '图片缓存失败');
+      try {
+        await state.resourceStore.put(record);
+      } catch {
+        if (/^data:image\//i.test(String(record?.source?.src || ''))) {
+          removePromptBranchResourceNodes(state.project, record.id).forEach(id => omittedNodeIds.add(id));
+        }
+      }
+    }
+  }
+  const branchNodeIds = branch.nodeIds.filter(id => !omittedNodeIds.has(id));
+  await refreshCanvasResourceDisplaySources(state);
+  persistProject(state, { immediate: true });
+  void scheduleCanvasResourceGarbageCollection(state);
+  setSelectedNodes(state, branchNodeIds, { rerender: true, persist: false });
+  fitViewportToSelection(state);
+  updateStatus(state, cacheWarnings.length
+    ? `已加入提示词分支，${cacheWarnings.length} 张图片使用远程链接`
+    : '已加入提示词分支：示例图 → 编排 → 结果', {
+      tone: cacheWarnings.length ? 'info' : 'success',
+      stickyMs: 3000
+    });
+  return {
+    projectId: state.project.id,
+    nodeIds: branchNodeIds,
+    configId: branch.configId,
+    targetId: branch.targetId,
+    cacheWarnings
+  };
 }
 
 function collectConnectedEdgeIds(project, nodeIds = []) {
@@ -8667,12 +8818,16 @@ function rerenderEditor(state, options = {}) {
   const projectView = {
     ...state.project,
     viewport: { ...state.viewport },
-    nodes: Object.fromEntries(
+      nodes: Object.fromEntries(
       Object.entries(state.project.nodes || {}).map(([id, node]) => {
         const selected = state.selectedNodeIds.includes(id);
+        const displaySource = state.resourceDisplaySources?.get(id)?.src || '';
+        const displayNode = displaySource
+          ? { ...node, resourceSrc: displaySource, thumbnailSrc: displaySource }
+          : node;
         const inView = !cullBounds || selected || isNodeInCullBounds(node, cullBounds) || endpointIds.has(id);
         const lod = resolveNodeLod(state, {
-          ...node,
+          ...displayNode,
           selected,
           isEdgeEndpoint: endpointIds.has(id),
           isFocusFlash: state.focusFlashNodeId === id && now <= (state.focusFlashUntil || 0)
@@ -8687,7 +8842,7 @@ function rerenderEditor(state, options = {}) {
           if (lod === 'lite') liteCount += 1;
         }
         return [id, {
-          ...node,
+          ...displayNode,
           selected,
           lod,
           isEdgeEndpoint: endpointIds.has(id),
@@ -8801,7 +8956,7 @@ function setPlaybackRate(state, rate) {
 function syncPlaybackUI(state) {
   const timeline = ensureCanvasProjectTimeline(state.project);
   if (state.playbackButton) {
-    state.playbackButton.textContent = timeline.isPlaying ? '05' : '播放';
+    state.playbackButton.textContent = timeline.isPlaying ? '暂停' : '播放';
   }
   if (state.playbackRateReadout) {
     state.playbackRateReadout.textContent = `${timeline.playbackRate || 1}x`;
@@ -8823,7 +8978,7 @@ function syncTimelineSummary(state) {
   const playheadText = formatDurationLabel(timeline.currentTimeMs || 0);
   state.playheadLabel.textContent = playheadText;
   state.timelineInfo.textContent = clips.length
-    ? `02 ${clips.length} 个片段已进入时间轴，可横向改时间、纵向跨轨移动`
+    ? `共 ${clips.length} 个片段已进入时间轴，可横向改时间、纵向跨轨移动`
     : '选中媒体节点后可加入时间轴。';
   const summary = state.root?.querySelector?.('[data-role="timeline-collapsed-summary"]');
   if (summary && state.timelineCollapsed) {
@@ -9393,7 +9548,7 @@ function syncNodeQuickbar(state, options = {}) {
   state.nodeQuickbar.hidden = !visible;
   if (!visible) return;
 
-  const title = String(node.title || node.text || getNodeTypeLabel(node) || '11').replace(/\s+/g, ' ').trim();
+  const title = String(node.title || node.text || getNodeTypeLabel(node) || '未命名').replace(/\s+/g, ' ').trim();
   if (state.nodeQuickbarTitle) {
     state.nodeQuickbarTitle.textContent = title.length > 16 ? title.slice(0, 16) + '…' : title;
   }
@@ -9715,9 +9870,9 @@ function syncInspector(state) {
           <strong>已选中 ${count} 个节点</strong>
           <p>可批量设角色、整理布局、智能接线，或直接生成。</p>
           <div class="canvas-inspector-empty-actions canvas-inspector-role-actions" data-role="batch-role-actions">
-            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="">02:普通</button>
-            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="reference">02:参考</button>
-            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="target">02:结果</button>
+            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="">角色：普通</button>
+            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="reference">角色：参考</button>
+            <button type="button" class="canvas-action-btn" data-action="set-role-selected" data-role-value="target">角色：结果</button>
             <button type="button" class="canvas-action-btn" data-action="cycle-role-selected">轮换角色</button>
           </div>
           <div class="canvas-inspector-empty-actions canvas-inspector-size-actions" data-role="batch-size-actions">
@@ -9784,7 +9939,7 @@ function syncInspector(state) {
     typeBadge.textContent = typeLabel;
     typeBadge.hidden = false;
   }
-  if (summaryTitle) summaryTitle.textContent = node.title || typeLabel || '11';
+  if (summaryTitle) summaryTitle.textContent = node.title || typeLabel || '未命名';
   if (summaryMeta) {
     const roleLabel = node.canvasRole === 'reference' ? '参考'
       : node.canvasRole === 'target' ? '结果'
@@ -10166,6 +10321,7 @@ function updateStatus(state, text, options = {}) {
     state.statusLabel.classList.toggle('is-error', tone === 'error');
     state.statusLabel.classList.toggle('is-sticky', !isSelectionSummary && ((Number.isFinite(stickyMs) && stickyMs > 0) || !Number.isFinite(stickyMs)));
   }
+  state.statusSource = options.source || '';
   if (isSelectionSummary) {
     // selection summaries never extend sticky window
   } else if (Number.isFinite(stickyMs)) {
@@ -10267,7 +10423,7 @@ function syncContextActions(state) {
     const fromNode = state.project?.nodes?.[edge.fromNodeId];
     const toNode = state.project?.nodes?.[edge.toNodeId];
     const fromTitle = String(fromNode?.title || edge.fromNodeId || '起点').replace(/\s+/g, ' ').trim();
-    const toTitle = String(toNode?.title || edge.toNodeId || '01').replace(/\s+/g, ' ').trim();
+    const toTitle = String(toNode?.title || edge.toNodeId || '目标节点').replace(/\s+/g, ' ').trim();
     title = '已选中连线';
     meta = edge.label
       ? String(edge.label)
@@ -10284,7 +10440,7 @@ function syncContextActions(state) {
   } else if (count === 1 && primary) {
     const typeLabel = getNodeTypeLabel(primary);
     const roleLabel = getCanvasRoleLabel(primary.canvasRole);
-    title = String(primary.title || primary.text || typeLabel || '11').replace(/\s+/g, ' ').trim();
+    title = String(primary.title || primary.text || typeLabel || '未命名').replace(/\s+/g, ' ').trim();
     if (title.length > 18) title = title.slice(0, 18) + '…';
     meta = `${typeLabel} · ${roleLabel}${primary.locked ? ' · 锁定' : ''}`;
     if (primary.type === 'config' || primary.type === 'loop' || primary.type === 'llm') {
@@ -10738,7 +10894,7 @@ function getNodeTypeLabel(node) {
   if (node.type === 'loop') return '循环节点';
   if (node.type === 'llm') return '智能文本';
   if (node.type === 'group') return '分组';
-  return '11';
+  return '节点';
 }
 
 function focusSelectedNode(state) {
@@ -10938,7 +11094,7 @@ function setSelectedNodesSize(state, width, height, options = {}) {
   persistProject(state);
   rerenderEditor(state);
   if (options.silent !== true) {
-    updateStatus(state, `03 ${nodes.length} 个节点设置${nextW}×${nextH}`);
+    updateStatus(state, `已为 ${nodes.length} 个节点设置${nextW}×${nextH}`);
   }
   return nodes.length;
 }
@@ -10978,7 +11134,7 @@ function setSelectedNodesRole(state, role = '') {
   });
   persistProject(state);
   rerenderEditor(state);
-  updateStatus(state, `03 ${nodes.length} 个节点设置${getCanvasRoleLabel(nextRole)}`);
+  updateStatus(state, `已为 ${nodes.length} 个节点设置${getCanvasRoleLabel(nextRole)}`);
   return nodes.length;
 }
 
@@ -11024,7 +11180,7 @@ function buildNodeSearchHaystack(node) {
     status,
     node?.locked ? 'locked lock 锁定' : '',
     status === 'running' || status === 'queued' ? 'running queued 生成中' : '',
-    status === 'error' || node?.generationError ? 'error fail 02' : '',
+    status === 'error' || node?.generationError ? 'error fail 异常' : '',
     node?.type === 'config' ? '编排 配置 prompt' : '',
     node?.type === 'media' ? '媒体 图片 视频 音频' : '',
     node?.type === 'group' ? '分组 group' : ''
@@ -11077,16 +11233,16 @@ function setNodeSearchFilter(state, filter = 'all') {
   syncNodeSearchFilterButtons(state);
   renderNodeSearchResults(state, state.nodeSearchQuery || state.nodeSearchInput?.value || state.stageSearchInput?.value || '');
   const labelMap = {
-    all: '00',
-    media: '05',
+    all: '全部',
+    media: '媒体',
     config: '编排',
-    text: '03',
+    text: '文本',
     group: '分组',
     locked: '锁定',
     running: '生成中',
-    error: '02'
+    error: '异常'
   };
-  updateStatus(state, '查找筛选：' + (labelMap[state.nodeSearchFilter] || '00'));
+  updateStatus(state, '查找筛选：' + (labelMap[state.nodeSearchFilter] || '全部'));
 }
 
 function setStageSearchOpen(state, open = true) {
@@ -11309,11 +11465,11 @@ function escapeHtmlAttr(value) {
 function resolveNodeTypeLabel(type) {
   const labels = {
     note: '便签',
-    text: '03',
+    text: '文本',
     config: '编排',
     loop: '循环',
     llm: '智能文本',
-    media: '05',
+    media: '媒体',
     group: '分组'
   };
   return labels[type] || type;
@@ -11376,14 +11532,14 @@ function playbackTick(state, timestamp) {
 }
 
 
-function normalizeInteractionMode(mode = 'select') {
-  const value = String(mode || 'select').toLowerCase();
-  if (value === 'pan' || value === 'connect') return value;
-  return 'select';
+function normalizeInteractionMode(mode = 'pan') {
+  const value = String(mode || 'pan').toLowerCase();
+  if (value === 'select' || value === 'pan' || value === 'connect') return value;
+  return 'pan';
 }
 
 function buildModeHudModel(state) {
-  const mode = normalizeInteractionMode(state.interactionMode || 'select');
+  const mode = normalizeInteractionMode(state.interactionMode || 'pan');
   const selectedCount = state.selectedNodeIds?.length || 0;
   const hasEdge = Boolean(state.selectedEdgeId);
   const focusMode = Boolean(state.focusMode);
@@ -11481,8 +11637,8 @@ function syncModeHud(state) {
     || (state.runBanner && !state.runBanner.hidden && state.runBanner.dataset?.tone === 'running')
   );
   state.modeHudEl.hidden = hideForOverlays;
-  state.modeHudEl.dataset.mode = model.mode || 'select';
-  state.modeHudEl.dataset.tone = model.tone || 'select';
+  state.modeHudEl.dataset.mode = model.mode || 'pan';
+  state.modeHudEl.dataset.tone = model.tone || 'pan';
   state.modeHudEl.dataset.focus = model.focusMode ? '1' : '0';
   state.modeHudEl.dataset.quiet = model.quiet ? '1' : '0';
   state.modeHudEl.dataset.hasSelection = (model.selectedCount > 0 || model.hasEdge) ? '1' : '0';
@@ -11538,7 +11694,7 @@ function syncConnectTip(state) {
   }
 }
 
-function setInteractionMode(state, mode = 'select') {
+function setInteractionMode(state, mode = 'pan') {
   const next = normalizeInteractionMode(mode);
   // Leaving connect mode cancels pending click-to-connect source.
   if (state.interactionMode === 'connect' && next !== 'connect') {
@@ -11560,19 +11716,20 @@ function setInteractionMode(state, mode = 'select') {
   syncStageCursor(state);
   if (state.interactionHint) {
     if (state.interactionMode === 'pan') {
-      state.interactionHint.textContent = '平移：拖动画布 · 滚轮缩放 · Shift滚轮平移 · V 回选择';
+      state.interactionHint.textContent = '平移：拖动画布 · 滚轮缩放 · Shift+滚轮平移 · V 回选择';
     } else if (state.interactionMode === 'connect') {
       state.interactionHint.textContent = '连线：先点源节点，再点目标 · Esc 取消 · V 回选择';
     } else {
       state.interactionHint.textContent = '空白左拖平移 · Ctrl/Cmd 拖动框选 · 滚轮缩放 · F适配 · C连线';
     }
   }
-  // Avoid clobbering sticky generation/error status when merely switching tools.
-  if (!(state.statusStickyUntil && Date.now() < state.statusStickyUntil)) {
+  // Keep a changed tool's feedback coherent without clobbering generation/error feedback.
+  const stickyActive = state.statusStickyUntil && Date.now() < state.statusStickyUntil;
+  if (!stickyActive || state.statusSource === 'interaction-mode') {
     const label = state.interactionMode === 'pan'
-      ? 'ƽģʽ'
+      ? '平移模式'
       : (state.interactionMode === 'connect' ? '连线模式：先点源节点，再点目标节点' : '选择模式');
-    updateStatus(state, label, { stickyMs: 1200 });
+    updateStatus(state, label, { stickyMs: 1200, source: 'interaction-mode' });
   }
   try { syncConnectTip(state); } catch {}
   try { syncModeHud(state); } catch {}
@@ -11798,12 +11955,12 @@ function syncStageNav(state) {
   state.stageNav.querySelectorAll?.('[data-action="viewport-back"]').forEach(button => {
     button.disabled = !canBack;
     button.classList.toggle('is-disabled', !canBack);
-    button.title = canBack ? '上一个视角(Alt+→' : '没有上一个视角';
+    button.title = canBack ? '上一个视角 (Alt+←)' : '没有上一个视角';
   });
   state.stageNav.querySelectorAll?.('[data-action="viewport-forward"]').forEach(button => {
     button.disabled = !canForward;
     button.classList.toggle('is-disabled', !canForward);
-    button.title = canForward ? '下一个视角(Alt+→' : '没有下一个视角';
+    button.title = canForward ? '下一个视角 (Alt+→)' : '没有下一个视角';
   });
   syncZoomLabel(state);
 }
@@ -11953,7 +12110,7 @@ function setTimelineCollapsed(state, collapsed, options = {}) {
       : '';
   }
   state.root?.querySelectorAll?.('[data-action="toggle-timeline"]').forEach(button => {
-    button.textContent = state.timelineCollapsed ? '展开时间轴' : '15';
+    button.textContent = state.timelineCollapsed ? '展开时间轴' : '收起时间轴';
     button.setAttribute('aria-pressed', state.timelineCollapsed ? 'true' : 'false');
     button.classList.toggle('is-active', !state.timelineCollapsed);
     button.title = state.timelineCollapsed ? '展开时间轴(T)' : '折叠时间轴(T)';
@@ -12126,7 +12283,7 @@ function buildEditorApi(state) {
     selectEdgeEndpoints() { return selectSelectedEdgeEndpoints(state); },
     syncSelectionStatus() { return syncSelectionStatus(state); },
     getStatusText() { return state.statusLabel?.textContent || ''; },
-    clearStatusSticky() { state.statusStickyUntil = 0; if (state.statusLabel) state.statusLabel.classList.remove('is-sticky'); },
+    clearStatusSticky() { state.statusStickyUntil = 0; state.statusSource = ''; if (state.statusLabel) state.statusLabel.classList.remove('is-sticky'); },
     setStatus(text, options = {}) { updateStatus(state, text, options); return state.statusLabel?.textContent || ''; },
     smartWireSelected() { return smartWireSelectedNodes(state); },
     replaceSampleReference() { replaceSampleReferenceWithSelection(state); },
@@ -12205,6 +12362,9 @@ function buildEditorApi(state) {
     },
     importSources(sources = [], point = null, options = {}) {
       return importSourceRecordsIntoCanvas(state, sources, point, options);
+    },
+    async addPromptEntry(entry, options = {}) {
+      return addPromptEntryToCanvasState(state, entry, options);
     },
     uploadLocalImages(point = null, options = {}) {
       return uploadLocalImages(state, point, options);
@@ -12404,7 +12564,7 @@ function buildEditorApi(state) {
     isStageSearchOpen() { return Boolean(state.stageSearchOpen); },
     closeStageSearch() { clearNodeSearch(state, { keepFilter: true, closeStage: true }); },
     setInteractionMode(mode) { setInteractionMode(state, mode); },
-    getInteractionMode() { return state.interactionMode || 'select'; },
+    getInteractionMode() { return state.interactionMode || 'pan'; },
     beginClickConnect(nodeId, side = 'out') { return setClickConnectSource(state, nodeId, side); },
     completeClickConnect(nodeId) { return completeClickConnect(state, nodeId); },
     clearClickConnect() { clearClickConnectSource(state); },
@@ -12533,4 +12693,6 @@ function destroyCanvasEditor(state, options = {}) {
   state.pinchState = null;
   state.gesturePointers = null;
   state._snapTargetCache = null;
+  state.resourceDisplayToken = (state.resourceDisplayToken || 0) + 1;
+  revokeCanvasResourceDisplaySources(state);
 }

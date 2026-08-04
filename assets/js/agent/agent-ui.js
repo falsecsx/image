@@ -2,11 +2,12 @@ import { streamAgentChat } from './agent-client.js';
 import { buildInstructions, buildInputMessages } from './agent-context.js';
 import {
   loadAgentList, getActiveAgentId, setActiveAgentId, loadActiveSession,
-  saveActiveSession, createAgent, deleteAgent, autoTitleAgent,
-  putMessage, updateMessage, putProposal, updateProposal, getAgentImage, storeAgentImage,
-  hydrateAgentImages
+  saveActiveSession, createAgent, renameAgent, duplicateAgent, deleteAgent, autoTitleAgent,
+  saveAgentDraft, clearAgentDraft, putMessage, updateMessage, putProposal, updateProposal,
+  getAgentImage, getAgentImageMeta, updateAgentImageMeta, storeAgentImage, hydrateAgentImages
 } from './agent-storage.js';
 import { downloadAgentMarkdown } from './agent-md.js';
+import { renderSafeMarkdown } from './agent-markdown.js';
 
 const ASPECT_RATIO_OPTIONS = ['auto', '1:1', '2:3', '3:4', '4:5', '5:4', '4:3', '3:2', '16:9', '9:16', '21:9'];
 const VIDEO_DURATION_OPTIONS = ['5', '8', '10', '12', '15', '20'];
@@ -80,6 +81,12 @@ function parseDataUrl(dataUrl = '') {
   const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
   if (!match) return null;
   return { mime: match[1] || 'image/png', base64: match[2] || '' };
+}
+
+function referenceImageKey(source = {}) {
+  const parsed = parseDataUrl(source?.dataUrl || '');
+  if (!parsed) return '';
+  return `${source.dataUrl}|${source.mime || parsed.mime || 'image/png'}`;
 }
 
 function buildAttachedImageMeta(image, index) {
@@ -339,6 +346,7 @@ function getProposalStatusLabel(state, elapsedSeconds = 0) {
   if (state === 'generating') return elapsedSeconds > 0 ? `生成中（${elapsedSeconds}s）` : '生成中';
   if (state === 'completed') return '生成完成';
   if (state === 'cancelled') return '已取消';
+  if (state === 'interrupted') return '已中断';
   if (state === 'failed') return '生成失败';
   return '待确认';
 }
@@ -440,37 +448,47 @@ export function openAgentWorkspace() {
   root.setAttribute('aria-label', 'Agent 创作台');
   root.tabIndex = -1;
   root.innerHTML = `
+    <div class="agent-mobile-backdrop" hidden></div>
     <aside class="agent-sidebar">
       <div class="agent-sidebar-head">
         <div>
           <strong>Agent 创作台</strong>
-          <div class="agent-sidebar-copy">多轮对话，确认后出图/视频</div>
+          <div class="agent-sidebar-copy">创作会话</div>
         </div>
+        <button class="agent-icon-btn agent-sidebar-close" type="button" title="关闭会话列表" aria-label="关闭会话列表"><i data-lucide="x"></i></button>
       </div>
-      <button class="agent-btn agent-btn-primary agent-new" type="button" aria-label="新建会话">+ 新会话</button>
+      <button class="agent-btn agent-btn-primary agent-new" type="button"><i data-lucide="plus"></i><span>新会话</span></button>
+      <label class="agent-session-search">
+        <i data-lucide="search" aria-hidden="true"></i>
+        <input type="search" placeholder="搜索会话" aria-label="搜索会话">
+      </label>
       <div class="agent-agent-list"></div>
     </aside>
     <section class="agent-shell">
       <section class="agent-main">
         <div class="agent-main-header">
+          <button class="agent-icon-btn agent-mobile-sessions" type="button" title="会话列表" aria-label="打开会话列表"><i data-lucide="panel-left"></i></button>
           <div class="agent-main-heading">
             <div class="agent-main-kicker">创作对话</div>
             <div class="agent-main-title"></div>
           </div>
           <div class="agent-toolbar">
+            <label class="agent-websearch" title="联网搜索">
+              <input class="agent-websearch-input" type="checkbox" role="switch" aria-label="联网搜索">
+              <span class="agent-websearch-track" aria-hidden="true"><span></span></span>
+              <span>联网</span>
+            </label>
             <label class="agent-context-turns" title="控制发给模型的最近对话轮数；联网搜索默认开启">
               <span class="agent-context-turns-label">上下文轮数</span>
-              <span class="agent-context-turns-value" aria-hidden="true">${CONTEXT_TURN_OPTIONS.find(option => option.value === DEFAULT_CONTEXT_TURNS)?.label || '12 轮'}</span>
               <select class="agent-context-turns-select" aria-label="上下文轮数">
                 ${CONTEXT_TURN_OPTIONS.map(option => `<option value="${option.value}" ${option.value === DEFAULT_CONTEXT_TURNS ? 'selected' : ''}>${option.label}</option>`).join('')}
               </select>
             </label>
           </div>
           <div class="agent-main-actions">
-            <button class="agent-btn agent-export" type="button">导出 MD</button>
-            <button class="agent-btn agent-close" type="button" aria-label="返回工作台" title="返回工作台">
-              <span aria-hidden="true">&#8592;</span>
-            </button>
+            <button class="agent-icon-btn agent-mobile-tools" type="button" aria-label="打开工具面板" title="工具面板"><i data-lucide="panel-bottom"></i></button>
+            <button class="agent-icon-btn agent-export" type="button" aria-label="导出 Markdown" title="导出 Markdown"><i data-lucide="download"></i></button>
+            <button class="agent-icon-btn agent-close" type="button" aria-label="返回工作台" title="返回工作台"><i data-lucide="x"></i></button>
           </div>
         </div>
         <div class="agent-status" aria-live="polite">空闲</div>
@@ -480,19 +498,21 @@ export function openAgentWorkspace() {
             <div class="agent-attach-strip" hidden></div>
             <textarea class="agent-input" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
             <label class="agent-model-control" title="切换对话模型">
-              <span>模型</span>
-              <span class="agent-model-value" aria-hidden="true"></span>
+              <span class="agent-model-label">模型</span>
               <select class="agent-model-select" aria-label="对话模型"></select>
             </label>
           </div>
-          <button class="agent-btn agent-send" type="button">发送</button>
-          <button class="agent-btn agent-abort" type="button" hidden>中止</button>
+          <button class="agent-icon-btn agent-send" type="button" title="发送" aria-label="发送"><i data-lucide="send"></i></button>
+          <button class="agent-icon-btn agent-abort" type="button" title="停止回答" aria-label="停止回答" hidden><i data-lucide="square"></i></button>
         </div>
       </section>
-      <aside class="agent-sidepane" aria-label="参考与最近结果">
+      <aside class="agent-sidepane" aria-label="创作工具">
+        <div class="agent-sidepane-mobile-head"><strong>创作工具</strong><button class="agent-icon-btn agent-sidepane-close" type="button" title="关闭工具面板" aria-label="关闭工具面板"><i data-lucide="x"></i></button></div>
         <div class="agent-sidepane-tabs" role="tablist" aria-label="辅助面板">
-          <button class="agent-side-tab is-active" id="agent-reference-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-reference-card" data-agent-pane="reference">参考图</button>
-          <button class="agent-side-tab" id="agent-recent-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-recent-card" data-agent-pane="recent" tabindex="-1">最近结果</button>
+          <button class="agent-side-tab is-active" id="agent-reference-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-reference-card" data-agent-pane="reference">参考</button>
+          <button class="agent-side-tab" id="agent-results-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-results-card" data-agent-pane="results" tabindex="-1">结果</button>
+          <button class="agent-side-tab" id="agent-tasks-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-tasks-card" data-agent-pane="tasks" tabindex="-1">任务</button>
+          <button class="agent-side-tab" id="agent-prompts-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-prompts-card" data-agent-pane="prompts" tabindex="-1">提示词</button>
         </div>
         <section class="agent-sidecard" id="agent-reference-card" role="tabpanel" aria-labelledby="agent-reference-tab">
           <div class="agent-sidecard-head">
@@ -500,20 +520,29 @@ export function openAgentWorkspace() {
               <div class="agent-sidecard-kicker">Reference</div>
               <h3>主工作台参考图</h3>
             </div>
-            <button class="agent-btn agent-refresh-assets" type="button">同步</button>
+            <button class="agent-icon-btn agent-refresh-assets" type="button" title="刷新参考图" aria-label="刷新参考图"><i data-lucide="refresh-cw"></i></button>
           </div>
-          <p class="agent-sidecard-copy">同步主工作台参考图，直接用于图生图 / 图生视频。</p>
           <div class="agent-reference-grid"></div>
         </section>
-        <section class="agent-sidecard" id="agent-recent-card" role="tabpanel" aria-labelledby="agent-recent-tab">
+        <section class="agent-sidecard" id="agent-results-card" role="tabpanel" aria-labelledby="agent-results-tab">
           <div class="agent-sidecard-head">
             <div>
-              <div class="agent-sidecard-kicker">Recent</div>
-              <h3>最近结果</h3>
+              <div class="agent-sidecard-kicker">Results</div>
+              <h3>生成结果</h3>
             </div>
           </div>
-          <p class="agent-sidecard-copy">生成结果会回流到这里，方便继续追问或二次创作。</p>
           <div class="agent-recent-grid"></div>
+        </section>
+        <section class="agent-sidecard" id="agent-tasks-card" role="tabpanel" aria-labelledby="agent-tasks-tab">
+          <div class="agent-sidecard-head"><div><div class="agent-sidecard-kicker">Tasks</div><h3>任务</h3></div>
+            <select class="agent-task-filter" aria-label="筛选任务"><option value="all">全部</option><option value="active">进行中</option><option value="completed">已完成</option><option value="attention">需处理</option></select>
+          </div>
+          <div class="agent-task-list"></div>
+        </section>
+        <section class="agent-sidecard" id="agent-prompts-card" role="tabpanel" aria-labelledby="agent-prompts-tab">
+          <div class="agent-sidecard-head"><div><div class="agent-sidecard-kicker">Prompts</div><h3>提示词</h3></div></div>
+          <label class="agent-prompt-search"><i data-lucide="search" aria-hidden="true"></i><input type="search" placeholder="搜索提示词" aria-label="搜索提示词"></label>
+          <div class="agent-prompt-list"></div>
         </section>
       </aside>
     </section>
@@ -528,7 +557,7 @@ export function openAgentWorkspace() {
 
   const getFocusableElements = () => Array.from(root.querySelectorAll(
     'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-  )).filter(element => !element.hidden && !element.closest('[hidden]') && (element.offsetWidth || element.offsetHeight || element === document.activeElement));
+  )).filter(element => !element.hidden && !element.closest('[hidden], [inert]') && (element.offsetWidth || element.offsetHeight || element === document.activeElement));
 
   function trapFocus(event) {
     if (event.key !== 'Tab') return;
@@ -575,11 +604,13 @@ export function openAgentWorkspace() {
   }
 
   const $sidebar = root.querySelector('.agent-sidebar');
+  const $main = root.querySelector('.agent-main');
   const $agentList = root.querySelector('.agent-agent-list');
+  const $sessionSearch = root.querySelector('.agent-session-search input');
   const $new = root.querySelector('.agent-new');
   const $export = root.querySelector('.agent-export');
   const $contextTurns = root.querySelector('.agent-context-turns-select');
-  const $contextTurnsValue = root.querySelector('.agent-context-turns-value');
+  const $webSearch = root.querySelector('.agent-websearch-input');
   const $close = root.querySelector('.agent-close');
   const $title = root.querySelector('.agent-main-title');
   const $status = root.querySelector('.agent-status');
@@ -587,7 +618,6 @@ export function openAgentWorkspace() {
   const $attachStrip = root.querySelector('.agent-attach-strip');
   const $input = root.querySelector('.agent-input');
   const $modelSelect = root.querySelector('.agent-model-select');
-  const $modelValue = root.querySelector('.agent-model-value');
   const $send = root.querySelector('.agent-send');
   const $abort = root.querySelector('.agent-abort');
   const $refreshAssets = root.querySelector('.agent-refresh-assets');
@@ -595,14 +625,34 @@ export function openAgentWorkspace() {
   const $recentGrid = root.querySelector('.agent-recent-grid');
   const $sidePane = root.querySelector('.agent-sidepane');
   const $sideTabs = Array.from(root.querySelectorAll('.agent-side-tab'));
+  const $taskList = root.querySelector('.agent-task-list');
+  const $taskFilter = root.querySelector('.agent-task-filter');
+  const $promptList = root.querySelector('.agent-prompt-list');
+  const $promptSearch = root.querySelector('.agent-prompt-search input');
+  const $mobileBackdrop = root.querySelector('.agent-mobile-backdrop');
+  const $mobileSessions = root.querySelector('.agent-mobile-sessions');
+  const $mobileTools = root.querySelector('.agent-mobile-tools');
+  const $sidebarClose = root.querySelector('.agent-sidebar-close');
+  const $sidepaneClose = root.querySelector('.agent-sidepane-close');
 
   const ctrl = { current: null };
   const importedRefMap = new Map();
   const draftReferenceIds = new Set();
+  const proposalControllers = new Map();
+  let promptEntries = [];
+  let promptLoadPromise = null;
+  let captionController = null;
+  let draftSaveTimer = null;
+  let mobilePanelReturnFocus = null;
   let lastCreateAt = 0;
 
+  function refreshIcons() {
+    try { window.lucide?.createIcons?.(); } catch (error) { console.warn('Lucide icons failed:', error); }
+  }
+
   function setSidePaneTab(name, shouldFocus = false) {
-    const active = name === 'recent' ? 'recent' : 'reference';
+    const allowed = new Set(['reference', 'results', 'tasks', 'prompts']);
+    const active = allowed.has(name) ? name : 'reference';
     $sidePane?.setAttribute('data-active-pane', active);
     $sideTabs.forEach(tab => {
       const selected = tab.dataset.agentPane === active;
@@ -611,10 +661,78 @@ export function openAgentWorkspace() {
       tab.tabIndex = selected ? 0 : -1;
       if (selected && shouldFocus) tab.focus();
     });
+    const panelByName = {
+      reference: 'agent-reference-card',
+      results: 'agent-results-card',
+      tasks: 'agent-tasks-card',
+      prompts: 'agent-prompts-card'
+    };
+    root.querySelectorAll('.agent-sidecard[role="tabpanel"]').forEach(panel => {
+      panel.hidden = panel.id !== panelByName[active];
+    });
+  }
+
+  function setMobilePanel(name = '') {
+    if (name && !root.classList.contains('is-sidebar-open') && !root.classList.contains('is-sidepane-open')) {
+      mobilePanelReturnFocus = document.activeElement;
+    }
+    root.classList.toggle('is-sidebar-open', name === 'sessions');
+    root.classList.toggle('is-sidepane-open', name === 'tools');
+    if ($mobileBackdrop) $mobileBackdrop.hidden = !name;
+    if ($main) $main.inert = !!name;
+    if ($sidebar) $sidebar.inert = name === 'tools';
+    if ($sidePane) $sidePane.inert = name === 'sessions';
+    $mobileSessions?.setAttribute('aria-expanded', String(name === 'sessions'));
+    $mobileTools?.setAttribute('aria-expanded', String(name === 'tools'));
+    if (name) {
+      requestAnimationFrame(() => (name === 'sessions' ? $sidebarClose : $sidepaneClose)?.focus());
+    } else if (mobilePanelReturnFocus && root.contains(mobilePanelReturnFocus)) {
+      const target = mobilePanelReturnFocus;
+      mobilePanelReturnFocus = null;
+      requestAnimationFrame(() => target.focus());
+    }
+  }
+
+  function persistDraftNow() {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    saveAgentDraft($input?.value || '', [...draftReferenceIds]);
+  }
+
+  function scheduleDraftSave() {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(persistDraftNow, 180);
+  }
+
+  function restoreDraft(session) {
+    if (!$input) return;
+    $input.value = session?.draft?.text || '';
+    draftReferenceIds.clear();
+    for (const id of session?.draft?.referenceImageIds || []) {
+      if (getAgentImage(id)) draftReferenceIds.add(id);
+    }
+    renderDraftAttachments();
   }
 
   function setStatus(text) { $status.textContent = text; }
   function setSending(on) { $send.hidden = on; $abort.hidden = !on; $input.disabled = on; if ($modelSelect) $modelSelect.disabled = on; }
+  function cancelCurrentResponse(statusText = '已取消') {
+    const current = ctrl.current;
+    if (!current) return;
+    try { current.abort(); } catch {}
+    if (current.messageId) {
+      updateMessage(current.messageId, { status: 'cancelled', text: statusText });
+      if (current.bubble) {
+        current.bubble.classList.remove('is-generating');
+        current.bubble.classList.add('is-cancelled');
+        const host = current.bubble.querySelector('.agent-msg-text');
+        if (host) host.textContent = statusText;
+      }
+    }
+    ctrl.current = null;
+    setSending(false);
+    setStatus(statusText);
+  }
   function scrollMessagesToBottom() {
     if (!$messages) return;
     const scroll = () => { $messages.scrollTop = $messages.scrollHeight; };
@@ -639,7 +757,6 @@ export function openAgentWorkspace() {
     $modelSelect.value = selectedValue;
     const selectedOption = normalized.find(option => option.value === selectedValue) || normalized[0];
     const selectedLabel = selectedOption?.label || selectedOption?.value || selectedValue;
-    if ($modelValue) $modelValue.textContent = selectedLabel;
     $modelSelect.title = selectedLabel;
     $modelSelect.setAttribute('aria-valuetext', selectedLabel);
   }
@@ -649,8 +766,15 @@ export function openAgentWorkspace() {
   function renderSidebar() {
     const list = loadAgentList();
     const active = list.activeAgentId;
-    const ids = Object.keys(list.agents);
+    const query = String($sessionSearch?.value || '').trim().toLowerCase();
+    const ids = Object.keys(list.agents)
+      .filter(id => !query || String(list.agents[id]?.title || '').toLowerCase().includes(query))
+      .sort((a, b) => Number(list.agents[b]?.updatedAt || 0) - Number(list.agents[a]?.updatedAt || 0));
     $agentList.innerHTML = '';
+    if (!ids.length) {
+      $agentList.innerHTML = '<div class="agent-empty-state">没有匹配的会话</div>';
+      return;
+    }
     for (const id of ids) {
       const a = list.agents[id];
       const item = document.createElement('div');
@@ -659,16 +783,20 @@ export function openAgentWorkspace() {
       item.setAttribute('role', 'button');
       item.setAttribute('tabindex', '0');
       item.setAttribute('aria-current', id === active ? 'true' : 'false');
-      const dot = id === active ? '<span class="agent-dot">●</span>' : '<span class="agent-dot">○</span>';
-      item.innerHTML = `${dot}<span class="agent-agent-title" title="${esc(a.title)}">${esc(a.title)}</span><button class="agent-agent-del" type="button" title="删除" ${ids.length <= 1 ? 'disabled' : ''}>🗑</button>`;
+      const dot = id === active ? '<span class="agent-dot" aria-hidden="true"></span>' : '';
+      item.innerHTML = `${dot}<span class="agent-agent-title" title="${esc(a.title)}">${esc(a.title)}</span><span class="agent-session-actions"><button class="agent-icon-btn agent-agent-rename" type="button" title="重命名" aria-label="重命名"><i data-lucide="pencil"></i></button><button class="agent-icon-btn agent-agent-copy" type="button" title="复制会话" aria-label="复制会话"><i data-lucide="copy"></i></button><button class="agent-icon-btn agent-agent-del" type="button" title="删除会话" aria-label="删除会话" ${Object.keys(list.agents).length <= 1 ? 'disabled' : ''}><i data-lucide="trash-2"></i></button></span>`;
       $agentList.appendChild(item);
     }
+    refreshIcons();
   }
 
-  function renderMain() {
+  function renderMain({ preserveDraft = false } = {}) {
     const sess = activeSession();
     if (!sess) return;
+    if (preserveDraft) renderDraftAttachments();
+    else restoreDraft(sess);
     $title.textContent = sess.title || '新会话';
+    if ($webSearch) $webSearch.checked = sess.webSearchEnabled !== false;
     if ($contextTurns) {
       const turns = normalizeContextTurns(sess.contextTurns, DEFAULT_CONTEXT_TURNS);
       const label = formatContextTurnsLabel(turns);
@@ -676,7 +804,6 @@ export function openAgentWorkspace() {
         $contextTurns.add(new Option(label, String(turns), true, true));
       }
       $contextTurns.value = String(turns);
-      if ($contextTurnsValue) $contextTurnsValue.textContent = label;
       $contextTurns.title = label;
       $contextTurns.setAttribute('aria-valuetext', label);
     }
@@ -700,6 +827,7 @@ export function openAgentWorkspace() {
       empty.querySelectorAll('[data-agent-starter]').forEach((button) => {
         button.addEventListener('click', () => {
           $input.value = button.dataset.agentStarter || '';
+          scheduleDraftSave();
           $input.focus();
         });
       });
@@ -718,6 +846,9 @@ export function openAgentWorkspace() {
     renderSidebar();
     renderMain();
     refreshAssetPanes();
+    renderTaskPane();
+    renderPromptLibrary();
+    refreshIcons();
   }
 
   function renderDraftAttachments() {
@@ -738,6 +869,7 @@ export function openAgentWorkspace() {
       chip.addEventListener('click', () => {
         draftReferenceIds.delete(ref.id);
         renderDraftAttachments();
+        scheduleDraftSave();
       });
       $attachStrip.appendChild(chip);
     }
@@ -747,7 +879,8 @@ export function openAgentWorkspace() {
     if (!source?.dataUrl) return null;
     const parsed = parseDataUrl(source.dataUrl);
     if (!parsed) return null;
-    const key = `${source.dataUrl}|${source.mime || parsed.mime}`;
+    const key = referenceImageKey(source);
+    if (!key) return null;
     if (importedRefMap.has(key)) return importedRefMap.get(key);
     const imgId = uuid();
     storeAgentImage(imgId, parsed.base64, source.mime || parsed.mime || 'image/png', {
@@ -759,13 +892,71 @@ export function openAgentWorkspace() {
     return imgId;
   }
 
-  function syncDraftReferencesFromWorkspace() {
+  async function generateImageCaption(imgId, button) {
+    const image = getAgentImage(imgId);
+    const meta = getAgentImageMeta(imgId);
+    if (!image?.dataUrl) return;
+    if (meta?.caption) {
+      bridge.flashStatus?.('已使用缓存图注', 'success');
+      syncDraftReferencesFromWorkspace();
+      return;
+    }
+    const model = bridge.getTextModel?.() || '';
+    if (!supportsVision(model)) {
+      bridge.flashStatus?.('当前对话模型不支持识图', 'danger');
+      return;
+    }
+    captionController?.abort();
+    captionController = new AbortController();
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    let caption = '';
+    try {
+      const handle = streamAgentChat({
+        apiKey: bridge.getApiKey(),
+        model,
+        baseUrl: bridge.getBaseUrl(),
+        endpoint: bridge.buildApiUrl('/v1/responses'),
+        chatEndpoint: bridge.buildApiUrl('/v1/chat/completions'),
+        instructions: '请用一句简洁、客观的中文描述图片主体、构图和视觉风格。只返回图注，不要添加标题。',
+        tools: [],
+        history: [{
+          role: 'user',
+          content: [
+            { type: 'input_text', text: '为这张参考图生成图注。' },
+            { type: 'input_image', image_url: image.dataUrl }
+          ]
+        }],
+        signal: captionController.signal
+      }, {
+        onDelta: delta => { caption += delta; },
+        onDone: fullText => { caption = fullText || caption; }
+      });
+      await handle.promise;
+      if (captionController.signal.aborted || !caption.trim()) return;
+      updateAgentImageMeta(imgId, { caption: caption.trim() });
+      bridge.flashStatus?.('图注已生成并缓存', 'success');
+      syncDraftReferencesFromWorkspace();
+    } catch (error) {
+      if (error?.name !== 'AbortError') bridge.flashStatus?.(`图注生成失败：${error?.message || error}`, 'danger');
+    } finally {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+      captionController = null;
+    }
+  }
+
+  function syncDraftReferencesFromWorkspace({ autoAttach = [] } = {}) {
     const imgs = Array.isArray(bridge.getStateImages?.()) ? bridge.getStateImages() : [];
     const normalized = imgs.map((img, idx) => ({
       dataUrl: img?.dataUrl || '',
       mime: img?.mime || 'image/png',
       label: img?.name || img?.label || `参考图 ${idx + 1}`
     })).filter(img => img.dataUrl);
+    const autoAttachKeys = new Set((Array.isArray(autoAttach) ? autoAttach : [])
+      .map(referenceImageKey)
+      .filter(Boolean));
+    let didAutoAttach = false;
     if (!$referenceGrid) return;
     $referenceGrid.innerHTML = '';
     if (!normalized.length) {
@@ -773,28 +964,48 @@ export function openAgentWorkspace() {
       renderDraftAttachments();
       return;
     }
-    normalized.forEach((img, idx) => {
+    normalized.forEach(img => {
       const imgId = importReferenceImage(img, img.label);
-      const card = document.createElement('button');
-      card.type = 'button';
+      if (imgId && autoAttachKeys.has(referenceImageKey(img)) && !draftReferenceIds.has(imgId)) {
+        draftReferenceIds.add(imgId);
+        didAutoAttach = true;
+      }
+      const card = document.createElement('div');
       card.className = 'agent-reference-card';
       card.dataset.imgId = imgId || '';
       const active = imgId ? draftReferenceIds.has(imgId) : false;
       card.classList.toggle('is-selected', active);
-      card.innerHTML = `
-        <img alt="${esc(img.label)}" src="${esc(img.dataUrl)}">
-        <span>${esc(img.label)}</span>
-      `;
-      card.addEventListener('click', () => {
+      const meta = imgId ? getAgentImageMeta(imgId) : null;
+      card.innerHTML = `<button class="agent-reference-toggle" type="button"><img alt="${esc(img.label)}" src="${esc(img.dataUrl)}"><span>${esc(meta?.label || img.label)}</span></button><div class="agent-reference-actions"><button class="agent-reference-action-btn agent-reference-note" type="button" title="编辑备注" aria-label="编辑备注">备注</button><button class="agent-reference-action-btn agent-reference-caption" type="button" title="${meta?.caption ? '查看缓存图注' : '生成图注'}" aria-label="${meta?.caption ? '查看缓存图注' : '生成图注'}">图注</button></div>${meta?.note ? `<p class="agent-image-note">${esc(meta.note)}</p>` : ''}${meta?.caption ? `<p class="agent-image-caption">${esc(meta.caption)}</p>` : ''}`;
+      card.querySelector('.agent-reference-toggle')?.addEventListener('click', () => {
         if (!imgId) return;
         if (draftReferenceIds.has(imgId)) draftReferenceIds.delete(imgId);
         else draftReferenceIds.add(imgId);
         renderDraftAttachments();
+        scheduleDraftSave();
         syncDraftReferencesFromWorkspace();
       });
+      card.querySelector('.agent-reference-note')?.addEventListener('click', () => {
+        if (!imgId) return;
+        const note = prompt('素材备注', getAgentImageMeta(imgId)?.note || '');
+        if (note === null) return;
+        updateAgentImageMeta(imgId, { note: note.trim() });
+        syncDraftReferencesFromWorkspace();
+      });
+      const captionButton = card.querySelector('.agent-reference-caption');
+      captionButton?.addEventListener('click', () => generateImageCaption(imgId, captionButton));
       $referenceGrid.appendChild(card);
     });
     renderDraftAttachments();
+    if (didAutoAttach) persistDraftNow();
+  }
+
+  function handleReferenceImagesChanged(event) {
+    const detail = event?.detail || {};
+    const autoAttach = detail.reason === 'added' && detail.autoAttach === true
+      ? detail.added
+      : [];
+    syncDraftReferencesFromWorkspace({ autoAttach });
   }
 
   async function renderRecentResults() {
@@ -846,6 +1057,8 @@ export function openAgentWorkspace() {
           </div>
         `;
         if (src) {
+          const actions = document.createElement('div');
+          actions.className = 'agent-recent-actions';
           const refBtn = document.createElement('button');
           refBtn.type = 'button';
           refBtn.className = 'agent-recent-ref-btn';
@@ -858,10 +1071,20 @@ export function openAgentWorkspace() {
             }
             draftReferenceIds.add(imported);
             renderDraftAttachments();
+            scheduleDraftSave();
             syncDraftReferencesFromWorkspace();
             bridge.flashStatus?.('已加入参考图', 'success');
           });
-          card.appendChild(refBtn);
+          actions.appendChild(refBtn);
+          const canvasBtn = document.createElement('button');
+          canvasBtn.type = 'button';
+          canvasBtn.className = 'agent-recent-canvas-btn';
+          canvasBtn.textContent = '进画布';
+          canvasBtn.addEventListener('click', () => bridge.sendToCanvas?.([{
+            kind: 'image', origin: 'agent-result', src, label: record.prompt || 'Agent 结果'
+          }]));
+          actions.appendChild(canvasBtn);
+          card.appendChild(actions);
         }
       }
       $recentGrid.appendChild(card);
@@ -877,12 +1100,113 @@ export function openAgentWorkspace() {
     await renderRecentResults();
   }
 
+  function renderTaskPane() {
+    if (!$taskList) return;
+    const session = activeSession();
+    const filter = $taskFilter?.value || 'all';
+    const proposals = Object.values(session?.proposals || {})
+      .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))
+      .filter(proposal => {
+        const state = proposal.executionState || 'pending';
+        if (filter === 'active') return state === 'pending' || state === 'generating';
+        if (filter === 'completed') return state === 'completed';
+        if (filter === 'attention') return ['failed', 'cancelled', 'interrupted'].includes(state);
+        return true;
+      });
+    $taskList.innerHTML = '';
+    if (!proposals.length) {
+      $taskList.innerHTML = '<div class="agent-empty-state">暂无任务</div>';
+      return;
+    }
+    for (const proposal of proposals) {
+      const state = proposal.executionState || 'pending';
+      const progress = proposal.progress || {};
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `agent-task-item is-${state}`;
+      button.dataset.proposalId = proposal.id;
+      button.innerHTML = `<span class="agent-task-state">${esc(getProposalStatusLabel(state))}</span><strong>${esc(formatProposalPromptSummary(getProposalView(proposal.raw, proposal.userOverrides)?.prompt || '生成任务'))}</strong>${state === 'generating' ? `<small>${Math.max(0, Number(progress.completed) || 0)}/${Math.max(1, Number(progress.total) || 1)}</small>` : ''}`;
+      button.addEventListener('click', () => {
+        const card = $messages.querySelector(`[data-proposal-id="${CSS.escape(proposal.id)}"]`);
+        if (card) {
+          setProposalCardCollapsed(card, false);
+          card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          card.querySelector('button, textarea, select')?.focus({ preventScroll: true });
+        }
+        setMobilePanel('');
+      });
+      $taskList.appendChild(button);
+    }
+  }
+
+  function insertPromptAtCursor(content) {
+    const text = String(content || '').trim();
+    if (!text || !$input) return;
+    const start = Number.isFinite($input.selectionStart) ? $input.selectionStart : $input.value.length;
+    const end = Number.isFinite($input.selectionEnd) ? $input.selectionEnd : start;
+    const before = $input.value.slice(0, start);
+    const after = $input.value.slice(end);
+    const prefix = before && !/\s$/.test(before) ? '\n' : '';
+    const suffix = after && !/^\s/.test(after) ? '\n' : '';
+    $input.value = before + prefix + text + suffix + after;
+    const caret = before.length + prefix.length + text.length;
+    $input.setSelectionRange(caret, caret);
+    $input.focus();
+    persistDraftNow();
+  }
+
+  async function renderPromptLibrary() {
+    if (!$promptList) return;
+    if (!promptLoadPromise) {
+      $promptList.innerHTML = '<div class="agent-empty-state">正在加载...</div>';
+      promptLoadPromise = Promise.resolve(bridge.getPromptLibraryEntries?.() || [])
+        .then(entries => {
+          promptEntries = (Array.isArray(entries) ? entries : []).filter(entry => entry?.content);
+          return promptEntries;
+        })
+        .catch(error => {
+          console.warn('Agent prompt library failed:', error);
+          promptEntries = [];
+          return promptEntries;
+        });
+      await promptLoadPromise;
+    }
+    const query = String($promptSearch?.value || '').trim().toLowerCase();
+    const entries = promptEntries
+      .filter(entry => !query || `${entry.title || ''} ${entry.content || ''}`.toLowerCase().includes(query))
+      .sort((a, b) => Number(b.usageCount || 0) - Number(a.usageCount || 0));
+    $promptList.innerHTML = '';
+    if (!entries.length) {
+      $promptList.innerHTML = '<div class="agent-empty-state">暂无匹配提示词</div>';
+      return;
+    }
+    for (const entry of entries) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'agent-prompt-item';
+      button.innerHTML = `<strong>${esc(entry.title || '未命名提示词')}</strong><span>${esc(formatProposalPromptSummary(entry.content))}</span>`;
+      button.addEventListener('click', () => {
+        insertPromptAtCursor(entry.content);
+        bridge.recordPromptLibraryUsage?.(entry.id);
+        entry.usageCount = Number(entry.usageCount || 0) + 1;
+        bridge.flashStatus?.('已插入提示词', 'success');
+        setMobilePanel('');
+      });
+      $promptList.appendChild(button);
+    }
+  }
+
   function appendMessageBubble(m) {
     const hasAttachments = Array.isArray(m.attachedImageIds) && m.attachedImageIds.length > 0;
     const displayText = m.text || (hasAttachments ? '已附带参考图，请结合本条素材继续创作。' : '');
     const div = document.createElement('div');
-    div.className = 'agent-msg agent-msg-' + m.role;
-    div.innerHTML = `<div class="agent-msg-text">${esc(displayText)}</div>`;
+    div.className = `agent-msg agent-msg-${m.role} is-${m.status || 'completed'}`;
+    div.dataset.messageId = m.id || '';
+    const textHost = document.createElement('div');
+    textHost.className = 'agent-msg-text';
+    if (m.role === 'assistant' && m.status !== 'generating') textHost.innerHTML = renderSafeMarkdown(displayText);
+    else textHost.textContent = displayText;
+    div.appendChild(textHost);
     if (hasAttachments) {
       const strip = document.createElement('div');
       strip.className = 'agent-msg-attachments';
@@ -891,7 +1215,8 @@ export function openAgentWorkspace() {
         if (!img?.dataUrl) continue;
         const item = document.createElement('div');
         item.className = 'agent-msg-attachment';
-        item.innerHTML = `<img alt="${esc(imgId)}" src="${esc(img.dataUrl)}"><span>${esc(imgId.slice(0, 6))}</span>`;
+        const meta = getAgentImageMeta(imgId);
+        item.innerHTML = `<img alt="${esc(meta?.label || imgId)}" src="${esc(img.dataUrl)}"><span>${esc(meta?.label || imgId.slice(0, 6))}</span>`;
         strip.appendChild(item);
       }
       if (strip.childElementCount) div.appendChild(strip);
@@ -899,8 +1224,34 @@ export function openAgentWorkspace() {
     if (m.reasoning) {
       const det = document.createElement('details');
       det.className = 'agent-reasoning';
-      det.innerHTML = `<summary>💭 思考过程</summary><pre>${esc(m.reasoning)}</pre>`;
+      det.innerHTML = `<summary>思考过程</summary><pre>${esc(m.reasoning)}</pre>`;
       div.appendChild(det);
+    }
+    if (Array.isArray(m.sources) && m.sources.length) {
+      const sources = document.createElement('div');
+      sources.className = 'agent-sources';
+      const heading = document.createElement('strong');
+      heading.textContent = '来源';
+      sources.appendChild(heading);
+      const list = document.createElement('ol');
+      for (const source of m.sources) {
+        try {
+          const url = new URL(source?.url || '');
+          if (!['http:', 'https:'].includes(url.protocol)) continue;
+          const item = document.createElement('li');
+          const link = document.createElement('a');
+          link.href = url.href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = source?.title || url.hostname;
+          item.appendChild(link);
+          list.appendChild(item);
+        } catch {}
+      }
+      if (list.childElementCount) {
+        sources.appendChild(list);
+        div.appendChild(sources);
+      }
     }
     $messages.appendChild(div);
   }
@@ -923,21 +1274,38 @@ export function openAgentWorkspace() {
     const grid = document.createElement('div');
     grid.className = 'agent-proposal-results-grid';
 
-    const appendCard = ({ src, imgId = '', label = '', clickable = false }) => {
+    const appendCard = ({ src, imgId = '', label = '' }) => {
       if (!src) return;
-      const card = document.createElement(clickable ? 'button' : 'div');
-      if (clickable) card.type = 'button';
+      const card = document.createElement('div');
       card.className = 'agent-proposal-result-card';
-      if (clickable) card.title = '点击加入参考图';
-      card.innerHTML = `<img alt="${esc(label || imgId || '生成结果')}" src="${esc(src)}"><span>${esc(label || String(imgId || '结果').slice(0, 6))}</span>`;
-      if (clickable && imgId) {
-        card.addEventListener('click', () => {
+      card.innerHTML = `<img alt="${esc(label || imgId || '生成结果')}" src="${esc(src)}"><span>${esc(label || String(imgId || '结果').slice(0, 6))}</span><span class="agent-result-actions"></span>`;
+      const actions = card.querySelector('.agent-result-actions');
+      if (imgId) {
+        const refButton = document.createElement('button');
+        refButton.type = 'button';
+        refButton.className = 'agent-icon-btn';
+        refButton.title = '加入参考图';
+        refButton.setAttribute('aria-label', '加入参考图');
+        refButton.innerHTML = '<i data-lucide="image-plus"></i>';
+        refButton.addEventListener('click', () => {
           draftReferenceIds.add(imgId);
           renderDraftAttachments();
+          scheduleDraftSave();
           syncDraftReferencesFromWorkspace();
           bridge.flashStatus?.('已加入参考图', 'success');
         });
+        actions.appendChild(refButton);
       }
+      const canvasButton = document.createElement('button');
+      canvasButton.type = 'button';
+      canvasButton.className = 'agent-icon-btn';
+      canvasButton.title = '送入画布';
+      canvasButton.setAttribute('aria-label', '送入画布');
+      canvasButton.innerHTML = '<i data-lucide="panels-top-left"></i>';
+      canvasButton.addEventListener('click', () => bridge.sendToCanvas?.([{
+        kind: 'image', origin: 'agent-result', src, label: label || 'Agent 结果'
+      }]));
+      actions.appendChild(canvasButton);
       grid.appendChild(card);
     };
 
@@ -945,13 +1313,14 @@ export function openAgentWorkspace() {
       for (const imgId of ids) {
         const img = getAgentImage(imgId);
         if (!img?.dataUrl) continue;
-        appendCard({ src: img.dataUrl, imgId, label: String(imgId).slice(0, 6), clickable: true });
+        const meta = getAgentImageMeta(imgId);
+        appendCard({ src: img.dataUrl, imgId, label: meta?.label || String(imgId).slice(0, 6) });
       }
     }
 
     if (!grid.childElementCount && previews.length) {
       previews.forEach((src, index) => {
-        appendCard({ src, label: `结果 ${index + 1}`, clickable: false });
+        appendCard({ src, label: `结果 ${index + 1}` });
       });
     }
 
@@ -961,255 +1330,7 @@ export function openAgentWorkspace() {
       return;
     }
     host.appendChild(grid);
-  }
-
-  function appendProposalBubble(p) {
-    const wrap = document.createElement('div');
-    wrap.className = 'agent-proposal-card';
-    wrap.dataset.proposalId = p.id;
-    const proposalView = getProposalView(p.raw, p.userOverrides);
-    const mediaType = getProposalMediaType(proposalView);
-    const aspect = getProposalAspectRatio(proposalView);
-    const videoDuration = getProposalVideoDuration(proposalView, bridge);
-    const count = clamp(parseInt(proposalView?.parallel_count, 10) || 1, 1, 4);
-    const proposalMeta = getProposalUiMeta(mediaType);
-    const isCollapsed = isProposalCollapsedByDefault(p.executionState);
-    wrap.innerHTML = `
-      <div class="agent-proposal-head">
-        <div class="agent-proposal-head-main">
-          <div class="agent-proposal-kicker">待确认提案</div>
-          <div class="agent-proposal-title agent-proposal-kind-title">${proposalMeta.title}</div>
-        </div>
-        <div class="agent-proposal-head-side">
-          <div class="agent-proposal-status">${getProposalStatusLabel(p.executionState)}</div>
-          <button class="agent-proposal-collapse" type="button" aria-expanded="${String(!isCollapsed)}">${isCollapsed ? '展开' : '收起'}</button>
-        </div>
-      </div>
-      <div class="agent-proposal-summary" title="折叠时显示提示词摘要">
-        <span class="agent-proposal-summary-label">提示词</span>
-        <div class="agent-proposal-summary-text">${esc(formatProposalPromptSummary(proposalView?.prompt || ''))}</div>
-      </div>
-      <div class="agent-proposal-body">
-        <label class="agent-proposal-field">
-          <span>提示词</span>
-          <textarea class="agent-proposal-prompt" rows="3" placeholder="${esc(getProposalPromptPlaceholder(mediaType))}">${esc(proposalView?.prompt || '')}</textarea>
-        </label>
-        <div class="agent-proposal-row">
-          <label>类型 <select class="agent-prop-media-type">
-            <option value="image" ${mediaType === 'image' ? 'selected' : ''}>图片</option>
-            <option value="video" ${mediaType === 'video' ? 'selected' : ''}>视频</option>
-          </select></label>
-          <label>比例 <select class="agent-prop-aspect">
-            ${ASPECT_RATIO_OPTIONS.map(a => `<option value="${a}" ${a === aspect ? 'selected' : ''}>${a}</option>`).join('')}
-          </select></label>
-        </div>
-        <div class="agent-proposal-row agent-proposal-row-image" ${mediaType === 'video' ? 'hidden' : ''}>
-          <label>张数 <input class="agent-prop-count" type="number" min="1" max="4" value="${count}"></label>
-        </div>
-        <div class="agent-proposal-row agent-proposal-row-video" ${mediaType === 'image' ? 'hidden' : ''}>
-          <label>时长 <select class="agent-prop-duration">
-            ${VIDEO_DURATION_OPTIONS.map(value => `<option value="${value}" ${value === videoDuration ? 'selected' : ''}>${value} 秒</option>`).join('')}
-          </select></label>
-        </div>
-        </div>
-      <div class="agent-proposal-collapsed-actions">
-        <div class="agent-proposal-actions">
-          <button class="agent-btn agent-prop-confirm" type="button">${proposalMeta.confirmText}</button>
-          <button class="agent-btn agent-prop-cancel" type="button">取消</button>
-        </div>
-        <div class="agent-proposal-state"></div>
-      </div>
-    `;
-    $messages.appendChild(wrap);
-    const collapseBtn = wrap.querySelector('.agent-proposal-collapse');
-    const confirmBtn = wrap.querySelector('.agent-prop-confirm');
-    const mediaTypeSelect = wrap.querySelector('.agent-prop-media-type');
-    const kindTitle = wrap.querySelector('.agent-proposal-kind-title');
-    const imageRow = wrap.querySelector('.agent-proposal-row-image');
-    const videoRow = wrap.querySelector('.agent-proposal-row-video');
-    const stateEl = wrap.querySelector('.agent-proposal-state');
-    let timer = null;
-
-    const syncMediaFields = () => {
-      const nextMediaType = mediaTypeSelect?.value === 'video' ? 'video' : 'image';
-      const meta = getProposalUiMeta(nextMediaType);
-      if (kindTitle) kindTitle.textContent = meta.title;
-      if (confirmBtn) confirmBtn.textContent = meta.confirmText;
-      if (imageRow) imageRow.hidden = nextMediaType !== 'image';
-      if (videoRow) videoRow.hidden = nextMediaType !== 'video';
-    };
-
-    const syncState = (state, seconds = 0) => {
-      stateEl.textContent = `状态：${getProposalStatusLabel(state, seconds)}`;
-      const locked = state === 'generating';
-      confirmBtn.disabled = locked;
-      const cancelBtn = wrap.querySelector('.agent-prop-cancel');
-      if (cancelBtn) cancelBtn.disabled = locked;
-      updateProposalCollapsedSummary(wrap);
-      if (!wrap.dataset.userExpanded) setProposalCardCollapsed(wrap, isProposalCollapsedByDefault(state));
-      if (state === 'generating') {
-        if (timer) clearInterval(timer);
-        const started = Date.now();
-        timer = setInterval(() => {
-          const elapsed = Math.floor((Date.now() - started) / 1000);
-          stateEl.textContent = `状态：${getProposalStatusLabel('generating', elapsed)}`;
-        }, 1000);
-      } else if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-
-    setProposalCardCollapsed(wrap, isCollapsed);
-    syncMediaFields();
-    syncState(p.executionState || 'pending');
-
-        collapseBtn?.addEventListener('click', () => {
-      const next = !wrap.classList.contains('is-collapsed');
-      if (next) delete wrap.dataset.userExpanded;
-      else wrap.dataset.userExpanded = '1';
-      setProposalCardCollapsed(wrap, next, { forceScroll: !next, smooth: true });
-    });
-    wrap.querySelector('.agent-proposal-prompt')?.addEventListener('input', () => updateProposalCollapsedSummary(wrap));
-    mediaTypeSelect?.addEventListener('change', syncMediaFields);
-
-    wrap.querySelector('.agent-prop-cancel').onclick = () => {
-      updateProposal(p.id, { executionState: 'cancelled' });
-      syncState('cancelled');
-    };
-    wrap.querySelector('.agent-prop-confirm').onclick = () => executeProposal(wrap, p, syncState);
-  }
-
-  async function executeProposal(wrap, p, syncState) {
-    const mediaType = wrap.querySelector('.agent-prop-media-type').value === 'video' ? 'video' : 'image';
-    const prompt = wrap.querySelector('.agent-proposal-prompt').value.trim();
-    const aspect = wrap.querySelector('.agent-prop-aspect').value;
-    const count = clamp(parseInt(wrap.querySelector('.agent-prop-count')?.value, 10) || 1, 1, 4);
-    const videoDuration = String(wrap.querySelector('.agent-prop-duration')?.value || '10');
-    const proposalMeta = getProposalUiMeta(mediaType);
-    const userOverrides = {
-      media_type: mediaType,
-      prompt,
-      requested_aspect_ratio: aspect,
-      ...(mediaType === 'image'
-        ? { parallel_count: count }
-        : { video_duration: parseInt(videoDuration, 10) || 10 })
-    };
-
-    if (!prompt) {
-      bridge.flashStatus?.('提示词不能为空', 'danger');
-      return;
-    }
-
-    updateProposal(p.id, { executionState: 'generating', userOverrides, error: '' });
-    syncState?.('generating');
-    try {
-      let appended = 0;
-      const referenceImages = Array.isArray(p.raw?.referenced_image_ids)
-        ? p.raw.referenced_image_ids
-          .map(id => getAgentImage(id))
-          .filter(img => img?.dataUrl)
-        : [];
-      const currentParams = bridge.getCurrentGenerationParams?.() || {};
-
-      if (typeof bridge.runAgentGeneration === 'function') {
-        if (mediaType === 'video') {
-          const startedAt = performance.now();
-          const payload = await bridge.runAgentGeneration('video', prompt, {
-            aspect,
-            videoDuration,
-            images: referenceImages
-          });
-          const result = payload?.result || payload;
-          const params = payload?.params || currentParams;
-          await bridge.appendResult(result, {
-            ...params,
-            prompt,
-            aspect,
-            videoDuration,
-            runtimeMs: performance.now() - startedAt
-          });
-          appended = 1;
-        } else {
-          for (let i = 0; i < count; i++) {
-            const startedAt = performance.now();
-            const payload = await bridge.runAgentGeneration('image', prompt, {
-              aspect,
-              count: 1,
-              images: referenceImages
-            });
-            const result = payload?.result || payload;
-            const params = payload?.params || currentParams;
-            await bridge.appendResult(result, {
-              ...params,
-              prompt,
-              aspect,
-              runtimeMs: performance.now() - startedAt
-            });
-            appended += 1;
-          }
-        }
-      } else {
-        if (mediaType !== 'image') {
-          throw new Error('当前页面未暴露视频生成桥接方法');
-        }
-        const req = {
-          endpoint: bridge.buildApiUrl('/v1/images/generations'),
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bridge.getApiKey()}` },
-          body: JSON.stringify((() => {
-            const ratioApi = globalThis.ImageRatio || window.ImageRatio || {};
-            const size = typeof ratioApi.resolveImageSize === 'function'
-              ? (ratioApi.resolveImageSize({ aspect: '1:1', resolution: '1K', model: 'gpt-image-2' }) || '1024x1024')
-              : '1024x1024';
-            return { model: 'gpt-image-2', prompt, size, n: count, response_format: 'b64_json' };
-          })())
-        };
-        const resp = await bridge.sendImageRequest(req, 'agent-generate');
-        const items = Array.isArray(resp?.data?.data) ? resp.data.data : [];
-        if (!resp?.ok) {
-          const errorText = resp?.data?.error?.message || resp?.raw || `API 错误: ${resp?.status || 'unknown'}`;
-          throw new Error(errorText);
-        }
-        for (const item of items) {
-          const b64 = typeof item?.b64_json === 'string' ? item.b64_json : '';
-          const url = typeof item?.url === 'string' ? item.url : '';
-          if (!b64 && !url) continue;
-          await bridge.appendResult(
-            {
-              mediaType: 'image',
-              imageBase64: b64 ? 'data:image/png;base64,' + b64 : '',
-              imageUrl: url,
-              mime: 'image/png',
-              text: prompt
-            },
-            { prompt, model: 'gpt-image-2', aspect, resolution: '1K', protocol: 'agent-generate' }
-          );
-          appended += 1;
-        }
-      }
-      if (!appended) {
-        throw new Error(mediaType === 'video' ? '接口已返回成功，但没有可用视频数据' : '接口已返回成功，但没有可用图片数据');
-      }
-      updateProposal(p.id, {
-        executionState: 'completed',
-        executionResult: { completedAt: Date.now(), mediaType, itemCount: appended, imageIds: [] }
-      });
-      syncState?.('completed');
-      setProposalCardCollapsed(wrap, false);
-      try {
-        setSidePaneTab('recent');
-        await renderRecentResults();
-        scrollMessagesToBottom();
-      } catch (uiErr) {
-        console.warn('Agent result UI refresh failed:', uiErr);
-      }
-      bridge.flashStatus?.(appended > 1 ? `${proposalMeta.successText}（${appended} 个结果）` : proposalMeta.successText, 'success');
-    } catch (err) {
-      updateProposal(p.id, { executionState: 'failed', error: String(err?.message || err) });
-      syncState?.('failed');
-      setProposalCardCollapsed(wrap, false);
-      bridge.flashStatus?.(proposalMeta.failurePrefix + err.message, 'danger');
-    }
+    refreshIcons();
   }
 
   function appendProposalBubbleV2(p) {
@@ -1313,7 +1434,8 @@ export function openAgentWorkspace() {
           <button class="agent-btn agent-prop-confirm" type="button">${proposalMeta.confirmText}</button>
           <button class="agent-btn agent-prop-cancel" type="button">取消</button>
         </div>
-        <div class="agent-proposal-state"></div>
+        <div class="agent-proposal-state" aria-live="polite"></div>
+        <div class="agent-proposal-progress"></div>
       </div>
     `;
     $messages.appendChild(wrap);
@@ -1329,6 +1451,8 @@ export function openAgentWorkspace() {
     const kindTitle = wrap.querySelector('.agent-proposal-kind-title');
     const promptField = wrap.querySelector('.agent-proposal-prompt');
     const stateEl = wrap.querySelector('.agent-proposal-state');
+    const statusBadge = wrap.querySelector('.agent-proposal-status');
+    const progressEl = wrap.querySelector('.agent-proposal-progress');
     let timer = null;
 
     const syncSelectOptions = (selectEl, options, preferredValue) => {
@@ -1364,15 +1488,37 @@ export function openAgentWorkspace() {
       syncSelectOptions(scalarSelect, nextScalarOptions, nextScalarValue);
     };
 
-    const syncState = (state, seconds = 0) => {
-      stateEl.textContent = `状态：${getProposalStatusLabel(state, seconds)}`;
-      const locked = state === 'generating';
-      confirmBtn.disabled = locked;
+    const syncState = (state, seconds = 0, progress) => {
+      const current = activeSession()?.proposals?.[p.id] || p;
+      const currentProgress = progress || current.progress || { completed: 0, total: count };
+      const errorText = state === 'failed' ? String(current.error || '') : '';
+      stateEl.textContent = `状态：${getProposalStatusLabel(state, seconds)}${errorText ? `：${errorText}` : ''}`;
+      stateEl.title = errorText;
+      if (statusBadge) statusBadge.textContent = getProposalStatusLabel(state);
+      wrap.dataset.executionState = state;
+      const generating = state === 'generating';
+      confirmBtn.disabled = generating;
+      confirmBtn.hidden = generating;
+      confirmBtn.textContent = ['failed', 'cancelled', 'interrupted'].includes(state)
+        ? '重试'
+        : state === 'completed'
+          ? '再次生成'
+          : getProposalUiMeta(mediaTypeSelect?.value === 'video' ? 'video' : 'image').confirmText;
       const cancelBtn = wrap.querySelector('.agent-prop-cancel');
-      if (cancelBtn) cancelBtn.disabled = locked;
+      if (cancelBtn) {
+        cancelBtn.hidden = !['pending', 'generating'].includes(state);
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = generating ? '停止' : '取消';
+      }
+      if (progressEl) {
+        progressEl.hidden = !generating;
+        progressEl.textContent = generating
+          ? `已完成 ${Math.max(0, Number(currentProgress.completed) || 0)}/${Math.max(1, Number(currentProgress.total) || count)}`
+          : '';
+      }
       updateProposalCollapsedSummary(wrap);
       if (!wrap.dataset.userExpanded) setProposalCardCollapsed(wrap, isProposalCollapsedByDefault(state));
-      if (state === 'generating') {
+      if (generating) {
         if (timer) clearInterval(timer);
         const started = Date.now();
         timer = setInterval(() => {
@@ -1387,7 +1533,7 @@ export function openAgentWorkspace() {
 
     setProposalCardCollapsed(wrap, isCollapsed);
     syncMediaFields();
-    syncState(p.executionState || 'pending');
+    syncState(p.executionState || 'pending', 0, p.progress);
     renderProposalResults(
       wrap,
       p.executionResult?.imageIds || [],
@@ -1411,8 +1557,12 @@ export function openAgentWorkspace() {
     });
 
     wrap.querySelector('.agent-prop-cancel').onclick = () => {
+      if ((activeSession()?.proposals?.[p.id]?.executionState || p.executionState) === 'generating') {
+        proposalControllers.get(p.id)?.abort(new DOMException('Generation cancelled', 'AbortError'));
+      }
       updateProposal(p.id, { executionState: 'cancelled' });
       syncState('cancelled');
+      renderTaskPane();
     };
     wrap.querySelector('.agent-prop-confirm').onclick = () => executeProposalV2(wrap, p, syncState);
   }
@@ -1447,8 +1597,18 @@ export function openAgentWorkspace() {
       return;
     }
 
-    updateProposal(p.id, { executionState: 'generating', userOverrides, error: '' });
-    syncState?.('generating');
+    const generationController = new AbortController();
+    const ensureActive = () => {
+      if (!generationController.signal.aborted) return;
+      throw generationController.signal.reason || new DOMException('Generation cancelled', 'AbortError');
+    };
+    proposalControllers.get(p.id)?.abort();
+    proposalControllers.set(p.id, generationController);
+    const progress = { completed: 0, total: count };
+    updateProposal(p.id, { executionState: 'generating', userOverrides, error: '', progress, executionResult: null });
+    syncState?.('generating', 0, progress);
+    renderProposalResults(wrap, [], []);
+    renderTaskPane();
     try {
       let appended = 0;
       const imageIds = [];
@@ -1468,8 +1628,10 @@ export function openAgentWorkspace() {
               aspect,
               resolution: effectiveResolution,
               videoDuration,
-              images: referenceImages
+              images: referenceImages,
+              signal: generationController.signal
             });
+            ensureActive();
             const result = payload?.result || payload;
             const params = payload?.params || currentParams;
             await bridge.appendResult(result, {
@@ -1482,9 +1644,14 @@ export function openAgentWorkspace() {
               runtimeMs: performance.now() - startedAt
             });
             const stored = await storeGeneratedResultImage(result, prompt);
+            ensureActive();
             if (stored?.id) imageIds.push(stored.id);
             if (stored?.previewSrc) previewSrcs.push(stored.previewSrc);
             appended += 1;
+            progress.completed = appended;
+            updateProposal(p.id, { progress: { ...progress } });
+            syncState?.('generating', 0, progress);
+            renderTaskPane();
           }
         } else {
           for (let i = 0; i < count; i++) {
@@ -1495,8 +1662,10 @@ export function openAgentWorkspace() {
               resolution: effectiveResolution,
               quality: imageQuality,
               count: 1,
-              images: referenceImages
+              images: referenceImages,
+              signal: generationController.signal
             });
+            ensureActive();
             const result = payload?.result || payload;
             const params = payload?.params || currentParams;
             await bridge.appendResult(result, {
@@ -1509,9 +1678,14 @@ export function openAgentWorkspace() {
               runtimeMs: performance.now() - startedAt
             });
             const stored = await storeGeneratedResultImage(result, prompt);
+            ensureActive();
             if (stored?.id) imageIds.push(stored.id);
             if (stored?.previewSrc) previewSrcs.push(stored.previewSrc);
             appended += 1;
+            progress.completed = appended;
+            updateProposal(p.id, { progress: { ...progress } });
+            syncState?.('generating', 0, progress);
+            renderTaskPane();
           }
         }
       } else {
@@ -1533,13 +1707,15 @@ export function openAgentWorkspace() {
             return payload;
           })())
         };
-        const resp = await bridge.sendImageRequest(req, 'agent-generate');
+        const resp = await bridge.sendImageRequest(req, 'agent-generate', generationController.signal);
+        ensureActive();
         const items = Array.isArray(resp?.data?.data) ? resp.data.data : [];
         if (!resp?.ok) {
           const errorText = resp?.data?.error?.message || resp?.raw || `API 错误: ${resp?.status || 'unknown'}`;
           throw new Error(errorText);
         }
         for (const item of items) {
+          ensureActive();
           const b64 = typeof item?.b64_json === 'string' ? item.b64_json : '';
           const url = typeof item?.url === 'string' ? item.url : '';
           if (!b64 && !url) continue;
@@ -1555,9 +1731,14 @@ export function openAgentWorkspace() {
             { prompt, model: model || 'gpt-image-2', aspect, resolution: effectiveResolution || '1K', quality: imageQuality, protocol: 'agent-generate' }
           );
           const stored = await storeGeneratedResultImage(result, prompt);
+          ensureActive();
           if (stored?.id) imageIds.push(stored.id);
           if (stored?.previewSrc) previewSrcs.push(stored.previewSrc);
           appended += 1;
+          progress.completed = appended;
+          updateProposal(p.id, { progress: { ...progress } });
+          syncState?.('generating', 0, progress);
+          renderTaskPane();
         }
       }
 
@@ -1566,6 +1747,7 @@ export function openAgentWorkspace() {
       }
       updateProposal(p.id, {
         executionState: 'completed',
+        progress: { completed: appended, total: count },
         executionResult: {
           completedAt: Date.now(),
           mediaType,
@@ -1574,11 +1756,12 @@ export function openAgentWorkspace() {
           previewSrcs
         }
       });
-      syncState?.('completed');
+      syncState?.('completed', 0, { completed: appended, total: count });
+      renderTaskPane();
       renderProposalResults(wrap, imageIds, previewSrcs);
       setProposalCardCollapsed(wrap, false);
       try {
-        setSidePaneTab('recent');
+        setSidePaneTab('results');
         await renderRecentResults();
         scrollMessagesToBottom();
       } catch (uiErr) {
@@ -1586,35 +1769,75 @@ export function openAgentWorkspace() {
       }
       bridge.flashStatus?.(appended > 1 ? `${proposalMeta.successText}（${appended} 个结果）` : proposalMeta.successText, 'success');
     } catch (err) {
-      updateProposal(p.id, { executionState: 'failed', error: String(err?.message || err) });
-      syncState?.('failed');
+      const cancelled = generationController.signal.aborted || err?.name === 'AbortError';
+      const nextState = cancelled ? 'cancelled' : 'failed';
+      updateProposal(p.id, { executionState: nextState, error: cancelled ? '' : String(err?.message || err), progress: { ...progress } });
+      syncState?.(nextState, 0, progress);
+      renderTaskPane();
       setProposalCardCollapsed(wrap, false);
-      bridge.flashStatus?.(proposalMeta.failurePrefix + (err?.message || err), 'danger');
+      if (!cancelled) bridge.flashStatus?.(proposalMeta.failurePrefix + (err?.message || err), 'danger');
+      else bridge.flashStatus?.('已停止生成', 'success');
+    } finally {
+      if (proposalControllers.get(p.id) === generationController) proposalControllers.delete(p.id);
     }
   }
 
   function switchAgent(id) {
-    if (ctrl.current) { try { ctrl.current.abort(); } catch { } ctrl.current = null; setSending(false); setStatus('已取消切换'); }
+    persistDraftNow();
+    if (ctrl.current) cancelCurrentResponse('已取消回答');
+    for (const controller of proposalControllers.values()) controller.abort();
+    proposalControllers.clear();
     setActiveAgentId(id);
     renderAll();
+    setMobilePanel('');
+  }
+
+  function beginSessionRename(item, id) {
+    const title = item?.querySelector('.agent-agent-title');
+    if (!title || !id) return;
+    const input = document.createElement('input');
+    input.className = 'agent-session-rename-input';
+    input.value = title.textContent || '';
+    input.maxLength = 60;
+    input.setAttribute('aria-label', '会话名称');
+    title.replaceWith(input);
+    let finished = false;
+    const finish = (save) => {
+      if (finished) return;
+      finished = true;
+      if (save) renameAgent(id, input.value.trim() || '新会话');
+      renderSidebar();
+      if (id === getActiveAgentId()) $title.textContent = loadActiveSession()?.title || '新会话';
+    };
+    input.addEventListener('click', event => event.stopPropagation());
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', event => {
+      event.stopPropagation();
+      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+      if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    });
+    input.focus();
+    input.select();
   }
 
   async function send() {
     const text = $input.value.trim();
     const attachedImageIds = Array.from(draftReferenceIds);
     if (!text && !attachedImageIds.length) return;
+    const userMsg = { id: uuid(), role: 'user', text, status: 'completed', createdAt: Date.now(), attachedImageIds };
+    putMessage(userMsg);
+    clearAgentDraft();
     $input.value = '';
     draftReferenceIds.clear();
     renderDraftAttachments();
-    const userMsg = { id: uuid(), role: 'user', text, createdAt: Date.now(), attachedImageIds };
-    putMessage(userMsg);
+    refreshIcons();
     autoTitleAgent(getActiveAgentId());
     const sess = loadActiveSession();
     appendMessageBubble(userMsg);
     renderSidebar();
     $title.textContent = sess.title;
 
-    const placeholder = { id: 'streaming-' + Date.now(), role: 'assistant', text: '', reasoning: '', createdAt: Date.now() };
+    const placeholder = { id: 'streaming-' + Date.now(), role: 'assistant', text: '', reasoning: '', status: 'generating', sources: [], createdAt: Date.now() };
     putMessage(placeholder);
     appendMessageBubble(placeholder);
     const bubble = $messages.lastElementChild;
@@ -1623,7 +1846,7 @@ export function openAgentWorkspace() {
     let accText = '', accReason = '';
 
     const ac = new AbortController();
-    ctrl.current = ac;
+    ctrl.current = { abort: () => ac.abort(), messageId: placeholder.id, bubble };
     const sessForSend = loadActiveSession();
     const contextTurns = normalizeContextTurns(sessForSend?.contextTurns, DEFAULT_CONTEXT_TURNS);
     const history = sliceHistoryByTurns(
@@ -1635,8 +1858,8 @@ export function openAgentWorkspace() {
     const visionEnabled = supportsVision(model);
     const instructions = buildInstructions('conversation', buildCatalog(sess2, getAgentImage));
     const inputMsgs = await buildInputMessages(history, visionEnabled ? getAgentImage : async () => null);
-    // 默认能联网就联网：始终附带 web_search，由上游模型/接口决定是否实际调用
-    const tools = [PROPOSE_TOOL, { type: 'web_search' }];
+    const tools = [PROPOSE_TOOL];
+    if (sessForSend?.webSearchEnabled !== false) tools.push({ type: 'web_search' });
 
     try {
       const handle = streamAgentChat({
@@ -1647,14 +1870,19 @@ export function openAgentWorkspace() {
         chatEndpoint: bridge.buildApiUrl('/v1/chat/completions'),
         instructions, tools, history: inputMsgs, signal: ac.signal
       }, {
-        onDelta: (t) => { accText += t; bubble.querySelector('.agent-msg-text').textContent = accText; scrollMessagesToBottom(); },
+        onDelta: (t) => {
+          if (ac.signal.aborted) return;
+          accText += t;
+          bubble.querySelector('.agent-msg-text').textContent = accText;
+          scrollMessagesToBottom();
+        },
         onReasoning: (t) => {
           accReason += t;
           let det = bubble.querySelector('.agent-reasoning');
           if (!det) {
             det = document.createElement('details');
             det.className = 'agent-reasoning';
-            det.innerHTML = '<summary>💭 思考过程</summary><pre></pre>';
+            det.innerHTML = '<summary>思考过程</summary><pre></pre>';
             bubble.appendChild(det);
           }
           det.querySelector('pre').textContent = accReason;
@@ -1662,18 +1890,31 @@ export function openAgentWorkspace() {
         onRetry: (nextAttempt, maxAttempts) => {
           setStatus(`接口响应异常，正在重试（${nextAttempt}/${maxAttempts}）`);
         },
-        onDone: (fullText, proposal) => {
+        onDone: (fullText, proposal, metadata = {}) => {
+          if (ac.signal.aborted) return;
           placeholder.text = fullText;
           placeholder.reasoning = accReason;
+          placeholder.status = 'completed';
+          placeholder.sources = Array.isArray(metadata.sources) ? metadata.sources : [];
+          placeholder.searchUsed = metadata.searchUsed === true;
+          const messageHost = bubble.querySelector('.agent-msg-text');
+          if (messageHost) messageHost.innerHTML = renderSafeMarkdown(fullText);
+          bubble.classList.remove('is-generating');
+          bubble.classList.add('is-completed');
+          if (placeholder.sources.length) {
+            bubble.remove();
+            appendMessageBubble(placeholder);
+          }
           if (proposal) {
             const pid = uuid();
-            const p = { id: pid, raw: proposal, executionState: 'pending' };
+            const p = { id: pid, raw: proposal, executionState: 'pending', progress: { completed: 0, total: clamp(Number(proposal.parallel_count) || 1, 1, 4) }, createdAt: Date.now() };
             putProposal(p);
             placeholder.proposalId = pid;
             appendProposalBubbleV2(p);
+            renderTaskPane();
             scrollMessagesToBottom();
           }
-          updateMessage(placeholder.id, { text: fullText, reasoning: accReason, proposalId: placeholder.proposalId });
+          updateMessage(placeholder.id, { text: fullText, reasoning: accReason, status: 'completed', sources: placeholder.sources, searchUsed: placeholder.searchUsed, proposalId: placeholder.proposalId });
           setStatus('空闲');
         },
         onError: (err) => {
@@ -1683,16 +1924,21 @@ export function openAgentWorkspace() {
           setStatus('Error: ' + err.message);
         }
       });
-      $abort.onclick = () => { handle.abort(); setStatus('已取消'); setSending(false); };
+      $abort.onclick = () => {
+        handle.abort();
+        cancelCurrentResponse('已取消回答');
+      };
       await handle.promise;
     } catch (err) {
+      if (ac.signal.aborted || err?.name === 'AbortError') return;
       placeholder.text = `Error: ${err.message}`;
-      updateMessage(placeholder.id, { text: placeholder.text, reasoning: accReason });
+      placeholder.status = 'failed';
+      updateMessage(placeholder.id, { text: placeholder.text, reasoning: accReason, status: 'failed' });
       bubble.querySelector('.agent-msg-text').textContent = placeholder.text;
       setStatus('Error: ' + err.message);
     } finally {
       setSending(false);
-      ctrl.current = null;
+      if (ctrl.current?.messageId === placeholder.id) ctrl.current = null;
     }
   }
 
@@ -1700,31 +1946,46 @@ export function openAgentWorkspace() {
     const now = Date.now();
     if (now - lastCreateAt < 300) return;
     lastCreateAt = now;
+    persistDraftNow();
+    if (ctrl.current) cancelCurrentResponse('已取消回答');
     createAgent('新会话');
     renderAll();
+    setMobilePanel('');
   };
 
   $agentList.onclick = (e) => {
+    const item = e.target.closest('.agent-agent-item');
+    const id = item?.dataset.agentId;
+    if (!item || !id) return;
+    if (e.target.closest('.agent-agent-rename')) {
+      beginSessionRename(item, id);
+      return;
+    }
+    if (e.target.closest('.agent-agent-copy')) {
+      persistDraftNow();
+      if (ctrl.current) cancelCurrentResponse('已取消回答');
+      duplicateAgent(id);
+      renderAll();
+      setMobilePanel('');
+      bridge.flashStatus?.('已复制会话', 'success');
+      return;
+    }
     const delBtn = e.target.closest('.agent-agent-del');
     if (delBtn) {
-      const item = delBtn.closest('.agent-agent-item');
-      const id = item?.dataset.agentId;
-      if (!id) return;
       const list = loadAgentList();
       if (Object.keys(list.agents).length <= 1) return;
       if (!confirm('确定删除这个会话吗？')) return;
+      if (id === getActiveAgentId() && ctrl.current) cancelCurrentResponse('已取消回答');
       deleteAgent(id);
       renderAll();
       bridge.flashStatus?.('已删除会话', 'success');
       return;
     }
-    const item = e.target.closest('.agent-agent-item');
-    const id = item?.dataset.agentId;
     if (id && id !== getActiveAgentId()) switchAgent(id);
   };
 
   $agentList.addEventListener('keydown', (e) => {
-    if (e.target.closest('.agent-agent-del')) return;
+    if (e.target.closest('.agent-icon-btn, .agent-session-rename-input')) return;
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     const id = e.target.closest('.agent-agent-item')?.dataset.agentId;
@@ -1750,18 +2011,29 @@ export function openAgentWorkspace() {
     renderModelSelect();
   });
 
+  $sessionSearch?.addEventListener('input', renderSidebar);
+  $taskFilter?.addEventListener('change', renderTaskPane);
+  $promptSearch?.addEventListener('input', renderPromptLibrary);
+  $input.addEventListener('input', scheduleDraftSave);
+
+  $webSearch?.addEventListener('change', () => {
+    saveActiveSession({ webSearchEnabled: $webSearch.checked });
+    bridge.flashStatus?.($webSearch.checked ? '联网搜索已开启' : '联网搜索已关闭', 'success');
+  });
+
   $refreshAssets?.addEventListener('click', async () => {
     await refreshAssetPanes();
-    bridge.flashStatus?.('已同步主工作台素材', 'success');
+    bridge.flashStatus?.('已刷新主工作台素材', 'success');
   });
+
+  window.addEventListener('studio-reference-images-changed', handleReferenceImagesChanged);
 
   if ($contextTurns) {
     $contextTurns.onchange = () => {
       const next = normalizeContextTurns($contextTurns.value, DEFAULT_CONTEXT_TURNS);
       const label = formatContextTurnsLabel(next);
-      saveActiveSession({ contextTurns: next, webSearchEnabled: true });
+      saveActiveSession({ contextTurns: next });
       $contextTurns.value = String(next);
-      if ($contextTurnsValue) $contextTurnsValue.textContent = label;
       $contextTurns.title = label;
       $contextTurns.setAttribute('aria-valuetext', label);
     };
@@ -1769,12 +2041,26 @@ export function openAgentWorkspace() {
 
   $close.onclick = close;
   document.addEventListener('keydown', escClose);
-  function escClose(e) { if (e.key === 'Escape' && document.body.contains(root)) close(); }
+  function escClose(e) {
+    if (e.key !== 'Escape' || !document.body.contains(root)) return;
+    if (root.classList.contains('is-sidebar-open') || root.classList.contains('is-sidepane-open')) {
+      setMobilePanel('');
+      return;
+    }
+    close();
+  }
   function close() {
-    if (ctrl.current) try { ctrl.current.abort(); } catch { }
+    persistDraftNow();
+    if (ctrl.current) cancelCurrentResponse('已取消回答');
+    captionController?.abort();
+    captionController = null;
+    for (const controller of proposalControllers.values()) controller.abort(new DOMException('Generation cancelled', 'AbortError'));
+    proposalControllers.clear();
+    window.removeEventListener('studio-reference-images-changed', handleReferenceImagesChanged);
     document.removeEventListener('keydown', escClose);
     document.removeEventListener('focusin', keepFocusInside, true);
     document.body.classList.remove('agent-mode-open');
+    try { window.dispatchEvent(new CustomEvent('agent-workspace-closed')); } catch {}
     restoreBackground();
     root.remove();
     if (returnFocus && returnFocus !== document.body && document.contains(returnFocus) && typeof returnFocus.focus === 'function') {
@@ -1799,9 +2085,19 @@ export function openAgentWorkspace() {
     });
   });
 
+  $mobileSessions?.addEventListener('click', () => setMobilePanel('sessions'));
+  $mobileTools?.addEventListener('click', () => setMobilePanel('tools'));
+  $sidebarClose?.addEventListener('click', () => setMobilePanel(''));
+  $sidepaneClose?.addEventListener('click', () => setMobilePanel(''));
+  $mobileBackdrop?.addEventListener('click', () => setMobilePanel(''));
+
   renderModelSelect();
   renderAll();
-  hydrateReady.then(() => { if (root.isConnected) renderAll(); }).catch(() => {});
+  hydrateReady.then(() => {
+    if (!root.isConnected) return;
+    renderMain({ preserveDraft: true });
+    refreshAssetPanes();
+  }).catch(() => {});
   setSidePaneTab('reference');
   root.__agentClose = close;
   if (!$input.disabled) $input.focus();

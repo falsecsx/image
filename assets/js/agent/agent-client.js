@@ -123,7 +123,54 @@ function normalizeChatTool(tool) {
 }
 
 function toChatTools(tools) {
-  return (Array.isArray(tools) ? tools : []).map(normalizeChatTool).filter(Boolean);
+  return (Array.isArray(tools) ? tools : [])
+    .filter(tool => tool?.type === 'function')
+    .map(normalizeChatTool)
+    .filter(Boolean);
+}
+
+export function normalizeAgentSources(values) {
+  const seen = new Set();
+  const sources = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    const type = String(value.type || '').toLowerCase();
+    const candidate = value.url_citation && typeof value.url_citation === 'object'
+      ? value.url_citation
+      : value;
+    const rawUrl = candidate.url || candidate.uri || candidate.href;
+    if (rawUrl && (!type || type.includes('citation') || type.includes('source') || value.url_citation)) {
+      try {
+        const url = new URL(String(rawUrl));
+        if (['http:', 'https:'].includes(url.protocol) && !seen.has(url.href)) {
+          seen.add(url.href);
+          sources.push({
+            title: String(candidate.title || candidate.name || url.hostname || url.href).trim().slice(0, 240),
+            url: url.href
+          });
+        }
+      } catch {}
+    }
+    for (const key of ['annotation', 'annotations', 'sources', 'citations', 'content', 'output', 'item', 'response']) {
+      if (value[key]) visit(value[key]);
+    }
+  };
+  visit(values);
+  return sources;
+}
+
+function containsWebSearchCall(value, seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  if (String(value.type || '').toLowerCase().includes('web_search')) return true;
+  return Object.values(value).some(item => Array.isArray(item)
+    ? item.some(child => containsWebSearchCall(child, seen))
+    : containsWebSearchCall(item, seen));
 }
 
 function toChatMessages(input) {
@@ -260,19 +307,26 @@ async function runResponses(input, callbacks, signal) {
   let accText = '';
   let accReason = '';
   let toolArgs = '';
+  const sourcesByUrl = new Map();
+  let searchUsed = false;
   let fired = false;
+  const collectMetadata = (value) => {
+    for (const source of normalizeAgentSources(value)) sourcesByUrl.set(source.url, source);
+    if (containsWebSearchCall(value)) searchUsed = true;
+  };
   const fireDone = (streamEndedUnexpectedly = false) => {
     if (fired) return; fired = true;
     const proposal = parseProposalArguments(toolArgs);
     if (!accText.trim() && !proposal) {
       throw streamEndedUnexpectedly ? createStreamIncompleteError() : createIncompleteResponseError();
     }
-    callbacks.onDone(accText, proposal);
+    callbacks.onDone(accText, proposal, { sources: [...sourcesByUrl.values()], searchUsed });
   };
 
   await readSSE(res.body, signal, (data) => {
     if (data === '[DONE]') { fireDone(); return false; }
     let env; try { env = JSON.parse(data); } catch { return; }
+    collectMetadata(env);
     const t = env.type || '';
     if (t === 'response.reasoning_summary_text.delta') {
       const d = typeof env.delta === 'string' ? env.delta : ''; accReason += d; callbacks.onReasoning?.(d);
@@ -293,6 +347,7 @@ async function runResponses(input, callbacks, signal) {
         toolArgs = env.item.arguments;
       }
     } else if (t === 'response.completed') {
+      collectMetadata(env.response);
       const out = env.response?.output_text;
       if (typeof out === 'string' && out.length > accText.length) {
         const tail = out.slice(accText.length); accText = out; callbacks.onDelta(tail);
@@ -349,7 +404,7 @@ async function runChatCompletions(input, callbacks, signal) {
     if (!accText.trim() && !proposal) {
       throw streamEndedUnexpectedly ? createStreamIncompleteError() : createIncompleteResponseError();
     }
-    callbacks.onDone(accText, proposal);
+    callbacks.onDone(accText, proposal, { sources: [], searchUsed: false });
   };
 
   await readSSE(res.body, signal, (data) => {
