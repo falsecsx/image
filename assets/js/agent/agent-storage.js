@@ -54,6 +54,19 @@ function uuid() {
 
 const PROPOSAL_STATES = new Set(['pending', 'generating', 'completed', 'failed', 'cancelled', 'interrupted']);
 
+function compareAgentText(left, right) {
+  return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareAgentResume(left, right) {
+  return (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0)
+    || compareAgentText(left?.title, right?.title)
+    || compareAgentText(left?.id, right?.id);
+}
+
 function emptyDraft() {
   return { text: '', referenceImageIds: [], updatedAt: 0 };
 }
@@ -335,7 +348,7 @@ export function getAgentResumeSummary() {
   const list = loadAgentList();
   const candidates = Object.values(list.agents)
     .filter(agent => (agent.messages || []).length || agent.draft?.text?.trim() || agent.draft?.referenceImageIds?.length)
-    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    .sort(compareAgentResume);
   const agent = candidates[0] || list.agents[list.activeAgentId] || null;
   const hasResume = !!(agent && (
     (agent.messages || []).length || agent.draft?.text?.trim() || agent.draft?.referenceImageIds?.length

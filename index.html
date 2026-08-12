@@ -8,13 +8,10 @@
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Ai 绘图助手</title>
-  <link rel="icon" href="assets/icons/favicon.ico?v=20260804-2" type="image/x-icon">
-  <link rel="stylesheet" href="assets/css/main.css?v=20260804-1">
-  <link rel="stylesheet" href="assets/css/prompt-library.css?v=20260731-3">
-  <link rel="stylesheet" href="assets/css/agent.css?v=20260715-3">
-  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260731-1">
-  <link rel="stylesheet" href="assets/css/canvas.css?v=20260731-1">
-  <link rel="stylesheet" href="assets/css/settings.css?v=20260804-1">
+  <link rel="icon" href="assets/icons/favicon.ico?v=20260808-1" type="image/x-icon">
+  <link rel="stylesheet" href="assets/css/main.css?v=20260808-1">
+  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260808-1" data-app-stylesheet="ui-polish">
+  <link rel="stylesheet" href="assets/css/settings.css?v=20260808-1" data-app-stylesheet="settings">
 
   <script>
     window.APP_CONFIG = window.APP_CONFIG || {
@@ -22,18 +19,19 @@
       defaultBaseUrl: 'https://api.openai.com',
       apiHomeUrl: 'https://api.openai.com',
       promptApiUrl: false,
-      communityPromptStaticUrl: 'data/community-prompts.json?v=20260731-1',
-      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260731-1',
+      communityPromptStaticUrl: 'data/community-prompts.json?v=20260808-1',
+      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260808-1',
       forceDefaultBaseUrl: false,
       apiProxyEndpoint: 'api-proxy.php'
     };
   </script>
   <!-- Platform config must load before app.js so registry exists when builders register -->
-  <script src="assets/js/core/utils.js?v=20260711-2"></script>
-  <script src="assets/js/core/image-compress.js?v=20260712-3"></script>
-  <script src="assets/js/core/history-store.js?v=20260711-2"></script>
-  <script src="assets/js/core/image-ratio.js?v=20260712-3"></script>
-  <script src="assets/js/platform-config.js?v=20260711-2"></script>
+  <script src="assets/js/core/utils.js?v=20260808-1"></script>
+  <script src="assets/js/core/image-compress.js?v=20260808-1"></script>
+  <script src="assets/js/core/history-store.js?v=20260808-1"></script>
+  <script src="assets/js/core/image-ratio.js?v=20260808-1"></script>
+  <script src="assets/js/core/image-upscaler.js?v=20260812-1"></script>
+  <script src="assets/js/platform-config.js?v=20260808-1"></script>
 </head>
 
 <body>
@@ -259,6 +257,13 @@
                   <small>把参考图或输出图合成为 GIF</small>
                 </span>
               </button>
+              <button class="advanced-tool-btn" id="upscale-tool-btn" type="button">
+                <i class="advanced-tool-icon" data-lucide="sparkles" aria-hidden="true"></i>
+                <span>
+                  <strong>AI 超分</strong>
+                  <small>上传图片用 AI 模型放大至 2x / 4x 高清</small>
+                </span>
+              </button>
             </div>
           </div>
         </section>
@@ -267,7 +272,11 @@
     </main>
 
     <aside class="output-rail">
-      <div class="panel results-panel">
+      <div class="output-rail-tabs" role="tablist" aria-label="输出与历史">
+        <button type="button" class="output-rail-tab is-active" id="output-tab-results" role="tab" aria-selected="true" aria-controls="results-panel" data-output-tab="results">当前输出</button>
+        <button type="button" class="output-rail-tab" id="output-tab-history" role="tab" aria-selected="false" aria-controls="history-panel" data-output-tab="history" tabindex="-1">历史记录</button>
+      </div>
+      <div class="panel results-panel" id="results-panel" data-output-panel="results">
         <div class="config-row output-panel-head">
           <div class="output-panel-copy">
             <span class="section-kicker">Output</span>
@@ -290,7 +299,7 @@
         </div>
       </div>
 
-      <div class="panel history-panel">
+      <div class="panel history-panel" id="history-panel" data-output-panel="history" hidden>
         <div class="history-header">
           <div class="output-panel-copy">
             <span class="section-kicker">History</span>
@@ -336,8 +345,8 @@
     </div>
     <button class="btn mobile-generate-btn" id="mobile-generate-btn" type="button">发送请求</button>
   </div>
-  <div id="canvas-workspace-root" hidden></div>
-  <div id="prompt-library-root" hidden></div>
+  <div id="canvas-workspace-root" hidden aria-hidden="true" inert></div>
+  <div id="prompt-library-root" hidden aria-hidden="true" inert></div>
 
   <div class="settings-drawer-overlay" id="settings-drawer-overlay" aria-hidden="true"></div>
   <aside class="settings-drawer settings-dialog" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">
@@ -500,6 +509,18 @@
               <button type="button" class="history-retention-option active" data-value="thumbnail" aria-pressed="true" title="仅保留预览图，节省空间">缩略图</button>
             </div>
           </section>
+          <section class="settings-group storage-section">
+            <div class="settings-group-heading">
+              <h3>AI 超分</h3>
+              <span class="settings-group-note">图片增强</span>
+            </div>
+            <label class="settings-check-row settings-switch-row" title="生成图片分辨率低于设定值时自动AI超分放大，首次使用需下载约5MB模型，完全免费">
+              <input id="auto-upscale" type="checkbox">
+              <span class="settings-switch" aria-hidden="true"></span>
+              <span>自动超分放大</span>
+            </label>
+            <p class="settings-hint" style="font-size:12px;color:var(--text-muted);margin-top:4px;">开启后，生成图分辨率不足时自动用AI放大到设定清晰度。模型仅首次加载，之后浏览器缓存。</p>
+          </section>
         </div>
         <p class="settings-note" id="folder-support-note">支持 File System Access 的浏览器可选择文件夹；其他环境使用浏览器默认下载位置。</p>
       </section>
@@ -564,8 +585,8 @@
   </div>
 
   <!-- 图片放大模态框 -->
-  <div class="lightbox" id="lightbox">
-    <button class="close-btn" id="lightbox-close">✕</button>
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="close-btn" id="lightbox-close" type="button" aria-label="关闭图片预览" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
     <img src="" alt="放大图片" id="lightbox-img">
   </div>
 
@@ -573,8 +594,8 @@
   <div class="angle-modal-overlay" id="angle-modal">
     <div class="angle-modal">
       <div class="angle-modal-header">
-        <div class="angle-modal-title">📐 自定义产品角度</div>
-        <button class="angle-modal-close" id="angle-modal-close">✕</button>
+        <div class="angle-modal-title">自定义产品角度</div>
+        <button class="angle-modal-close" id="angle-modal-close" type="button" aria-label="关闭产品角度工具" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
       </div>
       <div class="angle-modal-body">
         <!-- 主要内容区域：左侧参考图片 + 中央3D画布 -->
@@ -627,13 +648,13 @@
         </div>
       </div>
       <div class="angle-modal-footer">
-        <button class="angle-modal-btn angle-modal-btn-cancel" id="angle-modal-cancel">取消</button>
-        <button class="angle-modal-btn angle-modal-btn-confirm" id="angle-modal-confirm">确定</button>
+        <button type="button" class="angle-modal-btn angle-modal-btn-cancel" id="angle-modal-cancel">取消</button>
+        <button type="button" class="angle-modal-btn angle-modal-btn-confirm" id="angle-modal-confirm">确定</button>
       </div>
     </div>
   </div>
   <script src="assets/vendor/lucide.min.js?v=1.27.0"></script>
-  <script src="assets/js/app.js?v=20260804-1"></script>
+  <script src="assets/js/app.js?v=20260808-1"></script>
   <script>
     // 诊断：捕获加载错误，弹窗告诉你
     window.addEventListener('error', (e) => {

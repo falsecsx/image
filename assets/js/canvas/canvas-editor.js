@@ -1,4 +1,4 @@
-﻿import {
+import {
   canCreateEdgeBetween,
   createCanvasMediaNode,
   createCanvasMediaNodeFromResource,
@@ -21,7 +21,7 @@
   extractNodeReferenceIds,
   getNodeReferenceToken,
   createNodeReferenceSnapshot
-} from './canvas-model.js?v=20260803-4';
+} from './canvas-model.js?v=20260808-1';
 import {
   renderCanvasGrid,
   renderCanvasNodes,
@@ -33,8 +33,8 @@ import {
   resolveCanvasEdgeGeometry,
   buildCanvasNodeRenderSignature,
   buildCanvasNodeMarkup
-} from './canvas-renderer.js?v=20260803-4';
-import { createCanvasInteractionScheduler } from './canvas-interactions.js?v=20260803-4';
+} from './canvas-renderer.js?v=20260808-1';
+import { createCanvasInteractionScheduler } from './canvas-interactions.js?v=20260808-1';
 import {
   createCanvasResourceRecord,
   getCanvasImportSourcesFromBridge,
@@ -44,8 +44,8 @@ import {
   cacheCanvasResourceRecord,
   garbageCollectCanvasResources,
   prepareCanvasResourceRecord
-} from './canvas-resources.js?v=20260803-4';
-import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260803-4';
+} from './canvas-resources.js?v=20260808-1';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260808-1';
 import {
   createCanvasProjectSnapshot,
   removeCanvasNode,
@@ -54,20 +54,20 @@ import {
   upsertCanvasEdge,
   upsertCanvasNode,
   duplicateCanvasNode
-} from './canvas-store.js?v=20260803-4';
+} from './canvas-store.js?v=20260808-1';
 import {
   getCanvasAssetStore,
   createCanvasAsset,
   extractAssetReferenceIds,
   assetToReferenceImage
-} from './canvas-assets.js?v=20260803-4';
+} from './canvas-assets.js?v=20260808-1';
 import {
   cropImage,
   upscaleImage,
   buildMaskFromStrokes,
   composeOutpaint,
   composeOutpaintMask
-} from './canvas-edit.js?v=20260803-4';
+} from './canvas-edit.js?v=20260808-1';
 import {
   splitImage,
   buildAngleLabel,
@@ -75,8 +75,8 @@ import {
   loadImageQuickTools,
   saveImageQuickTools,
   DEFAULT_IMAGE_QUICK_TOOLS
-} from './canvas-image-tools.js?v=20260803-4';
-import { mountCanvasAssistant } from './canvas-assistant.js?v=20260803-4';
+} from './canvas-image-tools.js?v=20260808-1';
+import { mountCanvasAssistant } from './canvas-assistant.js?v=20260808-1';
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 5;
@@ -389,6 +389,7 @@ function createEditorState(options) {
     playbackFrameId: null,
     playbackLastTickMs: 0,
     modalOverlay: null,
+    canvasModalDialog: null,
     previewActive: false,
     previewViewport: null,
     projects,
@@ -421,7 +422,11 @@ function createEditorState(options) {
     _gestureStats: { panStarts: 0, panEnds: 0, panFrames: 0, boxStarts: 0, lastPanDeltaX: 0, lastPanDeltaY: 0 },
     timelineCollapsed: project?.viewPrefs?.timelineCollapsed !== false,
     miniMapOpen: project?.viewPrefs?.miniMapOpen === true,
-    sidebarCollapsed: project?.viewPrefs?.sidebarCollapsed === true,
+    sidebarCollapsed: isNarrowCanvasViewport()
+      ? true
+      : (Object.prototype.hasOwnProperty.call(project?.viewPrefs || {}, 'sidebarCollapsed')
+      ? project.viewPrefs.sidebarCollapsed === true
+      : false),
     focusMode: project?.viewPrefs?.focusMode === true,
     _focusModeRestore: null,
     viewport: {
@@ -534,6 +539,7 @@ async function refreshCanvasResourceDisplaySources(state) {
 function renderEditorShell(root) {
   root.innerHTML = `
     <section class="canvas-workspace" aria-label="无限画布编辑器">
+      <button type="button" class="canvas-mobile-sheet-backdrop" data-role="canvas-mobile-sheet-backdrop" data-action="close-mobile-panel" aria-label="关闭当前面板" hidden></button>
       <aside class="canvas-project-shell canvas-project-shell--editor">
         <div class="canvas-project-header">
           <strong data-role="project-title">画布项目</strong>
@@ -833,9 +839,9 @@ function renderEditorShell(root) {
                 <div class="canvas-assistant-head">
                   <strong>画布助手</strong>
                   <div>
-                    <button type="button" data-action="canvas-assistant-new" title="新建会话">+</button>
+                    <button type="button" data-action="canvas-assistant-new" title="新建会话" aria-label="新建会话"><i data-lucide="plus" aria-hidden="true"></i></button>
                     <button type="button" data-action="canvas-assistant-delete" title="删除当前会话">删除</button>
-                    <button type="button" data-action="toggle-canvas-assistant" title="收起助手">×</button>
+                    <button type="button" data-action="toggle-canvas-assistant" title="收起助手" aria-label="收起助手"><i data-lucide="x" aria-hidden="true"></i></button>
                   </div>
                 </div>
                 <label class="canvas-assistant-session-label"><span>会话</span><select data-role="canvas-assistant-session"></select></label>
@@ -1089,7 +1095,7 @@ function renderEditorShell(root) {
               <aside class="canvas-shortcut-panel" data-role="shortcut-panel" data-canvas-no-zoom hidden>
                 <div class="canvas-shortcut-panel-head">
                   <strong>画布快捷键</strong>
-                  <button type="button" data-action="toggle-shortcuts" aria-label="关闭快捷键面板">✕</button>
+                  <button type="button" data-action="toggle-shortcuts" aria-label="关闭快捷键面板" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
                 </div>
                 <div class="canvas-shortcut-grid">
                   <div><kbd>V</kbd><span>选择 / 框选</span></div>
@@ -1313,11 +1319,10 @@ function bindEditorEvents(state) {
   });
   bindAction(state, 'toggle-canvas-assistant', () => {
     if (!state.assistantRoot) return;
-    state.assistantRoot.hidden = !state.assistantRoot.hidden;
+    setCanvasAssistantOpen(state, state.assistantRoot.hidden);
     state.root.querySelectorAll('[data-action="toggle-canvas-assistant"]').forEach(button => {
       button.setAttribute('aria-pressed', state.assistantRoot.hidden ? 'false' : 'true');
     });
-    if (!state.assistantRoot.hidden) state.assistantApi?.render?.();
   });
   bindAction(state, 'download-selected-image', () => {
     downloadSelectedImage(state);
@@ -1510,13 +1515,26 @@ function bindEditorEvents(state) {
   });
   bindAction(state, 'toggle-timeline', () => {
     if (state.focusMode) state.focusMode = false;
+    if (isNarrowCanvasViewport()) {
+      setCanvasAssistantOpen(state, false);
+      setSidebarCollapsed(state, true, { persist: false });
+    }
     setTimelineCollapsed(state, !state.timelineCollapsed);
   });
   bindAction(state, 'toggle-sidebar', () => {
     // Manual chrome toggles leave focus mode.
     if (state.focusMode) state.focusMode = false;
+    if (isNarrowCanvasViewport()) {
+      setCanvasAssistantOpen(state, false);
+      setTimelineCollapsed(state, true, { persist: false });
+    }
     setSidebarCollapsed(state, !state.sidebarCollapsed);
     updateStatus(state, state.sidebarCollapsed ? '侧栏已折叠（B 展开）' : '侧栏已展开（B 收起）');
+  });
+  bindAction(state, 'close-mobile-panel', () => {
+    if (state.assistantRoot && !state.assistantRoot.hidden) setCanvasAssistantOpen(state, false);
+    if (!state.timelineCollapsed) setTimelineCollapsed(state, true, { persist: false });
+    if (!state.sidebarCollapsed) setSidebarCollapsed(state, true, { persist: false });
   });
   bindAction(state, 'toggle-focus-mode', () => {
     setFocusMode(state, !state.focusMode);
@@ -1900,6 +1918,7 @@ function bindEditorEvents(state) {
     endTimelineClipInteraction(state);
   };
   state._onWindowKeyDown = event => {
+    if (state.modalOverlay && !state.modalOverlay.hidden) return;
     const targetTag = event.target?.tagName || '';
     const editing = targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT' || event.target?.isContentEditable;
     const key = String(event.key || '').toLowerCase();
@@ -2121,8 +2140,8 @@ function bindEditorEvents(state) {
         return;
       }
       if (state.modalOverlay && !state.modalOverlay.hidden) {
-        state.modalOverlay.hidden = true;
-        state.modalOverlay.innerHTML = '';
+        closeCanvasModal(state);
+        return;
       }
       setSelectedNodes(state, [], { rerender: false, persist: false });
       setSelectedEdge(state, '');
@@ -3648,17 +3667,39 @@ async function applyEditResultAsNode(state, sourceNode, src, titlePrefix) {
   return resultNode;
 }
 
-function openCanvasModal(state, innerHtml) {
+function openCanvasModal(state, innerHtml, options = {}) {
   const overlay = state.modalOverlay;
   if (!overlay) return null;
+  state.canvasModalDialog?.close?.('replace', { restoreFocus: false });
   overlay.innerHTML = innerHtml;
   overlay.hidden = false;
+  const surface = overlay.querySelector('.canvas-modal-card') || overlay;
+  const role = surface.matches('[data-role="delete-confirm-modal"]') ? 'alertdialog' : 'dialog';
+  state.canvasModalDialog = globalThis.AppUtils?.dialog?.open?.({
+    element: surface,
+    container: overlay,
+    role,
+    label: surface.querySelector('h3')?.textContent?.trim() || '画布操作',
+    trigger: document.activeElement,
+    onClose: () => {
+      state.canvasModalDialog = null;
+      overlay.hidden = true;
+      overlay.innerHTML = '';
+      options.onClose?.();
+    }
+  }) || null;
   return overlay;
 }
 
 function closeCanvasModal(state) {
   const overlay = state.modalOverlay;
   if (!overlay) return;
+  if (state.canvasModalDialog) {
+    const handle = state.canvasModalDialog;
+    state.canvasModalDialog = null;
+    handle.close('close');
+    return;
+  }
   overlay.hidden = true;
   overlay.innerHTML = '';
 }
@@ -5567,6 +5608,8 @@ function confirmDeleteSelection(state, summary) {
       : (summary.lockedSkipped > 0
         ? `<p class="canvas-delete-warning">已默认跳过 ${summary.lockedSkipped} 个锁定节点；如需删除请先解锁。</p>`
         : '<p class="canvas-delete-warning">分组会连同成员一起删除，可稍后 Ctrl+Z 撤销。</p>');
+    let settled = false;
+    let onEnter = null;
     const overlay = openCanvasModal(state, `
       <div class="canvas-modal-card canvas-delete-modal" data-role="delete-confirm-modal">
         <h3>确认删除</h3>
@@ -5578,34 +5621,33 @@ function confirmDeleteSelection(state, summary) {
           <button type="button" data-role="delete-cancel">取消</button>
         </div>
       </div>
-    `);
+    `, {
+      onClose: () => {
+        if (settled) return;
+        settled = true;
+        overlay?.removeEventListener?.('keydown', onEnter);
+        resolve(false);
+      }
+    });
     if (!overlay) {
       resolve(true);
       return;
     }
-    let settled = false;
-    const onKey = event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        finish(false);
-      } else if (event.key === 'Enter') {
-        event.preventDefault();
-        finish(true);
-      }
-    };
     const finish = (ok) => {
       if (settled) return;
       settled = true;
-      window.removeEventListener('keydown', onKey, true);
+      overlay.removeEventListener('keydown', onEnter);
       closeCanvasModal(state);
       resolve(Boolean(ok));
     };
     overlay.querySelector('[data-role="delete-confirm"]')?.addEventListener('click', () => finish(true));
     overlay.querySelector('[data-role="delete-cancel"]')?.addEventListener('click', () => finish(false));
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) finish(false);
-    });
-    window.addEventListener('keydown', onKey, true);
+    onEnter = event => {
+      if (event.key !== 'Enter' || ['TEXTAREA', 'SELECT'].includes(event.target?.tagName)) return;
+      event.preventDefault();
+      finish(true);
+    };
+    overlay.addEventListener('keydown', onEnter);
     // Focus primary danger action for keyboard users.
     queueMicrotask(() => {
       overlay.querySelector('[data-role="delete-confirm"]')?.focus?.();
@@ -12045,6 +12087,81 @@ function setFocusMode(state, enabled, options = {}) {
   return state.focusMode;
 }
 
+function isNarrowCanvasViewport() {
+  try {
+    return globalThis.matchMedia?.('(max-width: 720px)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function setCanvasPanelInert(element, inert) {
+  if (!element) return;
+  if ('inert' in element) element.inert = Boolean(inert);
+  if (inert) element.setAttribute('inert', '');
+  else element.removeAttribute('inert');
+}
+
+function syncCanvasMobileSheets(state) {
+  const workspace = state?.root?.querySelector?.('.canvas-workspace');
+  if (!workspace) return;
+  const narrow = isNarrowCanvasViewport();
+  const assistantOpen = Boolean(state.assistantRoot && !state.assistantRoot.hidden);
+  const sidebarOpen = narrow && !state.sidebarCollapsed;
+  const timelineOpen = narrow && !state.timelineCollapsed;
+  workspace.classList.toggle('is-sidebar-sheet-open', sidebarOpen);
+  workspace.classList.toggle('is-timeline-sheet-open', timelineOpen);
+  workspace.classList.toggle('is-assistant-sheet-open', narrow && assistantOpen);
+
+  const backdrop = workspace.querySelector('[data-role="canvas-mobile-sheet-backdrop"]');
+  const panelOpen = sidebarOpen || timelineOpen || (narrow && assistantOpen);
+  if (backdrop) {
+    backdrop.hidden = !panelOpen;
+    backdrop.setAttribute('aria-hidden', String(!panelOpen));
+  }
+
+  if (state.assistantRoot) {
+    state.assistantRoot.hidden = !assistantOpen;
+    state.assistantRoot.setAttribute('aria-hidden', String(!assistantOpen));
+    setCanvasPanelInert(state.assistantRoot, !assistantOpen);
+  }
+  const sidebar = state.root.querySelector('.canvas-project-shell--editor');
+  if (sidebar) {
+    if (narrow) {
+      sidebar.hidden = !sidebarOpen;
+      sidebar.setAttribute('aria-hidden', String(!sidebarOpen));
+      setCanvasPanelInert(sidebar, !sidebarOpen);
+    } else {
+      sidebar.hidden = false;
+      sidebar.removeAttribute('aria-hidden');
+      setCanvasPanelInert(sidebar, false);
+    }
+  }
+  if (state.timelinePanel) {
+    if (narrow) {
+      state.timelinePanel.hidden = !timelineOpen;
+      state.timelinePanel.setAttribute('aria-hidden', String(!timelineOpen));
+      setCanvasPanelInert(state.timelinePanel, !timelineOpen);
+    } else {
+      state.timelinePanel.hidden = false;
+      state.timelinePanel.removeAttribute('aria-hidden');
+      setCanvasPanelInert(state.timelinePanel, false);
+    }
+  }
+}
+
+function setCanvasAssistantOpen(state, open) {
+  if (!state?.assistantRoot) return;
+  const next = Boolean(open);
+  if (next && isNarrowCanvasViewport()) {
+    setSidebarCollapsed(state, true, { persist: false });
+    setTimelineCollapsed(state, true, { persist: false });
+  }
+  state.assistantRoot.hidden = !next;
+  if (next) state.assistantApi?.render?.();
+  syncCanvasMobileSheets(state);
+}
+
 function setSidebarCollapsed(state, collapsed, options = {}) {
   state.sidebarCollapsed = Boolean(collapsed);
   if (!options.fromFocusMode && state.focusMode && !state.sidebarCollapsed) {
@@ -12083,6 +12200,7 @@ function setSidebarCollapsed(state, collapsed, options = {}) {
   requestAnimationFrame(() => {
     try { syncStageSize(state); } catch {}
   });
+  syncCanvasMobileSheets(state);
 }
 
 function setTimelineCollapsed(state, collapsed, options = {}) {
@@ -12127,6 +12245,7 @@ function setTimelineCollapsed(state, collapsed, options = {}) {
   requestAnimationFrame(() => {
     try { syncStageSize(state); } catch {}
   });
+  syncCanvasMobileSheets(state);
 }
 
 function syncViewToggleButtons(state) {

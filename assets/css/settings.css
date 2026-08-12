@@ -28,7 +28,7 @@ body.settings-drawer-open .mobile-generate-bar {
 .settings-drawer-overlay {
   position: fixed;
   inset: 0;
-  z-index: 990;
+  z-index: var(--ui-z-overlay, 900);
   background: rgba(4, 7, 9, 0.72);
   opacity: 0;
   pointer-events: none;
@@ -43,7 +43,7 @@ body.settings-drawer-open .mobile-generate-bar {
 .settings-drawer {
   position: fixed;
   inset: 50% auto auto 50%;
-  z-index: 1000;
+  z-index: var(--ui-z-workspace, 1000);
   width: min(980px, calc(100vw - 32px));
   height: min(760px, calc(100dvh - 32px));
   display: grid;
@@ -1013,6 +1013,7 @@ body.settings-drawer-open .mobile-generate-bar {
     inset: 0;
     width: 100vw;
     height: 100dvh;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     border: 0;
     border-radius: 0;
     transform: translateY(8px);
@@ -1048,7 +1049,7 @@ body.settings-drawer-open .mobile-generate-bar {
 
   .settings-panel {
     padding-top: 14px;
-    padding-bottom: 18px;
+    padding-bottom: max(30px, calc(18px + env(safe-area-inset-bottom, 0px)));
   }
 
   .platform-sidebar {

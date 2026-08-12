@@ -526,6 +526,7 @@
   global.ImageRatio = {
     ASPECT_VALUES: [...ASPECT_VALUES],
     VIDEO_PROTOCOL_ASPECTS,
+    RESOLUTION_LONG_SIDE,
     normalizeAspectRatio,
     normalizeResolution,
     parseAspectRatio,

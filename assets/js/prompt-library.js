@@ -1,8 +1,15 @@
 const BATCH_SIZE = 30;
 const CATEGORIES = ['人像摄影', '商品品牌', '海报排版', '插画动漫', '信息图表', '空间场景', '其他'];
+const DIRECT_FALLBACK_DELAY_MS = 3500;
+const PROXY_FALLBACK_DELAY_MS = 6000;
+const RELAY_FALLBACK_DELAY_MS = 8000;
 
 let activeState = null;
 let imageObserver = null;
+let imageFallbackObserver = null;
+let loadMoreScrollRoot = null;
+let loadMoreScrollHandler = null;
+const imageFallbackTimers = new WeakMap();
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -24,6 +31,191 @@ function safeUrl(value, { allowData = true } = {}) {
   return '';
 }
 
+function buildCommunityMediaProxyUrl(source) {
+  const original = safeUrl(source, { allowData: false });
+  if (!/^https:\/\//i.test(original)) return '';
+  try {
+    const endpoint = globalThis.APP_CONFIG?.apiProxyEndpoint || 'api-proxy.php';
+    const proxy = new URL(endpoint, window.location.href);
+    proxy.searchParams.set('media', '1');
+    proxy.searchParams.set('target', original);
+    return proxy.href;
+  } catch {
+    return '';
+  }
+}
+
+function buildCommunityMediaRelayUrl(source) {
+  const original = safeUrl(source, { allowData: false });
+  if (!/^https:\/\//i.test(original)) return '';
+  try {
+    const target = new URL(original);
+    const allowed = globalThis.APP_CONFIG?.communityRelayHosts || [
+      'pbs.twimg.com',
+      'linux.do',
+      'i.mji.rip',
+      'i.mij.rip'
+    ];
+    if (!allowed.includes(target.hostname.toLowerCase())) return '';
+    const relay = new URL('https://images.weserv.nl/');
+    relay.searchParams.set('url', original);
+    relay.searchParams.set('we', '');
+    return relay.href;
+  } catch {
+    return '';
+  }
+}
+
+function getPromptImageCandidates(source, { preferProxy = false, useRelay = true, fallbackSources = [] } = {}) {
+  const original = safeUrl(source);
+  if (!original) return [];
+  const sources = [original, ...fallbackSources]
+    .map(item => safeUrl(item))
+    .filter(Boolean);
+  const candidates = [];
+
+  sources.forEach((item, index) => {
+    if (/^data:/i.test(item)) {
+      candidates.push(item);
+      return;
+    }
+
+    const proxy = buildCommunityMediaProxyUrl(item);
+    const relay = useRelay ? buildCommunityMediaRelayUrl(item) : '';
+    if (index === 0 && preferProxy && proxy) candidates.push(proxy);
+    candidates.push(item);
+    if (proxy) candidates.push(proxy);
+    if (relay) candidates.push(relay);
+  });
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function addImageCacheBust(source) {
+  try {
+    const url = new URL(source, window.location.href);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      url.searchParams.set('prompt-library-retry', String(Date.now()));
+      return url.href;
+    }
+  } catch {}
+  return source;
+}
+
+function renderPromptImage(source, alt, options = {}) {
+  const original = safeUrl(source);
+  if (!original) return '';
+  const candidates = getPromptImageCandidates(original, options);
+  const initial = candidates[0] || original;
+  const proxy = candidates.find(c => c.startsWith('data:') ? false : /api-proxy|\.php\?/i.test(c) || c.includes('media=1')) || '';
+  const relay = candidates.find(c => /images\.weserv\.nl|wsrv\.nl/i.test(c)) || '';
+  const parts = [
+    '<img',
+    'src="' + escapeHtml(initial) + '"',
+    'alt="' + escapeHtml(alt) + '"',
+    'loading="lazy"',
+    'decoding="async"',
+    'referrerpolicy="no-referrer"',
+    'data-image-original-url="' + escapeHtml(original) + '"',
+    'data-image-candidates="' + escapeHtml(JSON.stringify(candidates)) + '"'
+  ];
+  if (proxy) parts.push('data-image-proxy-url="' + escapeHtml(proxy) + '"');
+  if (relay) parts.push('data-image-relay-url="' + escapeHtml(relay) + '"');
+  parts.push('data-image-attempt="0">');
+  return parts.join(' ');
+}
+
+function clearImageFallbackTimer(image) {
+  const timer = imageFallbackTimers.get(image);
+  if (timer) window.clearTimeout(timer);
+  imageFallbackTimers.delete(image);
+}
+
+function getImageCandidateUrls(image) {
+  if (!image) return [];
+  try {
+    const encoded = image.dataset?.imageCandidates || '';
+    const parsed = encoded ? JSON.parse(encoded) : [];
+    if (Array.isArray(parsed)) {
+      const candidates = parsed.map(item => safeUrl(item)).filter(Boolean);
+      if (candidates.length) return [...new Set(candidates)];
+    }
+  } catch {}
+
+  const original = safeUrl(image.dataset?.imageOriginalUrl);
+  const proxy = safeUrl(image.dataset?.imageProxyUrl, { allowData: false });
+  const relay = safeUrl(image.dataset?.imageRelayUrl, { allowData: false });
+  return [...new Set([original, proxy, relay].filter(Boolean))];
+}
+
+function getImageFallbackDelay(url) {
+  if (/images\.weserv\.nl|wsrv\.nl/i.test(url)) return RELAY_FALLBACK_DELAY_MS;
+  if (/api-proxy|\.php\?|media=1/i.test(url)) return PROXY_FALLBACK_DELAY_MS;
+  return DIRECT_FALLBACK_DELAY_MS;
+}
+
+function getImageFallbackStages(image) {
+  return getImageCandidateUrls(image).map(url => ({
+    url,
+    delay: getImageFallbackDelay(url)
+  }));
+}
+
+function scheduleImageFallback(image) {
+  clearImageFallbackTimer(image);
+  if (image.complete && image.naturalWidth > 0) return;
+  const stages = getImageFallbackStages(image);
+  const attempt = Number(image.dataset.imageAttempt) || 0;
+  const next = stages[attempt + 1];
+  if (!next) return;
+  const timer = window.setTimeout(() => {
+    imageFallbackTimers.delete(image);
+    if (!image.isConnected) return;
+    if (image.complete && image.naturalWidth > 0) return;
+    const currentAttempt = Number(image.dataset.imageAttempt) || 0;
+    if (currentAttempt !== attempt) return;
+    image.dataset.imageAttempt = String(attempt + 1);
+    image.src = addImageCacheBust(next.url);
+    scheduleImageFallback(image);
+  }, next.delay);
+  imageFallbackTimers.set(image, timer);
+}
+
+function ensureImageFallbackObserver() {
+  if (imageFallbackObserver) return imageFallbackObserver;
+  if (typeof IntersectionObserver === 'undefined') return null;
+  imageFallbackObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const image = entry.target;
+      if (entry.isIntersecting) {
+        if (!image.complete || image.naturalWidth === 0) {
+          scheduleImageFallback(image);
+        }
+      } else {
+        clearImageFallbackTimer(image);
+      }
+    });
+  }, { rootMargin: '400px 0px', threshold: 0.01 });
+  return imageFallbackObserver;
+}
+
+function observeImageFallback(image) {
+  const observer = ensureImageFallbackObserver();
+  if (!observer) {
+    // Fallback: schedule immediately
+    scheduleImageFallback(image);
+    return;
+  }
+  observer.observe(image);
+}
+
+function disconnectImageFallbackObserver() {
+  if (imageFallbackObserver) {
+    imageFallbackObserver.disconnect();
+    imageFallbackObserver = null;
+  }
+}
+
 function getBridge() {
   return globalThis.PromptLibraryBridge || globalThis.AgentBridge || {};
 }
@@ -33,6 +225,7 @@ function getCanvasBridge() {
 }
 
 function setWorkspaceNavActive(workspace) {
+  if (window.AppUtils?.setActiveWorkspace) return window.AppUtils.setActiveWorkspace(workspace);
   const value = String(workspace || 'studio');
   document.querySelectorAll('[data-workspace-nav]').forEach(button => {
     button.classList.toggle('is-active', button.dataset.workspaceNav === value);
@@ -427,12 +620,16 @@ async function resolveHistoryDraftCover(state) {
 function renderCard(entry) {
   const cover = safeUrl(entry.coverUrl);
   const tags = entry.tags.slice(0, 3).map(tag => `<span class="prompt-library-tag">${escapeHtml(tag)}</span>`).join('');
+  const preview = entry.description || String(entry.content || '').replace(/\s+/g, ' ').trim().slice(0, 140) + (String(entry.content || '').replace(/\s+/g, ' ').trim().length > 140 ? '...' : '');
   const fallback = `<div class="prompt-library-image-fallback"><i data-lucide="image-off" aria-hidden="true"></i><span>暂无预览</span></div>`;
   return `
     <article class="prompt-library-card" data-prompt-card="${escapeHtml(entry.id)}">
       <button type="button" class="prompt-library-card-media" data-action="detail" data-prompt-id="${escapeHtml(entry.id)}" aria-label="查看 ${escapeHtml(entry.title)}">
         <div class="prompt-library-image-frame" data-image-frame>
-          ${cover ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(entry.title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : fallback}
+          ${cover ? renderPromptImage(cover, entry.title, {
+            preferProxy: entry.origin === 'community',
+            fallbackSources: entry.referenceImageUrls.slice(0, 4)
+          }) : fallback}
           <span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span>
         </div>
       </button>
@@ -441,7 +638,7 @@ function renderCard(entry) {
           <button type="button" class="prompt-library-card-title" data-action="detail" data-prompt-id="${escapeHtml(entry.id)}">${escapeHtml(entry.title)}</button>
           <span class="prompt-library-source ${sourceClass(entry)}">${escapeHtml(sourceLabel(entry))}</span>
         </div>
-        <p class="prompt-library-card-description">${escapeHtml(entry.description || entry.content)}</p>
+        <p class="prompt-library-card-description">${escapeHtml(preview)}</p>
         <div class="prompt-library-card-meta">
           <span>${escapeHtml(entry.category)}</span>
           ${entry.author ? `<span>${escapeHtml(entry.author)}</span>` : ''}
@@ -496,8 +693,14 @@ function renderDetail(state) {
           <div class="prompt-library-detail-images">
             ${allImages.length ? allImages.map((image, index) => {
               const url = safeUrl(image.url);
+              const imageMarkup = url
+                ? renderPromptImage(url, image.label, {
+                  preferProxy: entry.origin === 'community',
+                  fallbackSources: image.cover ? entry.referenceImageUrls.slice(0, 4) : []
+                })
+                : '';
               return `<div class="prompt-library-detail-image ${image.cover ? 'is-cover' : ''}">
-                ${url ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(image.label)}" loading="lazy" referrerpolicy="no-referrer">` : '<span>暂无预览</span>'}
+                ${url ? `<div class="prompt-library-image-frame" data-image-frame>${imageMarkup}<span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span></div>` : '<span>暂无预览</span>'}
                 ${!image.cover ? `<label class="prompt-library-detail-check"><input type="checkbox" data-ref-index="${index - (entry.coverUrl ? 1 : 0)}"${detail.references.has(index - (entry.coverUrl ? 1 : 0)) ? ' checked' : ''}>${escapeHtml(image.label)}</label>` : `<span class="prompt-library-detail-image-label">${escapeHtml(image.label)}</span>`}
                 ${url ? `<button type="button" class="prompt-library-image-retry" data-action="retry-image" data-prompt-id="${escapeHtml(entry.id)}" data-image-url="${escapeHtml(image.url)}" hidden>重试图片</button>` : ''}
               </div>`;
@@ -548,7 +751,7 @@ function renderLocalEditor(state) {
   const categories = CATEGORIES.map(value => '<option value="' + escapeHtml(value) + '"' + (value === category ? ' selected' : '') + '>' + escapeHtml(value) + '</option>').join('');
   const cover = safeUrl(editor.coverUrl || entry.coverUrl);
   const coverMarkup = cover
-    ? '<div data-image-frame><img src="' + escapeHtml(cover) + '" alt="效果示例" data-role="cover-preview-image" loading="lazy"><span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span></div>'
+    ? '<div data-image-frame>' + renderPromptImage(cover, '效果示例', { preferProxy: false }).replace('<img ', '<img data-role="cover-preview-image" ') + '<span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span></div>'
     : '<div class="prompt-library-cover-empty"><i data-lucide="image-plus" aria-hidden="true"></i><span>可选效果示例</span></div>';
   const coverStatus = editor.coverProcessing ? '图片处理中…' : (editor.coverError || (cover && editor.coverRemote ? '仅远程链接' : '支持 PNG、JPEG、WebP，最大 20MB'));
   return [
@@ -581,14 +784,15 @@ function renderLocalEditor(state) {
 function renderMineHeaderActions(state) {
   if (state.tab !== 'mine') return '';
   return [
-    '<button type="button" class="prompt-library-header-btn" data-action="new-local" title="新增个人提示词"><i data-lucide="plus" aria-hidden="true"></i><span>新增</span></button>',
-    '<button type="button" class="prompt-library-header-btn" data-action="import-local" title="导入提示词文件"><i data-lucide="upload" aria-hidden="true"></i><span>导入</span></button>',
-    '<button type="button" class="prompt-library-header-btn" data-action="export-local" title="导出个人提示词"><i data-lucide="download" aria-hidden="true"></i><span>导出</span></button>',
+    '<button type="button" class="prompt-library-header-btn" data-action="new-local" aria-label="新增个人提示词" title="新增个人提示词"><i data-lucide="plus" aria-hidden="true"></i><span>新增</span></button>',
+    '<button type="button" class="prompt-library-header-btn" data-action="import-local" aria-label="导入提示词文件" title="导入提示词文件"><i data-lucide="upload" aria-hidden="true"></i><span>导入</span></button>',
+    '<button type="button" class="prompt-library-header-btn" data-action="export-local" aria-label="导出个人提示词" title="导出个人提示词"><i data-lucide="download" aria-hidden="true"></i><span>导出</span></button>',
     '<input type="file" hidden data-role="import-file" accept=".json,.txt,.md,.csv,application/json,text/plain,text/csv">'
   ].join('');
 }
 
 function renderEditor(state) {
+  closePromptDialogHandles(state);
   const filtered = filteredEntries(state);
   const visible = filtered.slice(0, state.visibleCount);
   const sources = [...new Set(state.entries.filter(entry => entry.sourceId).map(entry => entry.sourceId))].sort();
@@ -604,17 +808,17 @@ function renderEditor(state) {
     <section class="prompt-library-workspace" aria-label="提示词库">
       <header class="prompt-library-header">
         <div class="prompt-library-header-main">
-          <button type="button" class="prompt-library-back" data-action="close"><i data-lucide="arrow-left" aria-hidden="true"></i><span>${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}</span></button>
+          <button type="button" class="prompt-library-back" data-action="close" aria-label="返回上一级界面" title="返回上一级界面"><i data-lucide="arrow-left" aria-hidden="true"></i><span>${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}</span></button>
           <div><span class="prompt-library-eyebrow">Prompt library</span><h1>提示词库</h1></div>
           <span class="prompt-library-count" aria-live="polite">${state.loading ? '加载中' : `${filtered.length} 条`}</span>
         </div>
-        <div class="prompt-library-header-actions">${renderMineHeaderActions(state)}<button type="button" class="prompt-library-header-btn" data-action="open-canvas"><i data-lucide="infinity" aria-hidden="true"></i><span>无限画布</span></button></div>
+        <div class="prompt-library-header-actions">${renderMineHeaderActions(state)}<button type="button" class="prompt-library-header-btn" data-action="open-canvas" aria-label="打开无限画布" title="打开无限画布"><i data-lucide="infinity" aria-hidden="true"></i><span>无限画布</span></button></div>
       </header>
-      <div class="prompt-library-content">
+      <div class="prompt-library-content" id="prompt-library-panel" role="tabpanel" aria-labelledby="prompt-library-tab-${state.tab}">
         <div class="prompt-library-toolbar">
           <div class="prompt-library-tabs" role="tablist" aria-label="提示词范围">
-            <button type="button" class="prompt-library-tab${state.tab === 'discover' ? ' is-active' : ''}" data-action="tab" data-tab="discover" role="tab" aria-selected="${state.tab === 'discover'}">发现</button>
-            <button type="button" class="prompt-library-tab${state.tab === 'mine' ? ' is-active' : ''}" data-action="tab" data-tab="mine" role="tab" aria-selected="${state.tab === 'mine'}">我的</button>
+            <button type="button" class="prompt-library-tab${state.tab === 'discover' ? ' is-active' : ''}" id="prompt-library-tab-discover" data-action="tab" data-tab="discover" role="tab" aria-selected="${state.tab === 'discover'}" aria-controls="prompt-library-panel" tabindex="${state.tab === 'discover' ? '0' : '-1'}">发现</button>
+            <button type="button" class="prompt-library-tab${state.tab === 'mine' ? ' is-active' : ''}" id="prompt-library-tab-mine" data-action="tab" data-tab="mine" role="tab" aria-selected="${state.tab === 'mine'}" aria-controls="prompt-library-panel" tabindex="${state.tab === 'mine' ? '0' : '-1'}">我的</button>
           </div>
           <label class="prompt-library-search"><i data-lucide="search" aria-hidden="true"></i><input type="search" data-role="search" placeholder="搜索标题、正文、作者或标签" value="${escapeHtml(state.query)}" autocomplete="off"><kbd>/</kbd></label>
           <div class="prompt-library-filters">
@@ -626,7 +830,7 @@ function renderEditor(state) {
         ${state.error ? `<div class="prompt-library-error"><span>${escapeHtml(emptyText)}</span><button type="button" data-action="retry">重试</button></div>` : ''}
         ${emptyText && !state.error ? `<div class="prompt-library-empty-state"><i data-lucide="library" aria-hidden="true"></i><strong>${escapeHtml(emptyText)}</strong></div>` : ''}
         <div class="prompt-library-grid" data-role="grid">${visible.map(renderCard).join('')}</div>
-        ${hasMore ? '<div class="prompt-library-load-more" data-role="load-more"><span>继续加载</span></div>' : ''}
+        ${hasMore ? '<div class="prompt-library-load-more" data-role="load-more"><button type="button" class="prompt-library-load-more-button" data-action="load-more"><i data-lucide="chevrons-down" aria-hidden="true"></i><span>加载更多</span></button></div>' : ''}
         ${!state.loading && !state.error && filtered.length ? '<p class="prompt-library-attribution-note">社区提示词和图片归原作者及来源项目所有，本站仅保留提示词元数据和远程链接。</p>' : ''}
       </div>
       ${renderDetail(state)}
@@ -637,22 +841,59 @@ function renderEditor(state) {
 
   bindImageErrors(state.root);
   observeLoadMore(state);
+  mountPromptDialogs(state);
   try { globalThis.lucide?.createIcons?.(); } catch {}
 }
 
 function bindImageErrors(root) {
   root.querySelectorAll('img').forEach(image => {
-    image.addEventListener('error', () => {
+    if (image.dataset.promptLibraryImageBound === 'true') return;
+    image.dataset.promptLibraryImageBound = 'true';
+    const stages = getImageFallbackStages(image);
+    const hasFallback = stages.length > 1;
+    const handleLoad = () => {
+      clearImageFallbackTimer(image);
       const frame = image.closest('[data-image-frame]') || image.closest('.prompt-library-detail-image');
       if (!frame) return;
+      frame.classList.remove('is-broken');
+      image.hidden = false;
+      const status = frame.querySelector('[data-image-status]');
+      if (status) status.hidden = true;
+      const retry = frame.querySelector('[data-action="retry-image"]')
+        || image.closest('.prompt-library-detail-image')?.querySelector('[data-action="retry-image"]')
+        || image.closest('[data-prompt-card]')?.querySelector('[data-action="retry-image"]');
+      if (retry) retry.hidden = true;
+    };
+    const handleError = () => {
+      clearImageFallbackTimer(image);
+      const frame = image.closest('[data-image-frame]') || image.closest('.prompt-library-detail-image');
+      if (!frame) return;
+      const currentAttempt = Number(image.dataset.imageAttempt) || 0;
+      const nextAttempt = currentAttempt + 1;
+      const nextStage = stages[nextAttempt];
+      const status = frame.querySelector('[data-image-status]');
+      const retry = frame.querySelector('[data-action="retry-image"]')
+        || image.closest('.prompt-library-detail-image')?.querySelector('[data-action="retry-image"]')
+        || image.closest('[data-prompt-card]')?.querySelector('[data-action="retry-image"]');
+      if (nextStage) {
+        image.dataset.imageAttempt = String(nextAttempt);
+        image.hidden = false;
+        frame.classList.remove('is-broken');
+        if (status) status.hidden = true;
+        if (retry) retry.hidden = true;
+        image.src = addImageCacheBust(nextStage.url);
+        scheduleImageFallback(image);
+        return;
+      }
       frame.classList.add('is-broken');
       image.hidden = true;
-      const status = frame.querySelector('[data-image-status]');
       if (status) status.hidden = false;
-      const retry = frame.querySelector('[data-action="retry-image"]')
-        || image.closest('[data-prompt-card]')?.querySelector('[data-action="retry-image"]');
       if (retry) retry.hidden = false;
-    }, { once: true });
+    };
+    image.addEventListener('load', handleLoad);
+    image.addEventListener('error', handleError);
+    if (hasFallback) observeImageFallback(image);
+    if (image.complete && image.naturalWidth > 0) handleLoad();
   });
 }
 
@@ -668,29 +909,160 @@ function retryImage(state, button, entry) {
   image.hidden = false;
   frame?.classList.remove('is-broken');
   if (status) status.hidden = true;
-  let retrySource = source;
-  try {
-    const url = new URL(source, window.location.href);
-    if (url.protocol === 'http:' || url.protocol === 'https:') {
-      url.searchParams.set('prompt-library-retry', String(Date.now()));
-      retrySource = url.href;
-    }
-  } catch {}
-  image.src = retrySource;
+  const storedCandidates = getImageCandidateUrls(image);
+  const candidates = storedCandidates.length
+    ? storedCandidates
+    : getPromptImageCandidates(source, { preferProxy: entry?.origin === 'community' });
+  const currentAttempt = Number(image.dataset.imageAttempt) || 0;
+  const nextAttempt = candidates.length > 1 ? (currentAttempt + 1) % candidates.length : 0;
+  image.dataset.imageAttempt = String(nextAttempt);
+  image.src = addImageCacheBust(candidates[nextAttempt] || source);
+  if (candidates.length > 1) scheduleImageFallback(image);
   setNotice(state, '正在重新加载图片', 'info');
 }
 
-function observeLoadMore(state) {
+function appendNextBatch(state) {
+  if (state.isAppending) return;
+  const filtered = filteredEntries(state);
+  const prevCount = state.visibleCount;
+  const nextCount = Math.min(prevCount + BATCH_SIZE, filtered.length);
+  if (nextCount <= prevCount) return;
+  const grid = state.root.querySelector('[data-role="grid"]');
+  if (!grid) { state.visibleCount = nextCount; renderEditor(state); return; }
+  state.isAppending = true;
+  try {
+    const newCards = filtered.slice(prevCount, nextCount);
+    state.visibleCount = nextCount;
+    grid.insertAdjacentHTML('beforeend', newCards.map(renderCard).join(''));
+    bindImageErrors(grid);
+    const countEl = state.root.querySelector('.prompt-library-count');
+    if (countEl) countEl.textContent = `${filtered.length} 条`;
+    if (nextCount >= filtered.length) {
+      state.root.querySelector('[data-role="load-more"]')?.remove();
+      stopLoadMoreObservation();
+    }
+    try { globalThis.lucide?.createIcons?.(); } catch {}
+  } finally {
+    state.isAppending = false;
+  }
+}
+
+function stopLoadMoreObservation() {
   imageObserver?.disconnect?.();
   imageObserver = null;
+  disconnectImageFallbackObserver();
+  if (loadMoreScrollRoot && loadMoreScrollHandler) {
+    loadMoreScrollRoot.removeEventListener('scroll', loadMoreScrollHandler);
+  }
+  loadMoreScrollRoot = null;
+  loadMoreScrollHandler = null;
+}
+
+function observeLoadMore(state) {
+  stopLoadMoreObservation();
   const sentinel = state.root.querySelector('[data-role="load-more"]');
-  if (!sentinel || !globalThis.IntersectionObserver) return;
-  imageObserver = new IntersectionObserver(entries => {
-    if (!entries.some(entry => entry.isIntersecting)) return;
-    state.visibleCount += BATCH_SIZE;
-    renderEditor(state);
-  }, { rootMargin: '640px' });
-  imageObserver.observe(sentinel);
+  if (!sentinel) return;
+
+  const appendIfNearBottom = () => {
+    if (activeState !== state || state.isAppending) return;
+    const root = state.root;
+    if (root.scrollTop + root.clientHeight >= root.scrollHeight - 720) appendNextBatch(state);
+  };
+
+  if (globalThis.IntersectionObserver) {
+    imageObserver = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      appendNextBatch(state);
+    }, { root: state.root, rootMargin: '640px' });
+    imageObserver.observe(sentinel);
+    return;
+  }
+
+  loadMoreScrollRoot = state.root;
+  loadMoreScrollHandler = appendIfNearBottom;
+  state.root.addEventListener('scroll', loadMoreScrollHandler, { passive: true });
+}
+
+function closePromptDialogHandles(state) {
+  (state.dialogHandles || []).forEach(handle => {
+    try { handle.close('rerender', { restoreFocus: false }); } catch {}
+  });
+  state.dialogHandles = [];
+}
+
+function mountOverlay(state, html) {
+  const workspace = state.root.querySelector('.prompt-library-workspace');
+  if (!workspace) { renderEditor(state); return; }
+  workspace.insertAdjacentHTML('beforeend', html);
+  const overlay = workspace.lastElementChild;
+  bindImageErrors(overlay);
+  try { globalThis.lucide?.createIcons?.(); } catch {}
+  mountPromptDialogs(state);
+}
+
+function closeOverlay(state, selector) {
+  const overlay = state.root.querySelector(selector);
+  if (!overlay) return;
+  state.dialogHandles = (state.dialogHandles || []).filter(handle => {
+    if (handle?._overlayEl === overlay) {
+      try { handle.close('overlay-close', { restoreFocus: false }); } catch {}
+      return false;
+    }
+    return true;
+  });
+  overlay.remove();
+}
+
+function mountPromptDialogs(state) {
+  const dialogApi = window.AppUtils?.dialog;
+  if (!dialogApi?.open) return;
+  const root = state.root;
+  const register = (overlaySelector, surfaceSelector, options = {}) => {
+    const overlay = root.querySelector(overlaySelector);
+    const surface = overlay?.querySelector(surfaceSelector);
+    if (!overlay || !surface) return;
+    if (overlay.dataset.dialogBound === 'true') return;
+    overlay.dataset.dialogBound = 'true';
+    const handle = dialogApi.open({
+      element: surface,
+      container: overlay,
+      closeOnBackdrop: options.closeOnBackdrop !== false,
+      closeOnEscape: options.closeOnEscape !== false,
+      restoreFocus: false,
+      onClose: options.onClose,
+      role: options.role || 'dialog'
+    });
+    if (handle) handle._overlayEl = overlay;
+    state.dialogHandles.push(handle);
+    if (options.backdropHandler) overlay.addEventListener('click', options.backdropHandler, { once: true });
+  };
+  register('[data-role="detail-overlay"]', '[role="dialog"]', {
+    onClose: () => {
+      if (activeState !== state) return;
+      state.detail = null;
+    }
+  });
+  register('[data-role="target-overlay"]', '[role="dialog"]', {
+    onClose: () => {
+      if (activeState !== state) return;
+      const resolve = state.targetPicker?.resolve;
+      state.targetPicker = null;
+      resolve?.(null);
+    }
+  });
+  register('[data-role="local-editor-overlay"]', '[role="dialog"]', {
+    closeOnBackdrop: false,
+    closeOnEscape: false,
+    backdropHandler: event => {
+      const overlay = event.currentTarget;
+      if (event.target !== overlay || activeState !== state) return;
+      void confirmCloseLocalEditor(state).then(allowed => {
+        if (!allowed || activeState !== state) return;
+        state.localEditor = null;
+        closeOverlay(state, '[data-role="local-editor-overlay"]');
+      });
+    }
+  });
 }
 
 function setNotice(state, message, tone = 'success', action = null) {
@@ -700,6 +1072,9 @@ function setNotice(state, message, tone = 'success', action = null) {
   const notice = document.createElement('div');
   notice.className = `prompt-library-notice is-${tone}`;
   notice.dataset.role = 'notice';
+  notice.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
+  notice.setAttribute('aria-live', tone === 'danger' ? 'assertive' : 'polite');
+  notice.setAttribute('aria-atomic', 'true');
   const copy = document.createElement('span');
   copy.textContent = message;
   notice.appendChild(copy);
@@ -713,6 +1088,16 @@ function setNotice(state, message, tone = 'success', action = null) {
   }
   state.root.querySelector('.prompt-library-workspace')?.appendChild(notice);
   window.setTimeout(() => notice.remove(), 3200);
+}
+
+function confirmPromptAction(options = {}) {
+  const dialogConfirm = window.AppUtils?.dialog?.confirm;
+  if (typeof dialogConfirm !== 'function') return Promise.resolve(false);
+  try {
+    return Promise.resolve(dialogConfirm(options));
+  } catch {
+    return Promise.resolve(false);
+  }
 }
 
 function resetTabFilters(state, tab) {
@@ -781,10 +1166,12 @@ function chooseFillMode(state) {
         <div class="prompt-library-choice-actions"><button type="button" data-choice="cancel">取消</button><button type="button" data-choice="append">追加</button><button type="button" class="is-primary" data-choice="replace">替换</button></div>
       </section>`;
     let finished = false;
+    let dialogHandle = null;
     const finish = value => {
       if (finished) return;
       finished = true;
       if (state.fillChoice?.overlay === overlay) state.fillChoice = null;
+      dialogHandle?.close?.('choice', { restoreFocus: false });
       overlay.remove();
       resolve(value);
     };
@@ -795,6 +1182,24 @@ function chooseFillMode(state) {
     });
     state.fillChoice = { overlay, finish };
     state.root.querySelector('.prompt-library-workspace')?.appendChild(overlay);
+    const surface = overlay.querySelector('[role="dialog"]');
+    dialogHandle = window.AppUtils?.dialog?.open?.({
+      element: surface,
+      container: overlay,
+      closeOnBackdrop: false,
+      closeOnEscape: false,
+      restoreFocus: false
+    }) || null;
+    if (!dialogHandle) {
+      const escapeHandler = event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish('cancel');
+      };
+      overlay.addEventListener('keydown', escapeHandler);
+      state.fillChoice.escapeHandler = escapeHandler;
+    }
     overlay.querySelector('[data-choice="replace"]')?.focus();
   });
 }
@@ -837,7 +1242,7 @@ async function resolveCanvasTarget(state) {
     : [];
   return await new Promise(resolve => {
     state.targetPicker = { projects: Array.isArray(projects) ? projects : [], resolve };
-    renderEditor(state);
+    mountOverlay(state, renderTargetPicker(state));
   });
 }
 
@@ -869,7 +1274,7 @@ async function addEntry(state, entry, options = {}) {
 
 function openDetail(state, entry) {
   state.detail = { entry, references: new Set(), useCover: false };
-  renderEditor(state);
+  mountOverlay(state, renderDetail(state));
 }
 
 function createLocalEditor(mode, entry = {}) {
@@ -893,13 +1298,19 @@ function createLocalEditor(mode, entry = {}) {
 
 async function editLocalEntry(state, entry) {
   state.localEditor = createLocalEditor('edit', entry);
-  state.detail = null;
-  renderEditor(state);
+  if (state.detail) { state.detail = null; closeOverlay(state, '[data-role="detail-overlay"]'); }
+  mountOverlay(state, renderLocalEditor(state));
   window.setTimeout(() => state.root.querySelector('[data-role="local-form"] [name="title"]')?.focus(), 0);
 }
 
 async function deleteLocalEntry(state, entry) {
-  if (!window.confirm(`确定删除“${entry.title}”吗？`)) return;
+  const confirmed = await confirmPromptAction({
+    title: '删除提示词',
+    message: `确定删除“${entry.title}”吗？此操作不可恢复。`,
+    confirmLabel: '删除',
+    danger: true
+  });
+  if (!confirmed) return;
   const bridge = getBridge();
   if (typeof bridge.deleteLocalPrompt !== 'function') throw new Error('本地提示词删除不可用');
   await bridge.deleteLocalPrompt(entry.id);
@@ -971,6 +1382,8 @@ async function saveLocalEntry(state, form) {
   }
   state.localEditor = null;
   state.detail = null;
+  closeOverlay(state, '[data-role="local-editor-overlay"]');
+  closeOverlay(state, '[data-role="detail-overlay"]');
   state.tab = 'mine';
   state.visibleCount = BATCH_SIZE;
   invalidateEntryTab(state, 'mine');
@@ -1008,7 +1421,7 @@ function updateCoverPickerUi(state) {
   const remove = picker.querySelector('[data-action="remove-cover"]');
   if (preview) {
     preview.innerHTML = cover
-      ? '<div data-image-frame><img src="' + escapeHtml(cover) + '" alt="效果示例" data-role="cover-preview-image" loading="lazy"><span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span></div>'
+      ? '<div data-image-frame>' + renderPromptImage(cover, '效果示例', { preferProxy: false }).replace('<img ', '<img data-role="cover-preview-image" ') + '<span class="prompt-library-image-status" data-image-status hidden>图片暂时无法加载</span></div>'
       : '<div class="prompt-library-cover-empty"><i data-lucide="image-plus" aria-hidden="true"></i><span>可选效果示例</span></div>';
   }
   if (status) status.textContent = editor.coverProcessing
@@ -1026,6 +1439,7 @@ function updateCoverPickerUi(state) {
   if (window.lucide?.createIcons) {
     try { window.lucide.createIcons({ attrs: { 'data-prompt-cover': 'true' } }); } catch {}
   }
+  bindImageErrors(state.root);
   updateLocalEditorControls(state);
 }
 
@@ -1067,7 +1481,7 @@ function removeLocalCover(state) {
   updateCoverPickerUi(state);
 }
 
-function confirmCloseLocalEditor(state) {
+async function confirmCloseLocalEditor(state) {
   const editor = state.localEditor;
   if (!editor) return true;
   if (editor.saving) {
@@ -1075,9 +1489,14 @@ function confirmCloseLocalEditor(state) {
     return false;
   }
   if (!editor.dirty && !editor.coverProcessing && !editor.saving) return true;
-  return window.confirm(editor.saving || editor.coverProcessing
-    ? '图片或提示词仍在处理中，确定放弃当前修改吗？'
-    : '当前提示词有未保存修改，确定关闭吗？');
+  return confirmPromptAction({
+    title: '放弃未保存修改',
+    message: editor.saving || editor.coverProcessing
+      ? '图片或提示词仍在处理中，确定放弃当前修改吗？'
+      : '当前提示词有未保存修改，确定关闭吗？',
+    confirmLabel: '放弃修改',
+    danger: true
+  });
 }
 
 async function importLocalEntries(state, files) {
@@ -1203,8 +1622,8 @@ async function loadEntries(state) {
 
 function closePromptLibraryState(state, options = {}) {
   state.fillChoice?.finish?.('cancel');
-  imageObserver?.disconnect?.();
-  imageObserver = null;
+  closePromptDialogHandles(state);
+  stopLoadMoreObservation();
   state.root.hidden = true;
   state.root.classList.remove('is-open');
   document.body.classList.remove('prompt-library-open');
@@ -1226,10 +1645,11 @@ function bindEvents(initialState) {
       const action = button.dataset.action;
       try {
         if (action === 'close') {
-          if (!confirmCloseLocalEditor(state)) return;
+          if (!(await confirmCloseLocalEditor(state))) return;
           return closePromptLibraryState(state);
         }
         if (action === 'retry') return loadEntries(state);
+      if (action === 'load-more') return appendNextBatch(state);
       if (action === 'tab') {
         state.tab = button.dataset.tab === 'mine' ? 'mine' : 'discover';
         state.visibleCount = BATCH_SIZE;
@@ -1245,16 +1665,17 @@ function bindEvents(initialState) {
         return loadEntries(state);
       }
       if (action === 'new-local') {
-        state.detail = null;
+        if (state.detail) { state.detail = null; closeOverlay(state, '[data-role="detail-overlay"]'); }
         state.localEditor = createLocalEditor('create', { category: '其他', tags: [], referenceImageUrls: [] });
-        renderEditor(state);
+        mountOverlay(state, renderLocalEditor(state));
         window.setTimeout(() => state.root.querySelector('[data-role="local-form"] [name="title"]')?.focus(), 0);
         return;
       }
       if (action === 'local-editor-cancel') {
-        if (!confirmCloseLocalEditor(state)) return;
+        if (!(await confirmCloseLocalEditor(state))) return;
         state.localEditor = null;
-        return renderEditor(state);
+        closeOverlay(state, '[data-role="local-editor-overlay"]');
+        return;
       }
       if (action === 'choose-cover') {
         state.root.querySelector('[data-role="cover-input"]')?.click();
@@ -1272,9 +1693,9 @@ function bindEvents(initialState) {
         return exportLocalEntries(state);
       }
       if (action === 'detail') { const entry = findEntry(state, button.dataset.promptId); if (entry) return openDetail(state, entry); }
-      if (action === 'detail-close') { state.detail = null; return renderEditor(state); }
-      if (action === 'target-cancel') { const resolve = state.targetPicker?.resolve; state.targetPicker = null; resolve?.(null); return renderEditor(state); }
-      if (action === 'target-select') { const resolve = state.targetPicker?.resolve; state.targetPicker = null; resolve?.({ targetProjectId: button.dataset.projectId || '', createNew: !button.dataset.projectId }); return renderEditor(state); }
+      if (action === 'detail-close') { state.detail = null; closeOverlay(state, '[data-role="detail-overlay"]'); return; }
+      if (action === 'target-cancel') { const resolve = state.targetPicker?.resolve; state.targetPicker = null; resolve?.(null); closeOverlay(state, '[data-role="target-overlay"]'); return; }
+      if (action === 'target-select') { const resolve = state.targetPicker?.resolve; state.targetPicker = null; resolve?.({ targetProjectId: button.dataset.projectId || '', createNew: !button.dataset.projectId }); closeOverlay(state, '[data-role="target-overlay"]'); return; }
       if (action === 'open-canvas') {
         const bridge = getCanvasBridge();
         closePromptLibraryState(state);
@@ -1393,6 +1814,12 @@ function bindEvents(initialState) {
   root.addEventListener('keydown', event => {
     const state = getState();
     if (!state) return;
+    const coverPicker = event.target.closest?.('[data-role="cover-picker"]');
+    if (coverPicker && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      state.root.querySelector('[data-role="cover-input"]')?.click();
+      return;
+    }
     if (event.key === 'Escape') {
       if (state.fillChoice) {
         event.preventDefault();
@@ -1402,14 +1829,17 @@ function bindEvents(initialState) {
         const resolve = state.targetPicker.resolve;
         state.targetPicker = null;
         resolve?.(null);
-        renderEditor(state);
+        closeOverlay(state, '[data-role="target-overlay"]');
       } else if (state.localEditor) {
-        if (!confirmCloseLocalEditor(state)) return;
-        state.localEditor = null;
-        renderEditor(state);
+        event.preventDefault();
+        void confirmCloseLocalEditor(state).then(allowed => {
+          if (!allowed || activeState !== state) return;
+          state.localEditor = null;
+          closeOverlay(state, '[data-role="local-editor-overlay"]');
+        });
       } else if (state.detail) {
         state.detail = null;
-        renderEditor(state);
+        closeOverlay(state, '[data-role="detail-overlay"]');
       } else {
         closePromptLibraryState(state);
       }
@@ -1444,6 +1874,11 @@ function bindEvents(initialState) {
 export function openPromptLibrary(options = {}) {
   const root = document.getElementById('prompt-library-root');
   if (!root) throw new Error('prompt-library-root is missing');
+  if (activeState && (
+    activeState.root?.hidden
+    || !activeState.root?.classList.contains('is-open')
+    || !document.body.classList.contains('prompt-library-open')
+  )) activeState = null;
   if (activeState) {
     activeState.context = options.context || activeState.context;
     activeState.returnWorkspace = options.returnWorkspace || activeState.returnWorkspace;
@@ -1483,6 +1918,7 @@ export function openPromptLibrary(options = {}) {
     entryPool: [],
     sourceErrors: [],
     fillChoice: null,
+    dialogHandles: [],
     previousFocus: document.activeElement
   };
   if (options.draft) {

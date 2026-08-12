@@ -99,7 +99,7 @@
 #canvas-workspace-root {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: var(--ui-z-workspace, 1000);
   overflow: hidden;
 }
 
@@ -7724,4 +7724,205 @@ button.canvas-zoom-chip {
   .canvas-editor-toolbar > :nth-last-child(2) {
     margin-left: 0;
   }
+}
+
+/* Mobile editor chrome: the stage remains the primary surface while secondary
+   panels use one shared backdrop and mutually exclusive sheet positions. */
+.canvas-mobile-sheet-backdrop {
+  display: none;
+}
+
+.canvas-mobile-sheet-backdrop[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .canvas-workspace {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 1fr) !important;
+    overflow: hidden;
+  }
+
+  .canvas-mobile-sheet-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    display: block;
+    width: 100%;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(2, 7, 12, 0.62);
+    cursor: pointer;
+  }
+
+  .canvas-project-shell--editor,
+  .canvas-workspace.is-sidebar-collapsed .canvas-project-shell--editor,
+  .is-sidebar-collapsed .canvas-project-shell--editor {
+    position: absolute;
+    inset: 8px auto 8px 8px;
+    z-index: 26;
+    display: flex !important;
+    width: min(360px, calc(100% - 16px));
+    max-height: none;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+    transform: translateX(calc(-100% - 18px));
+    transition: transform 180ms ease;
+  }
+
+  .canvas-workspace.is-sidebar-sheet-open .canvas-project-shell--editor {
+    transform: translateX(0);
+  }
+
+  .canvas-editor-shell {
+    height: 100%;
+    min-height: 0;
+    padding: 8px;
+  }
+
+  .canvas-editor-main,
+  .canvas-editor-main.is-timeline-collapsed {
+    grid-template-rows: minmax(0, 1fr) !important;
+  }
+
+  .canvas-timeline-panel,
+  .canvas-timeline-panel.is-collapsed {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    z-index: 26;
+    height: min(44dvh, 360px);
+    max-height: calc(100% - 16px);
+    border-radius: 8px;
+    transform: translateY(calc(100% + 18px));
+    transition: transform 180ms ease;
+  }
+
+  .canvas-workspace.is-timeline-sheet-open .canvas-timeline-panel:not(.is-collapsed) {
+    transform: translateY(0);
+  }
+
+  .canvas-timeline-panel.is-collapsed {
+    pointer-events: none;
+    height: auto;
+    min-height: 0;
+    max-height: 46px;
+    padding: 5px 8px;
+  }
+
+  .canvas-assistant-panel {
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    z-index: 27;
+    width: auto;
+    border-radius: 8px;
+    transform: translateY(calc(100% + 18px));
+    transition: transform 180ms ease;
+  }
+
+  .canvas-workspace.is-assistant-sheet-open .canvas-assistant-panel:not([hidden]) {
+    transform: translateY(0);
+  }
+
+  .canvas-modal-overlay {
+    padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+  }
+
+  .canvas-modal-card {
+    width: 100%;
+    max-height: min(86dvh, 100%);
+    border-radius: 8px;
+  }
+}
+
+/* The project home is the one Canvas view that must scroll as a page. The
+   editor uses a clipped stage, so keep that rule scoped away from the home. */
+.canvas-workspace-home {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.canvas-workspace-home > .canvas-project-shell {
+  height: max-content;
+  min-height: 100%;
+}
+
+/* narrow-card-overflow-20260806-1 */
+.canvas-project-open {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.canvas-project-open-top {
+  min-width: 0;
+}
+
+.canvas-project-open-top > strong {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-project-badges {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: 50%;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.canvas-project-badge {
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .canvas-stage-nav {
+    max-width: calc(100% - 20px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .canvas-stage-nav-actions {
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
+
+  .canvas-stage-nav-actions button {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: 10px;
+    white-space: nowrap;
+  }
+
+  .canvas-stage-nav-actions button[data-action="viewport-back"],
+  .canvas-stage-nav-actions button[data-action="viewport-forward"] {
+    min-width: 44px;
+  }
+
+  .canvas-stage-nav-zoom {
+    min-width: 56px !important;
+  }
+}
+
+/* A hidden sheet must not be painted by the mobile display overrides above. */
+.canvas-project-shell--editor[hidden],
+.canvas-workspace.is-sidebar-collapsed .canvas-project-shell--editor[hidden],
+.is-sidebar-collapsed .canvas-project-shell--editor[hidden],
+.canvas-project-shell--editor.is-collapsed[hidden],
+.canvas-timeline-panel[hidden],
+.canvas-assistant-panel[hidden] {
+  display: none !important;
+  pointer-events: none !important;
+  transform: none !important;
 }

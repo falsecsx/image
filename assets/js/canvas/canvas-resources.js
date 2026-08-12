@@ -1,4 +1,4 @@
-import { createId } from './canvas-model.js?v=20260803-4';
+import { createId } from './canvas-model.js?v=20260808-1';
 
 export const CANVAS_RESOURCES_DB_NAME = 'image_app:canvas_resources';
 export const CANVAS_RESOURCES_STORE_NAME = 'resources';
@@ -309,7 +309,7 @@ export function getCanvasResourceStore(options = {}) {
     list() {
       return run('readonly', store => requestToPromise(store.getAll()).then(values => {
         const list = Array.isArray(values) ? values : [];
-        return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0) || (b.createdAt || 0) - (a.createdAt || 0));
+        return list.sort(compareCanvasResourceStable);
       }));
     },
     delete(id) {
@@ -340,7 +340,7 @@ export function getCanvasResourceStore(options = {}) {
     },
     listBlobs() {
       return runBlobs('readonly', store => requestToPromise(store.getAll()).then(values => (
-        Array.isArray(values) ? values.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)) : []
+        Array.isArray(values) ? values.sort(compareCanvasResourceStable) : []
       )));
     },
     deleteBlob(cacheKey) {
@@ -352,6 +352,13 @@ export function getCanvasResourceStore(options = {}) {
 
 function isCacheableRemoteImage(src) {
   return /^https:\/\//i.test(String(src || '').trim());
+}
+
+function compareCanvasResourceStable(left, right) {
+  return (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0)
+    || (Number(right?.createdAt) || 0) - (Number(left?.createdAt) || 0)
+    || String(left?.title || left?.label || left?.id || '').localeCompare(String(right?.title || right?.label || right?.id || ''), 'zh-CN', { numeric: true, sensitivity: 'base' })
+    || String(left?.id || '').localeCompare(String(right?.id || ''), 'zh-CN', { numeric: true });
 }
 
 async function buildCacheKey(src) {
@@ -456,7 +463,7 @@ async function fetchImageViaProxy(src, options = {}) {
 
 async function trimBlobCache(store, maxBytes = CANVAS_RESOURCE_CACHE_MAX_BYTES) {
   try {
-    const blobs = (await store.listBlobs()).sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+    const blobs = (await store.listBlobs()).sort((a, b) => compareCanvasResourceStable(b, a));
     let total = blobs.reduce((sum, record) => sum + (Number(record.size) || Number(record.blob?.size) || 0), 0);
     for (const record of blobs) {
       if (total <= maxBytes) break;

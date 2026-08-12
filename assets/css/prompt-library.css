@@ -14,7 +14,7 @@
 #prompt-library-root {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  z-index: var(--ui-z-workspace, 1000);
   overflow: auto;
   background: #07131a;
   color: var(--text, #f8fafc);
@@ -260,6 +260,10 @@ body.prompt-library-open {
   object-fit: contain;
 }
 
+.prompt-library-image-frame img[hidden] {
+  display: none !important;
+}
+
 .prompt-library-image-fallback,
 .prompt-library-detail-no-image {
   display: grid;
@@ -449,6 +453,37 @@ body.prompt-library-open {
   font-size: 12px;
 }
 
+.prompt-library-load-more-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 15px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 8px;
+  background: rgba(14, 116, 144, 0.16);
+  color: #dff7ff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.prompt-library-load-more-button:hover {
+  border-color: rgba(125, 211, 252, 0.62);
+  background: rgba(14, 116, 144, 0.28);
+}
+
+.prompt-library-load-more-button:active {
+  transform: translateY(1px);
+}
+
+.prompt-library-load-more-button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .prompt-library-empty-state,
 .prompt-library-error {
   display: flex;
@@ -556,6 +591,7 @@ body.prompt-library-open {
 
 .prompt-library-detail-image.is-cover { grid-column: 1 / -1; }
 .prompt-library-detail-image img { display: block; width: 100%; height: 210px; object-fit: contain; }
+.prompt-library-detail-image img[hidden] { display: none !important; }
 .prompt-library-detail-image.is-cover img { height: 300px; }
 .prompt-library-detail-image-label,
 .prompt-library-detail-check { position: absolute; left: 8px; right: 8px; bottom: 8px; color: #f8fafc; font-size: 11px; }
@@ -605,6 +641,7 @@ body.prompt-library-open {
 .prompt-library-cover-preview { display: grid; place-items: center; width: 100%; min-height: 126px; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 5px; background: #091923; }
 .prompt-library-cover-preview > [data-image-frame] { display: grid; place-items: center; width: 100%; height: 100%; min-height: 126px; }
 .prompt-library-cover-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.prompt-library-cover-preview img[hidden] { display: none !important; }
 .prompt-library-cover-empty { display: grid; place-items: center; gap: 7px; color: #64748b; text-align: center; }
 .prompt-library-cover-empty svg { width: 26px; height: 26px; color: #5eead4; }
 .prompt-library-cover-controls { display: grid; justify-items: start; gap: 8px; min-width: 0; }
@@ -612,7 +649,7 @@ body.prompt-library-open {
 .prompt-library-cover-controls small { color: #94a3b8; line-height: 1.5; overflow-wrap: anywhere; }
 .prompt-library-cover-controls [hidden] { display: none; }
 .prompt-library-action.is-success { border-color: rgba(74, 222, 128, 0.6); background: rgba(34, 197, 94, 0.16); color: #bbf7d0; }
-.prompt-library-notice { position: fixed; right: 24px; bottom: 24px; z-index: 30; display: inline-flex; align-items: center; gap: 12px; max-width: min(520px, calc(100vw - 48px)); padding: 11px 14px; border: 1px solid rgba(94, 234, 212, 0.38); border-radius: 6px; background: #102d36; color: #ccfbf1; font-size: 12px; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.25); }
+.prompt-library-notice { position: fixed; right: 24px; bottom: 24px; z-index: var(--ui-z-toast, 1400); display: inline-flex; align-items: center; gap: 12px; max-width: min(520px, calc(100vw - 48px)); padding: 11px 14px; border: 1px solid rgba(94, 234, 212, 0.38); border-radius: 6px; background: #102d36; color: #ccfbf1; font-size: 12px; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.25); }
 .prompt-library-notice button { min-height: 34px; padding: 5px 9px; border: 1px solid rgba(204, 251, 241, 0.42); border-radius: 5px; background: transparent; color: inherit; font: inherit; font-weight: 750; cursor: pointer; white-space: nowrap; }
 .prompt-library-notice.is-info { border-color: rgba(56, 189, 248, 0.4); color: #bae6fd; }
 .prompt-library-notice.is-danger { border-color: rgba(248, 113, 113, 0.48); background: #351d23; color: #fecaca; }

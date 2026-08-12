@@ -6,6 +6,9 @@
         getTextModel: () => typeof getTextModel === 'function' ? getTextModel() : 'gpt-5.4-mini',
         setTextModel: (value) => typeof setTextModel === 'function' ? setTextModel(value) : false,
         getTextModelOptions: () => typeof getTextModelOptions === 'function' ? getTextModelOptions() : [],
+        getTextCapabilityStatus: () => typeof getTextCapabilityStatus === 'function' ? getTextCapabilityStatus() : { available: false, message: 'Text capability is not available' },
+        getTextCapability: () => typeof getTextCapabilityStatus === 'function' ? getTextCapabilityStatus() : { available: false, message: 'Text capability is not available' },
+        getTextCapabilities: () => typeof getTextCapabilityStatus === 'function' ? getTextCapabilityStatus() : { available: false, message: 'Text capability is not available' },
         getBaseUrl: () => typeof getBaseUrl === 'function' ? getBaseUrl() : '',
         buildApiUrl: (path) => typeof buildApiUrl === 'function' ? buildApiUrl(path) : path,
         sendImageRequest: (req, kind, signal) => typeof sendImageRequest === 'function' ? sendImageRequest(req, kind, signal) : Promise.reject(new Error('sendImageRequest not available')),
@@ -63,11 +66,64 @@
 
       const _appScriptSrc = document.currentScript?.src || '';
       const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
-      const _agentUiUrl = new URL('agent/agent-ui.js?v=20260803-4', _appBase).href;
+      const _assetVersion = '20260808-1';
+      const _canvasWorkspaceModulePath = 'canvas/canvas-workspace.js?v=20260808-1';
+      const _agentUiUrl = new URL(`agent/agent-ui.js?v=${_assetVersion}`, _appBase).href;
+
+      function showUiError(message) {
+        const text = String(message || '操作失败');
+        if (typeof flashStatus === 'function') flashStatus(text, 'danger');
+        else console.error(text);
+      }
+
+      function confirmUiAction(options = {}) {
+        return window.AppUtils?.dialog?.confirm?.(options) || Promise.resolve(false);
+      }
+
+      function openManagedOverlay(overlay, options = {}) {
+        const surface = options.surface || overlay.querySelector('[role="dialog"], .dialog-content, .prompt-compare-panel, .storyboard-panel, .angle-modal') || overlay;
+        let handle = null;
+        let closed = false;
+        const close = (reason = 'close') => {
+          if (closed) return;
+          closed = true;
+          if (handle) {
+            const current = handle;
+            handle = null;
+            current.close(reason);
+          } else if (overlay.isConnected) {
+            overlay.remove();
+          }
+        };
+        if (!overlay.isConnected) document.body.appendChild(overlay);
+        handle = window.AppUtils?.dialog?.open?.({
+          element: surface,
+          container: overlay,
+          role: options.role || 'dialog',
+          label: options.label,
+          openClass: options.openClass || 'active',
+          closeClass: options.closeClass || options.openClass || 'active',
+          trigger: options.trigger || document.activeElement,
+          closeOnBackdrop: options.closeOnBackdrop !== false,
+          onClose: reason => {
+            closed = true;
+            if (overlay.isConnected) overlay.remove();
+            options.onClose?.(reason);
+          }
+        }) || null;
+        if (!handle && !overlay.classList.contains('active')) overlay.classList.add('active');
+        return { close, handle, overlay, surface };
+      }
+
+      function ensureWorkspaceStylesheet(key, fileName) {
+        const href = new URL(`../css/${fileName}?v=${_assetVersion}`, _appBase).href;
+        return window.AppUtils?.ensureStylesheet?.(key, href) || Promise.resolve();
+      }
 
       function openPromptLibraryFromHost(options = {}) {
-        const promptLibraryUrl = new URL('prompt-library.js?v=20260803-4', _appBase).href;
-        return import(promptLibraryUrl)
+        const promptLibraryUrl = new URL(`prompt-library.js?v=${_assetVersion}`, _appBase).href;
+        return ensureWorkspaceStylesheet('prompt-library', 'prompt-library.css')
+          .then(() => import(promptLibraryUrl))
           .then(module => {
             const result = module.openPromptLibrary(options);
             setWorkspaceNavActive('prompts');
@@ -81,6 +137,7 @@
       }
 
       function setWorkspaceNavActive(workspace) {
+        if (window.AppUtils?.setActiveWorkspace) return window.AppUtils.setActiveWorkspace(workspace);
         const value = String(workspace || 'studio');
         document.querySelectorAll('[data-workspace-nav]').forEach(button => {
           button.classList.toggle('is-active', button.dataset.workspaceNav === value);
@@ -88,14 +145,14 @@
       }
 
       function openAgentFromWorkspace() {
-        return import(_agentUiUrl).then(m => {
+        return ensureWorkspaceStylesheet('agent', 'agent.css').then(() => import(_agentUiUrl)).then(m => {
           const result = m.openAgentWorkspace();
           setWorkspaceNavActive('agent');
           return result;
         }).catch(err => {
           console.error('agent load failed', err);
           setWorkspaceNavActive('studio');
-          alert('Agent 模块加载失败：' + err.message);
+          if (typeof flashStatus === 'function') flashStatus('Agent 模块加载失败：' + (err?.message || err), 'danger');
         });
       }
 
@@ -108,17 +165,20 @@
         button.addEventListener('click', openAgentFromWorkspace);
       });
       window.addEventListener('agent-workspace-closed', () => setWorkspaceNavActive('studio'));
+      window.AppUtils?.setActiveWorkspace?.('studio', { initial: true });
       try { window.lucide?.createIcons?.(); } catch (error) { console.warn('Lucide icons failed:', error); }
 
       // 获取用户配置的 Base URL
       const baseUrlInput = document.getElementById('base-url');
       const proxyModeInput = document.getElementById('proxy-mode');
+      const autoUpscaleInput = document.getElementById('auto-upscale');
       const apiLinkEl = document.getElementById('api-link');
       const appConfig = window.APP_CONFIG || {};
       const defaultBaseUrl = appConfig.defaultBaseUrl || 'https://api.openai.com';
       const apiHomeUrl = appConfig.apiHomeUrl || 'https://api.openai.com';
       const apiProxyEndpoint = appConfig.apiProxyEndpoint || 'api-proxy.php';
       const API_PROXY_MODE_KEY = 'api_proxy_mode';
+      const AUTO_UPSCALE_KEY = 'auto_upscale';
       const THREE_JS_CDN = 'https://cdn.jsdelivr.net/npm/three@0.140.0/build/three.min.js';
       const ORBIT_CONTROLS_CDN = 'https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/controls/OrbitControls.js';
       const debugEnabled = appConfig.debug === true || new URLSearchParams(window.location.search).get('debug') === '1';
@@ -188,6 +248,31 @@
         });
       }
 
+      function parseBaseUrl(value) {
+        const raw = String(value ?? '').trim();
+        if (!raw || raw.startsWith('//')) return null;
+        const isAbsoluteHttp = /^https?:\/\//i.test(raw);
+        const isRootRelative = raw.startsWith('/') && !raw.startsWith('//');
+        if (!isAbsoluteHttp && !isRootRelative) return null;
+        const normalized = raw.replace(/\/+$/, '') || (raw.startsWith('/') ? '/' : '');
+        if (!normalized) return null;
+        try {
+          const url = new URL(normalized, window.location.href);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+          return { value: normalized, url };
+        } catch {
+          return null;
+        }
+      }
+
+      function normalizeBaseUrl(value, fallback = defaultBaseUrl) {
+        return parseBaseUrl(value)?.value || parseBaseUrl(fallback)?.value || defaultBaseUrl;
+      }
+
+      function isValidBaseUrl(value) {
+        return !!parseBaseUrl(value);
+      }
+
       function getBaseUrl() {
         const override = settingsConnectionOverride;
         const platformId = override?.platformId || committedSettingsSnapshot?.activePlatformId || activePlatformId;
@@ -195,8 +280,8 @@
         const raw = Object.prototype.hasOwnProperty.call(settings, 'baseUrl')
           ? settings.baseUrl
           : (!committedSettingsSnapshot && !override ? baseUrlInput.value : getPlatformConfig(platformId).baseUrlValue);
-        const url = String(raw || getPlatformConfig(platformId).baseUrlValue || defaultBaseUrl).trim().replace(/\/+$/, '');
-        return url || defaultBaseUrl;
+        const fallback = getPlatformConfig(platformId).baseUrlValue || defaultBaseUrl;
+        return normalizeBaseUrl(raw || fallback, fallback);
       }
 
       function buildDirectApiUrl(path) {
@@ -229,6 +314,10 @@
         return !!configured && /^https:\/\//i.test(getBaseUrl());
       }
 
+      function isAutoUpscaleEnabled() {
+        return localStorage.getItem(AUTO_UPSCALE_KEY) === '1';
+      }
+
       function buildApiUrl(path) {
         const directUrl = buildDirectApiUrl(path);
         if (!isApiProxyEnabled()) return directUrl;
@@ -244,8 +333,39 @@
         return proxyUrl.toString();
       }
 
+      function buildMediaProxyUrlForTarget(targetUrl, { retry = false } = {}) {
+        const proxyUrl = new URL(apiProxyEndpoint, window.location.href);
+        proxyUrl.searchParams.set('media', '1');
+        proxyUrl.searchParams.set('target', targetUrl);
+        if (retry) proxyUrl.searchParams.set('retry', '1');
+        return proxyUrl.toString();
+      }
+
+      function normalizeResultMediaUrl(value) {
+        return window.AppUtils?.normalizeMediaUrl?.(value) || String(value || '').trim();
+      }
+
+      function isKnownMediaProxyHost(value) {
+        try {
+          const host = new URL(value).hostname.toLowerCase();
+          return host === 'googleusercontent.com' || host.endsWith('.googleusercontent.com');
+        } catch {
+          return false;
+        }
+      }
+
+      function isAppProxyUrl(value) {
+        try {
+          const endpoint = new URL(apiProxyEndpoint, window.location.href);
+          const candidate = new URL(value, window.location.href);
+          return candidate.origin === endpoint.origin && candidate.pathname === endpoint.pathname;
+        } catch {
+          return false;
+        }
+      }
+
       function canProxyMediaUrl(src) {
-        return isApiProxyEnabled() && /^https:\/\//i.test(src || '');
+        return /^https:\/\//i.test(src || '') && (isApiProxyEnabled() || isKnownMediaProxyHost(src));
       }
 
       function canProxyImageUrl(src) {
@@ -311,6 +431,7 @@
           defaultProtocol: 'gemini',
           protocolOptions: [
             { value: 'gemini', label: 'Gemini 原生' },
+            { value: 'openai-images', label: 'OpenAI Images (Go)' },
             { value: 'openai-chat', label: 'OpenAI Chat ' }
           ],
           defaultImageModel: 'gemini-3.1-flash-image-preview',
@@ -563,6 +684,7 @@
       PLATFORM_REGISTRY.openai.flashEndpointResolver = () => buildApiUrl('/v1/chat/completions');
       PLATFORM_REGISTRY.gemini.endpointResolver = ({ protocol, imageModel }) => {
         if (protocol === 'openai-chat') return buildApiUrl('/v1/chat/completions');
+        if (protocol === 'openai-images') return buildApiUrl('/v1/images/generations');
         return buildApiUrl(`/v1beta/models/${imageModel || 'gemini-3.1-flash-image-preview'}:generateContent`);
       };
       PLATFORM_REGISTRY.gemini.flashEndpointResolver = () => buildApiUrl('/v1/chat/completions');
@@ -989,9 +1111,13 @@
           count: countFieldEl
         };
         const visibleFields = new Set(platformConfig.fields || []);
+        const effectiveImageProtocol = getPlatformImageProtocol(platformConfig.id);
         Object.entries(fieldMap).forEach(([key, fieldEl]) => {
           if (!fieldEl) return;
-          const visible = visibleFields.has(key);
+          const nativeGeminiQuality = platformConfig.id === 'gemini'
+            && effectiveImageProtocol === 'gemini'
+            && key === 'quality';
+          const visible = visibleFields.has(key) && !nativeGeminiQuality;
           fieldEl.hidden = !visible;
           fieldEl.classList.toggle('is-hidden', !visible);
         });
@@ -1113,9 +1239,10 @@
         setActivePlatform(nextPlatformId);
       }
 
-      function getReferenceImageLimit(protocol = getProtocol()) {
+      function getReferenceImageLimit(protocol = getImageProtocol()) {
         if (activePlatformId === 'openaiVideo' && protocol === 'openai-videos') return 1;
         if (activePlatformId === 'geminiVideo') return 3;
+        if (activePlatformId === 'gemini' && protocol === 'openai-images') return 1;
         if (activePlatformId === 'qwenVideo') return String(getImageModel() || '').includes('r2v') ? 9 : 1;
         if (activePlatformId === 'doubaoVideo') return 4;
         if (activePlatformId === 'grokVideo') return 4;
@@ -1125,20 +1252,56 @@
         return protocol === 'gemini' ? 14 : 4;
       }
 
-      function getReferenceImagesForRequest(images = state.images, protocol = getProtocol()) {
+      function getReferenceImagesForRequest(images = state.images, protocol = getImageProtocol()) {
         return (images || []).slice(0, getReferenceImageLimit(protocol));
       }
 
-      function isGoogleNativeEndpoint(key = getApiKey()) {
-        return /(^|\.)googleapis\.com$/i.test(new URL(getBaseUrl(), window.location.href).hostname)
-          || /^AIza[0-9A-Za-z_-]{20,}$/.test(String(key || '').trim());
+      function isGoogleGeminiApiBaseUrl(value = getBaseUrl()) {
+        const parsed = parseBaseUrl(value);
+        const hostname = parsed?.url?.hostname?.toLowerCase() || '';
+        return hostname === 'generativelanguage.googleapis.com';
+      }
+
+      function isGeminiPlatform(platformId = activePlatformId) {
+        return platformId === 'gemini' || platformId === 'geminiVideo';
+      }
+
+      function isGoogleNativeGeminiPlatform(platformId = activePlatformId, baseUrl = getBaseUrl()) {
+        return isGeminiPlatform(platformId) && isGoogleGeminiApiBaseUrl(baseUrl);
+      }
+
+      function resolveGeminiEffectiveProtocol({ platformId = activePlatformId, protocol = getProtocol(), baseUrl = getBaseUrl() } = {}) {
+        if (platformId !== 'gemini') return protocol;
+        return isGoogleGeminiApiBaseUrl(baseUrl) ? 'gemini' : 'openai-images';
+      }
+
+      function getPlatformImageProtocol(platformId = activePlatformId, platformSettings = null) {
+        const platformConfig = getPlatformConfig(platformId);
+        const settings = platformSettings
+          || (settingsDraft?.activePlatformId === platformId ? settingsDraft.platformSettings?.[platformId] : null)
+          || getRuntimePlatformSettings(platformId)
+          || {};
+        return resolveGeminiEffectiveProtocol({
+          platformId,
+          protocol: settings.protocol || platformConfig.defaultProtocol || 'openai-chat',
+          baseUrl: settings.baseUrl || platformConfig.baseUrlValue || defaultBaseUrl
+        });
+      }
+
+      function getImageProtocol() {
+        const platformId = settingsConnectionOverride?.platformId || activePlatformId;
+        return resolveGeminiEffectiveProtocol({
+          platformId,
+          protocol: getProtocol(),
+          baseUrl: getBaseUrl()
+        });
       }
 
       function resolveImageEndpoint() {
         const platformConfig = getActivePlatformConfig();
         if (typeof platformConfig.endpointResolver === 'function') {
           const resolved = platformConfig.endpointResolver({
-            protocol: getProtocol(),
+            protocol: getImageProtocol(),
             imageModel: getImageModel(),
             textModel: getTextModel(),
             baseUrl: getBaseUrl()
@@ -1164,8 +1327,10 @@
 
       function buildRequestHeaders(key, protocol = getProtocol()) {
         const headers = { 'Content-Type': 'application/json' };
-        if (protocol === 'gemini' && isGoogleNativeEndpoint(key)) {
-          headers['x-goog-api-key'] = key;
+        const effectiveProtocol = activePlatformId === 'gemini' ? getImageProtocol() : protocol;
+        const platformId = settingsConnectionOverride?.platformId || activePlatformId;
+        if (effectiveProtocol === 'gemini' && isGoogleNativeGeminiPlatform(platformId)) {
+          headers['X-Goog-Api-Key'] = key;
         } else {
           headers['Authorization'] = `Bearer ${key}`;
         }
@@ -1173,13 +1338,14 @@
       }
 
       function getModelListEndpoints(protocol = getProtocol()) {
-        if (protocol === 'gemini') {
+        const effectiveProtocol = activePlatformId === 'gemini' ? getImageProtocol() : protocol;
+        if (effectiveProtocol === 'gemini') {
           return [buildApiUrl('/v1beta/models'), buildApiUrl('/v1/models')];
         }
-        if (protocol === 'aliyun-images' || protocol === 'aliyun-happyhorse') {
+        if (effectiveProtocol === 'aliyun-images' || effectiveProtocol === 'aliyun-happyhorse') {
           return [buildApiUrl('/compatible-mode/v1/models'), buildApiUrl('/v1/models')];
         }
-        if (protocol === 'doubao-seedance') {
+        if (effectiveProtocol === 'doubao-seedance') {
           return [buildApiUrl('/v1/models')];
         }
         return [buildApiUrl('/v1/models')];
@@ -1187,7 +1353,7 @@
 
       // 获取生图 endpoint（根据协议自动切换）
       function getEndpoint() {
-        const protocol = getProtocol();
+        const protocol = getImageProtocol();
         if (protocol === 'openai-chat') {
           return buildApiUrl('/v1/chat/completions');
         }
@@ -1216,6 +1382,27 @@
       // 文本操作 endpoint（分镜分析、优化、翻译）
       function getFlashEndpoint() {
         return buildApiUrl('/v1/chat/completions');
+      }
+
+      function getTextCapabilityStatus() {
+        const platformId = settingsConnectionOverride?.platformId || activePlatformId;
+        const isBlocked = isGoogleNativeGeminiPlatform(platformId);
+        const message = 'Gemini 原生 Google 地址仅支持原生图片接口；文本工具和 Agent 需要切换到支持 OpenAI Chat 的兼容中转 Base URL。';
+        return {
+          available: !isBlocked,
+          supported: !isBlocked,
+          mode: isBlocked ? 'gemini-native-image-only' : 'openai-chat-compatible',
+          protocol: isBlocked ? 'gemini' : 'openai-chat',
+          endpoint: isBlocked ? '' : resolveTextEndpoint(),
+          message: isBlocked ? message : ''
+        };
+      }
+
+      function ensureTextCapabilityAvailable(featureLabel = '文本功能') {
+        const capability = getTextCapabilityStatus();
+        if (capability.available) return true;
+        flashStatus(`${featureLabel}不可用：${capability.message}`, 'danger');
+        return false;
       }
 
       const apiKeyInput = document.getElementById('api-key');
@@ -1427,6 +1614,24 @@
         });
       }
 
+      const outputRailTabs = [...document.querySelectorAll('[data-output-tab]')];
+      const outputRailPanels = [...document.querySelectorAll('[data-output-panel]')];
+      let previousOutputCount = 0;
+
+      function setOutputRailTab(name = 'results', shouldFocus = false) {
+        const active = name === 'history' ? 'history' : 'results';
+        outputRailTabs.forEach(tab => {
+          const selected = tab.dataset.outputTab === active;
+          tab.classList.toggle('is-active', selected);
+          tab.setAttribute('aria-selected', String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+          if (selected && shouldFocus) tab.focus();
+        });
+        outputRailPanels.forEach(panel => {
+          panel.hidden = panel.dataset.outputPanel !== active;
+        });
+      }
+
       function syncResultsEmptyState() {
         if (!resultsEl) return;
         if (resultsEmptyEl && resultsEmptyEl.parentElement !== resultsEl) {
@@ -1442,9 +1647,24 @@
         if (sendResultsBtn) sendResultsBtn.hidden = !hasTransferableImages;
         if (clearResultsBtn) clearResultsBtn.hidden = outputs.length === 0;
         if (resultsActionsEl) resultsActionsEl.hidden = outputs.length === 0;
+        if (outputs.length > previousOutputCount) setOutputRailTab('results');
+        previousOutputCount = outputs.length;
       }
 
       syncResultsEmptyState();
+      outputRailTabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => setOutputRailTab(tab.dataset.outputTab, false));
+        tab.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const nextIndex = event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? outputRailTabs.length - 1
+              : (index + (event.key === 'ArrowRight' ? 1 : -1) + outputRailTabs.length) % outputRailTabs.length;
+          setOutputRailTab(outputRailTabs[nextIndex]?.dataset.outputTab, true);
+        });
+      });
       const announcementBtn = document.getElementById('announcement-btn');
       const announcementModal = document.getElementById('announcement-modal');
       const announcementCloseBtn = document.getElementById('announcement-close');
@@ -1549,30 +1769,66 @@
       const lightbox = document.getElementById('lightbox');
       const lightboxImg = document.getElementById('lightbox-img');
       const lightboxClose = document.getElementById('lightbox-close');
+      let lightboxDialogHandle = null;
+      let announcementDialogHandle = null;
+      let settingsDialogHandle = null;
+      let settingsConfirmDialogHandle = null;
+      let angleDialogHandle = null;
 
       // 打开 Lightbox
       function openLightbox(imgSrc) {
+        lightboxDialogHandle?.close?.('replace', { restoreFocus: false });
         lightboxImg.src = imgSrc;
-        lightbox.classList.add('show');
-        document.body.style.overflow = 'hidden';
+        lightboxDialogHandle = window.AppUtils?.dialog?.open?.({
+          element: lightbox,
+          container: lightbox,
+          label: '图片预览',
+          openClass: 'show',
+          closeClass: 'show',
+          trigger: document.activeElement
+        }) || null;
+        if (!lightboxDialogHandle) lightbox.classList.add('show');
       }
 
       // 关闭 Lightbox
       function closeLightbox() {
-        lightbox.classList.remove('show');
-        document.body.style.overflow = '';
+        if (lightboxDialogHandle) {
+          const handle = lightboxDialogHandle;
+          lightboxDialogHandle = null;
+          handle.close('close');
+        } else {
+          lightbox.classList.remove('show');
+          lightbox.hidden = true;
+        }
       }
 
       function openAnnouncementModal() {
         if (!announcementModal) return;
-        announcementModal.classList.add('active');
-        announcementModal.setAttribute('aria-hidden', 'false');
+        announcementDialogHandle?.close?.('replace', { restoreFocus: false });
+        announcementDialogHandle = window.AppUtils?.dialog?.open?.({
+          element: announcementModal.querySelector('[role="dialog"]') || announcementModal,
+          container: announcementModal,
+          label: '公告',
+          openClass: 'active',
+          closeClass: 'active',
+          trigger: announcementBtn
+        }) || null;
+        if (!announcementDialogHandle) {
+          announcementModal.classList.add('active');
+          announcementModal.setAttribute('aria-hidden', 'false');
+        }
       }
 
       function closeAnnouncementModal() {
         if (!announcementModal) return;
-        announcementModal.classList.remove('active');
-        announcementModal.setAttribute('aria-hidden', 'true');
+        if (announcementDialogHandle) {
+          const handle = announcementDialogHandle;
+          announcementDialogHandle = null;
+          handle.close('close');
+        } else {
+          announcementModal.classList.remove('active');
+          announcementModal.setAttribute('aria-hidden', 'true');
+        }
       }
 
       function isSafeObjectKey(key) {
@@ -1850,12 +2106,32 @@
       }
 
       function showSettingsDiscardConfirm() {
-        if (settingsConfirm) settingsConfirm.hidden = false;
+        if (settingsConfirmDialogHandle) return;
+        if (settingsConfirm) {
+          settingsConfirm.hidden = false;
+          settingsConfirmDialogHandle = window.AppUtils?.dialog?.open?.({
+            element: settingsConfirm.querySelector('.settings-confirm-dialog') || settingsConfirm,
+            container: settingsConfirm,
+            role: 'alertdialog',
+            label: '放弃未保存修改',
+            closeOnBackdrop: false,
+            closeOnEscape: false,
+            initialFocus: settingsConfirmDiscard,
+            restoreFocus: false
+          }) || null;
+        }
         settingsConfirmDiscard?.focus();
       }
 
       function hideSettingsDiscardConfirm() {
-        if (settingsConfirm) settingsConfirm.hidden = true;
+        if (settingsConfirmDialogHandle) {
+          const handle = settingsConfirmDialogHandle;
+          settingsConfirmDialogHandle = null;
+          handle.close('close', { restoreFocus: false });
+          if (settingsConfirm) settingsConfirm.hidden = true;
+        } else if (settingsConfirm) {
+          settingsConfirm.hidden = true;
+        }
       }
 
       function setSettingsBackgroundInert(inert) {
@@ -1865,7 +2141,9 @@
           document.querySelector('.skip-to-content')
         ].filter(Boolean);
         backgroundTargets.forEach(target => {
-          target.inert = inert;
+          if ('inert' in target) target.inert = inert;
+          if (inert) target.setAttribute('inert', '');
+          else target.removeAttribute('inert');
         });
       }
 
@@ -1879,8 +2157,15 @@
         hideSettingsDiscardConfirm();
         settingsIsOpen = false;
         settingsDraft = null;
-        settingsDrawer.classList.remove('active');
-        settingsDrawer.setAttribute('aria-hidden', 'true');
+        if (settingsDialogHandle) {
+          const handle = settingsDialogHandle;
+          settingsDialogHandle = null;
+          handle.close('close', { restoreFocus: false });
+        } else {
+          settingsDrawer.classList.remove('active');
+          settingsDrawer.setAttribute('aria-hidden', 'true');
+          settingsDrawer.hidden = true;
+        }
         settingsDrawerOverlay.classList.remove('active');
         settingsDrawerOverlay.setAttribute('aria-hidden', 'true');
         document.body.classList.remove('settings-drawer-open');
@@ -1895,8 +2180,22 @@
         settingsFocusReturn = document.activeElement;
         settingsDraft = createSettingsDraft();
         settingsIsOpen = true;
-        settingsDrawer.classList.add('active');
-        settingsDrawer.setAttribute('aria-hidden', 'false');
+        settingsDialogHandle = window.AppUtils?.dialog?.open?.({
+          element: settingsDrawer,
+          container: settingsDrawer,
+          label: '工作台设置',
+          openClass: 'active',
+          closeClass: 'active',
+          closeOnBackdrop: false,
+          closeOnEscape: false,
+          initialFocus: settingsCloseBtn,
+          trigger: settingsFocusReturn,
+          restoreFocus: false
+        }) || null;
+        if (!settingsDialogHandle) {
+          settingsDrawer.classList.add('active');
+          settingsDrawer.setAttribute('aria-hidden', 'false');
+        }
         settingsDrawerOverlay.classList.add('active');
         settingsDrawerOverlay.setAttribute('aria-hidden', 'false');
         document.body.classList.add('settings-drawer-open');
@@ -1912,6 +2211,9 @@
         });
         renderSettingsDraftPlatform();
         settingsCloseBtn?.focus();
+        window.setTimeout(() => {
+          if (settingsIsOpen && !settingsConfirmDialogHandle) settingsCloseBtn?.focus?.();
+        }, 0);
       }
 
       function getSafePlatformSettings(settings = {}) {
@@ -1951,7 +2253,7 @@
         if (result.protocol && !platformConfig.protocolOptions.some(option => option.value === result.protocol)) {
           throw new Error(`平台 ${platformId} 的 API 协议无效`);
         }
-        if (result.baseUrl && !/^(https?:\/\/|\/)/i.test(result.baseUrl)) {
+        if (result.baseUrl && !isValidBaseUrl(result.baseUrl)) {
           throw new Error(`平台 ${platformId} 的 Base URL 无效`);
         }
         return result;
@@ -1975,7 +2277,8 @@
             activePlatformKind: source.activePlatformKind || activePlatformKind,
             platformSettings,
             modelLists,
-            historyImageRetention: source.historyRetention || getHistoryImageRetention()
+            historyImageRetention: source.historyRetention || getHistoryImageRetention(),
+            autoUpscale: localStorage.getItem(AUTO_UPSCALE_KEY) === '1'
           }
         };
         if (includeCredentials) {
@@ -2022,6 +2325,7 @@
         if (settings.activePlatformId !== undefined && typeof settings.activePlatformId !== 'string') throw new Error('活动平台字段类型无效');
         if (settings.activePlatformKind !== undefined && settings.activePlatformKind !== 'image' && settings.activePlatformKind !== 'video') throw new Error('活动平台类型无效');
         if (settings.historyImageRetention !== undefined && settings.historyImageRetention !== 'thumbnail' && settings.historyImageRetention !== 'original') throw new Error('历史保留方式无效');
+        if (settings.autoUpscale !== undefined && typeof settings.autoUpscale !== 'boolean') throw new Error('超分设置类型无效');
         const requestedPlatformId = allowedIds.has(settings.activePlatformId) ? settings.activePlatformId : activePlatformId;
         const requestedKind = settings.activePlatformKind || getPlatformKind(requestedPlatformId);
         const normalizedPlatformId = ensurePlatformMatchesKind(requestedPlatformId, requestedKind);
@@ -2045,6 +2349,7 @@
           platformSettings,
           modelLists,
           historyImageRetention,
+          autoUpscale: settings.autoUpscale === true,
           credentials
         };
       }
@@ -2053,7 +2358,7 @@
         captureSettingsDraftPlatform();
         if (!settingsDraft?.activePlatformId || !PLATFORM_REGISTRY[settingsDraft.activePlatformId]) return '请选择有效的平台';
         const activeSettings = settingsDraft.platformSettings[settingsDraft.activePlatformId] || {};
-        if (activeSettings.baseUrl && !/^(https?:\/\/|\/)/i.test(activeSettings.baseUrl)) return 'Base URL 需要以 http(s):// 或 / 开头';
+        if (activeSettings.baseUrl && !isValidBaseUrl(activeSettings.baseUrl)) return 'Base URL 格式无效，请使用 http(s):// 或 / 开头的地址';
         if (!activeSettings.imageModel || !activeSettings.textModel || !activeSettings.protocol) return '请选择完整的模型和 API 协议';
         return '';
       }
@@ -2075,7 +2380,8 @@
           API_PROXY_MODE_KEY, 'api_protocol', 'image_aspect', 'image_resolution', 'image_quality',
           'output_format', 'image_background', 'video_duration', 'image_count', HISTORY_IMAGE_RETENTION_KEY,
           API_KEY_STORAGE_KEY, API_KEY_REMEMBER_KEY, TEXT_API_KEY_STORAGE_KEY,
-          MODEL_LIST_STORAGE_PREFIX, IMAGE_MODEL_STORAGE_PREFIX, TEXT_MODEL_STORAGE_PREFIX
+          MODEL_LIST_STORAGE_PREFIX, IMAGE_MODEL_STORAGE_PREFIX, TEXT_MODEL_STORAGE_PREFIX,
+          AUTO_UPSCALE_KEY
         ];
         Object.keys(PLATFORM_REGISTRY).forEach(platformId => {
           rollbackStorageKeys.push(
@@ -2178,6 +2484,29 @@
         }
       }
 
+      function normalizeDiscoveredModel(item) {
+        if (!item || typeof item !== 'object') return null;
+        const rawId = item.id || item.model || item.name || '';
+        const id = String(rawId).replace(/^models\//, '').trim();
+        if (!id) return null;
+        const name = String(
+          item.displayName || item.display_name || item.label || item.name || id
+        ).replace(/^models\//, '').trim() || id;
+        return { id, name };
+      }
+
+      function extractDiscoveredModels(data) {
+        const rawModels = Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data?.models)
+            ? data.models
+            : [];
+        const seen = new Set();
+        return rawModels
+          .map(normalizeDiscoveredModel)
+          .filter(model => model && !seen.has(model.id) && seen.add(model.id));
+      }
+
       async function runConnectionTest() {
         if (!settingsDraft || !testConnectionBtn) return;
         captureSettingsDraftPlatform();
@@ -2188,6 +2517,10 @@
           setConnectionStatus('请先填写 Base URL 和 API Key', 'danger');
           return;
         }
+        if (!isValidBaseUrl(settings.baseUrl)) {
+          setConnectionStatus('Base URL 格式无效，请检查地址', 'danger');
+          return;
+        }
         const originalText = testConnectionBtn.textContent;
         testConnectionBtn.disabled = true;
         updateModelsBtn && (updateModelsBtn.hidden = true);
@@ -2196,12 +2529,13 @@
         const timeout = setTimeout(() => controller.abort(), 15000);
         settingsConnectionOverride = { platformId, settings, apiKey: key, textApiKey: settingsDraft.textApiKey || '' };
         try {
-          const endpoints = getModelListEndpoints(settings.protocol || 'openai-chat');
+          const effectiveProtocol = getImageProtocol();
+          const endpoints = getModelListEndpoints(effectiveProtocol);
           let response = null;
           let lastError = null;
           for (const endpoint of endpoints) {
             try {
-              response = await fetch(endpoint, { method: 'GET', headers: buildRequestHeaders(key, settings.protocol), signal: controller.signal });
+              response = await fetch(endpoint, { method: 'GET', headers: buildRequestHeaders(key, effectiveProtocol), signal: controller.signal });
               if (response.ok) break;
               lastError = new Error(`HTTP ${response.status}`);
             } catch (error) {
@@ -2211,9 +2545,7 @@
           if (!response || !response.ok) throw lastError || new Error('连接失败');
           let data = null;
           try { data = await response.json(); } catch {}
-          const models = data?.data?.filter(item => item?.id).map(item => ({ id: item.id, name: item.id }))
-            || data?.models?.map(item => ({ id: String(item.name || item.id || '').replace(/^models\//, ''), name: item.displayName || item.name || item.id })).filter(item => item.id)
-            || [];
+          const models = extractDiscoveredModels(data);
           settingsDraft.pendingModels = models;
           setConnectionStatus(
             models.length ? `连接可用，发现 ${models.length} 个模型` : '连接可用，未返回兼容模型列表',
@@ -2284,7 +2616,11 @@
           settingsImportSummary.hidden = false;
           settingsImportSummary.textContent = `将导入 ${Object.keys(imported.platformSettings).length} 个平台、${summaryModels} 个模型${imported.credentials ? '，包含密钥' : '，不包含密钥'}`;
         }
-        if (!confirm('确认将配置载入设置草稿？载入后仍需点击保存。')) return;
+        if (!(await confirmUiAction({
+          title: '载入设置草稿',
+          message: '确认将配置载入设置草稿？载入后仍需点击保存。',
+          confirmLabel: '载入'
+        }))) return;
         settingsDraft.activePlatformId = imported.activePlatformId;
         settingsDraft.activePlatformKind = imported.activePlatformKind;
         settingsDraft.platformSettings = {
@@ -2296,6 +2632,10 @@
           ...imported.modelLists
         };
         settingsDraft.historyRetention = imported.historyImageRetention;
+        if (imported.autoUpscale !== undefined) {
+          localStorage.setItem(AUTO_UPSCALE_KEY, imported.autoUpscale ? '1' : '0');
+          if (autoUpscaleInput) autoUpscaleInput.checked = imported.autoUpscale;
+        }
         if (imported.credentials) {
           settingsDraft.apiKey = imported.credentials.apiKey;
           settingsDraft.textApiKey = imported.credentials.textApiKey;
@@ -2319,12 +2659,6 @@
       });
 
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && lightbox.classList.contains('show')) {
-          closeLightbox();
-        }
-        if (e.key === 'Escape' && announcementModal?.classList.contains('active')) {
-          closeAnnouncementModal();
-        }
         if (e.key === 'Escape' && settingsDrawer?.classList.contains('active')) {
           if (settingsMoreMenu && !settingsMoreMenu.hidden) {
             settingsMoreMenu.hidden = true;
@@ -2338,21 +2672,6 @@
             return;
           }
           closeSettingsDrawer();
-        }
-        if (e.key === 'Tab' && settingsDrawer?.classList.contains('active')) {
-          const focusable = [...settingsDrawer.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), a[href]:not([hidden]), [contenteditable="true"]:not([hidden]), [tabindex]:not([tabindex="-1"]):not([hidden])')]
-            .filter(element => element.offsetParent !== null);
-          if (focusable.length > 0) {
-            const first = focusable[0];
-            const last = focusable[focusable.length - 1];
-            if (e.shiftKey && document.activeElement === first) {
-              e.preventDefault();
-              last.focus();
-            } else if (!e.shiftKey && document.activeElement === last) {
-              e.preventDefault();
-              first.focus();
-            }
-          }
         }
       });
 
@@ -3457,7 +3776,7 @@
             window.open(videoSrc, '_blank', 'noopener');
             return;
           }
-          alert('这条历史记录没有可播放的视频');
+          showUiError('这条历史记录没有可播放的视频');
           return;
         }
 
@@ -3476,13 +3795,13 @@
         if (fallbackSrc) {
           openLightbox(fallbackSrc);
         } else {
-          alert('这条历史记录没有可预览的图片');
+          showUiError('这条历史记录没有可预览的图片');
         }
       }
 
       function openVideoLightbox(videoSrc) {
         if (!videoSrc) {
-          alert('这条历史记录没有可播放的视频');
+          showUiError('这条历史记录没有可播放的视频');
           return;
         }
 
@@ -3495,17 +3814,13 @@
           </div>
         `;
 
-        document.body.appendChild(overlay);
-        const close = () => overlay.remove();
+        const surface = overlay.querySelector('.video-lightbox-content');
+        const managed = openManagedOverlay(overlay, {
+          surface,
+          label: '视频预览'
+        });
+        const close = () => managed.close();
         overlay.querySelector('.video-lightbox-close')?.addEventListener('click', close);
-        overlay.addEventListener('click', (e) => {
-          if (e.target === overlay) close();
-        });
-        overlay.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape') close();
-        });
-        overlay.tabIndex = -1;
-        overlay.focus();
       }
 
       async function downloadImageSource(src, filename) {
@@ -3552,6 +3867,9 @@
 
       async function fetchMediaBlob(src, label = '媒体', options = {}) {
         if (!src) throw new Error(`${label}地址为空`);
+        const normalizedSrc = normalizeResultMediaUrl(src);
+        const isGoogleMedia = isKnownMediaProxyHost(normalizedSrc);
+        const googleApiKey = isGoogleMedia && typeof getApiKey === 'function' ? getApiKey() : '';
         const maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : 2;
         const idleTimeoutMs = Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : 20000;
         const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
@@ -3607,14 +3925,18 @@
           return new Blob(chunks, { type: contentType });
         }
 
-        async function fetchBlob(url) {
+        async function fetchBlob(url, headers = {}) {
           let lastError = null;
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             const controller = new AbortController();
             const idle = createIdleTimeout(controller);
             try {
               idle.reset();
-              const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+              const response = await fetch(url, {
+                cache: 'no-store',
+                headers,
+                signal: controller.signal
+              });
               if (!response.ok) {
                 const err = new Error(`${label}读取失败: HTTP ${response.status}`);
                 err.status = response.status;
@@ -3638,13 +3960,29 @@
           throw lastError || new Error(`${label}读取失败`);
         }
 
+        if (isGoogleMedia) {
+          const proxyUrl = buildMediaProxyUrlForTarget(normalizedSrc, { retry: true });
+          try {
+            return await fetchBlob(
+              proxyUrl,
+              googleApiKey ? { 'X-Goog-Api-Key': googleApiKey } : {}
+            );
+          } catch (err) {
+            const detail = err?.message || String(err || '读取失败');
+            throw new Error(`Google 返回的临时图片地址无法读取，可能已过期或需要有效 API Key（${detail}）`);
+          }
+        }
+
         try {
-          return await fetchBlob(src);
+          return await fetchBlob(normalizedSrc);
         } catch (err) {
-          if (!canProxyMediaUrl(src)) throw err;
+          if (!canProxyMediaUrl(normalizedSrc)) throw err;
           console.warn(`${label}直连读取失败，尝试通过代理读取:`, err);
           try {
-            return await fetchBlob(buildApiProxyUrlForTarget(src));
+            const proxyUrl = isKnownMediaProxyHost(normalizedSrc)
+              ? buildMediaProxyUrlForTarget(normalizedSrc, { retry: options.forceRefresh === true })
+              : buildApiProxyUrlForTarget(normalizedSrc);
+            return await fetchBlob(proxyUrl);
           } catch (proxyErr) {
             throw new Error(`${label}读取失败，直连和代理都不可用：${proxyErr.message || proxyErr}`);
           }
@@ -3790,7 +4128,7 @@
                 }, 1500);
               } catch (err) {
                 console.error('复制失败:', err);
-                alert('复制失败，请手动选择文本复制');
+                showUiError('复制失败，请手动选择文本复制');
               }
             });
 
@@ -3803,7 +4141,7 @@
                 // 检查参考图数量限制
                 const limit = getReferenceImageLimit();
                 if (state.images.length >= limit) {
-                  alert(`参考图最多只能添加 ${limit} 张`);
+                  showUiError(`参考图最多只能添加 ${limit} 张`);
                   return;
                 }
 
@@ -3832,7 +4170,7 @@
                 } catch (err) {
                   setHistoryActionButtonContent(addBtn, '➕', '参考');
                   addBtn.disabled = false;
-                  alert(`未在保存文件夹中找到原图。\n请先下载原图，并重命名为：${filenameHint}\n然后放入当前保存文件夹后再试。`);
+                  showUiError(`未在保存文件夹中找到原图。请先下载原图，并重命名为：${filenameHint}，然后放入当前保存文件夹后再试。`);
                 }
               });
             }
@@ -3885,7 +4223,7 @@
                   }
                 } catch (err) {
                   console.error(isVideoRecord ? '下载历史视频失败:' : '下载历史图片失败:', err);
-                  alert(err.message || (isVideoRecord ? '下载历史视频失败' : '下载历史图片失败'));
+                  showUiError(err.message || (isVideoRecord ? '下载历史视频失败' : '下载历史图片失败'));
                 } finally {
                   downloadBtn.innerHTML = originalHtml;
                   downloadBtn.disabled = false;
@@ -3952,7 +4290,13 @@
             // 删除按钮
             card.querySelector('.delete-btn').addEventListener('click', async (e) => {
               e.stopPropagation();
-              if (confirm('确定删除这条历史记录？')) {
+              if (await confirmUiAction({
+                title: '删除历史记录',
+                message: '确定删除这条历史记录？此操作不可恢复。',
+                confirmLabel: '删除',
+                danger: true,
+                trigger: e.currentTarget
+              })) {
                 await deleteHistoryById(record.id);
                 await renderHistory();
               }
@@ -4287,17 +4631,12 @@
           </div>
         `;
 
-        document.body.appendChild(dialogOverlay);
-        const closeDialog = () => dialogOverlay.remove();
+        const managed = openManagedOverlay(dialogOverlay, {
+          surface: dialogOverlay.querySelector('.history-params-dialog'),
+          label: '生成参数'
+        });
+        const closeDialog = () => managed.close();
         dialogOverlay.querySelector('.dialog-btn-cancel')?.addEventListener('click', closeDialog);
-        dialogOverlay.addEventListener('click', (e) => {
-          if (e.target === dialogOverlay) closeDialog();
-        });
-        dialogOverlay.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape') closeDialog();
-        });
-        dialogOverlay.tabIndex = -1;
-        dialogOverlay.focus();
       }
 
       // ========== 提示词库 UI 交互 ==========
@@ -4684,7 +5023,13 @@
 
       // 清空历史按钮
       clearHistoryBtn.addEventListener('click', async () => {
-        if (confirm('确定清空所有历史记录？此操作不可恢复。')) {
+        if (await confirmUiAction({
+          title: '清空历史记录',
+          message: '确定清空所有历史记录？此操作不可恢复。',
+          confirmLabel: '清空历史',
+          danger: true,
+          trigger: clearHistoryBtn
+        })) {
           await clearAllHistory();
           await renderHistory();
           flashStatus('已清空历史记录', 'success');
@@ -4697,7 +5042,7 @@
           await exportHistoryRecords();
         } catch (err) {
           console.error('导出历史记录失败:', err);
-          alert(err.message || '导出历史记录失败');
+          showUiError(err.message || '导出历史记录失败');
         } finally {
           if (historyMoreMenu) historyMoreMenu.open = false;
         }
@@ -4729,7 +5074,7 @@
           await handleHistoryImportFile(file);
         } catch (err) {
           console.error('导入历史记录失败:', err);
-          alert(err.message || '导入历史记录失败');
+          showUiError(err.message || '导入历史记录失败');
         }
       });
 
@@ -4808,14 +5153,16 @@
           </div>
         `;
 
-        document.body.appendChild(dialogOverlay);
-
         const imageInput = dialogOverlay.querySelector('#manual-image-model');
         const textInput = dialogOverlay.querySelector('#manual-text-model');
         const cancelBtn = dialogOverlay.querySelector('.dialog-btn-cancel');
         const confirmBtn = dialogOverlay.querySelector('.dialog-btn-confirm');
 
-        const closeDialog = () => dialogOverlay.remove();
+        const managed = openManagedOverlay(dialogOverlay, {
+          surface: dialogOverlay.querySelector('.dialog-content'),
+          label: '手动添加模型'
+        });
+        const closeDialog = () => managed.close();
         const confirmAdd = () => {
           const imageModelId = imageInput.value.trim();
           const textModelId = textInput.value.trim();
@@ -4836,18 +5183,9 @@
         [imageInput, textInput].forEach(input => {
           input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') confirmAdd();
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              e.stopPropagation();
-              closeDialog();
-            }
           });
         });
-        dialogOverlay.addEventListener('click', (e) => {
-          if (e.target === dialogOverlay) closeDialog();
-        });
-
-        setTimeout(() => imageInput.focus(), 80);
+        setTimeout(() => imageInput?.focus(), 80);
       }
 
       function addManualModel(type, modelId) {
@@ -4885,7 +5223,7 @@
         }
       }
 
-      function deleteCurrentModel(type) {
+      async function deleteCurrentModel(type) {
         const supported = settingsIsOpen ? !!getPlatformConfig(getSettingsPlatformId()).supported : isActivePlatformSupported();
         if (!supported) {
           flashStatus('当前平台尚未接入模型管理，请先切换到已接入平台', 'danger');
@@ -4905,7 +5243,12 @@
           flashStatus(`没有可删除的${label}`, 'danger');
           return;
         }
-        if (!confirm(`确定删除当前${label}？\n${modelId}`)) return;
+        if (!(await confirmUiAction({
+          title: `删除当前${label}`,
+          message: `确定删除当前${label}？\n${modelId}`,
+          confirmLabel: '删除',
+          danger: true
+        }))) return;
 
         removeModelOption(imageModelSelect, modelId);
         removeModelOption(textModelSelect, modelId);
@@ -4949,6 +5292,9 @@
         }
         if (proxyModeInput) {
           proxyModeInput.checked = localStorage.getItem(API_PROXY_MODE_KEY) === '1';
+        }
+        if (autoUpscaleInput) {
+          autoUpscaleInput.checked = localStorage.getItem(AUTO_UPSCALE_KEY) === '1';
         }
         if (apiLinkEl) {
           const url = getBaseUrl();
@@ -5083,6 +5429,22 @@
         return { retryable: false, terminal: false, retryAfterMs, reason: 'unknown', message };
       }
 
+      function formatImageModelCompatibilityError(errorMessage, model = getImageModel()) {
+        const message = String(errorMessage || '');
+        if (!/images endpoint requires an image model/i.test(message)) return '';
+
+        const quotedModel = message.match(/images endpoint requires an image model,\s*got\s+["']([^"']+)["']/i);
+        const bareModel = message.match(/images endpoint requires an image model,\s*got\s+(.+?)(?:\s+\([^)]*\))?$/i);
+        const rejectedModel = String(quotedModel?.[1] || bareModel?.[1] || model || '').trim();
+        const modelLabel = rejectedModel ? `“${rejectedModel}”` : '当前模型';
+        return `兼容图片接口拒绝了${modelLabel}。应用已原样发送你填写的模型名称，不限制、猜测或替换模型；请确认当前中转站是否支持该模型的图片接口。`;
+      }
+
+      function isExpectedCapabilityGuard(errorLike) {
+        const message = String(errorLike?.message || errorLike || '');
+        return /Gemini .*Google .*OpenAI Chat|Veo .*Base URL/i.test(message);
+      }
+
       async function mapPool(items, limit, worker) {
         const list = Array.isArray(items) ? items : [];
         const concurrency = Math.max(1, Math.min(Number(limit) || 1, list.length || 1));
@@ -5101,6 +5463,9 @@
       }
 
       function parseApiError(errorMessage) {
+        const imageModelError = formatImageModelCompatibilityError(errorMessage);
+        if (imageModelError) return imageModelError;
+
         // 先尝试直接匹配英文错误消息并翻译
         if (errorMessage.includes('token quota is not enough') ||
           errorMessage.includes('pre_consume_token_quota_failed')) {
@@ -5409,8 +5774,9 @@
 
       function openCanvasTool(options = {}) {
         if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
-        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
-        return import(canvasUrl)
+        const canvasUrl = new URL(_canvasWorkspaceModulePath, _appBase).href;
+        return ensureWorkspaceStylesheet('canvas', 'canvas.css')
+          .then(() => import(canvasUrl))
           .then(module => {
             const result = module.openCanvasWorkspace(options);
             setWorkspaceNavActive('canvas');
@@ -5424,7 +5790,7 @@
       }
 
       function closeCanvasTool() {
-        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        const canvasUrl = new URL(_canvasWorkspaceModulePath, _appBase).href;
         return import(canvasUrl)
           .then(module => module.closeCanvasWorkspace?.())
           .catch(error => {
@@ -5435,7 +5801,7 @@
 
       async function getCanvasProjectTargets() {
         if (!CANVAS_FEATURE_ENABLED) return [];
-        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        const canvasUrl = new URL(_canvasWorkspaceModulePath, _appBase).href;
         const module = await import(canvasUrl);
         return typeof module.getCanvasProjectTargets === 'function' ? module.getCanvasProjectTargets() : [];
       }
@@ -5446,7 +5812,7 @@
 
       async function addPromptEntryToCanvas(entry, options = {}) {
         if (!CANVAS_FEATURE_ENABLED) throw new Error(CANVAS_DEV_NOTICE);
-        const canvasUrl = new URL('canvas/canvas-workspace.js?v=20260803-4', _appBase).href;
+        const canvasUrl = new URL(_canvasWorkspaceModulePath, _appBase).href;
         const module = await import(canvasUrl);
         if (typeof module.addPromptEntryToCanvas !== 'function') {
           throw new Error('Canvas prompt integration is unavailable');
@@ -5988,6 +6354,29 @@
         };
       }
 
+      function buildGeminiOpenAIImagesPayload(prompt, imgs = [], model = getImageModel()) {
+        const context = getImageRequestContext(model, { images: imgs });
+        const payload = {
+          // Keep the configured model untouched. NewAPI/sub2api owns the
+          // mapping from the display name to the upstream image model.
+          model,
+          prompt: getImagePromptWithAspect(prompt, context),
+          n: 1,
+          response_format: 'b64_json'
+        };
+        const reference = imgs.find(img => img?.dataUrl)?.dataUrl;
+        if (reference) payload.image = reference;
+        return payload;
+      }
+
+      function buildGeminiOpenAIImagesRequest(prompt, imgs, imageModel, key) {
+        return {
+          endpoint: buildApiUrl('/v1/images/generations'),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify(buildGeminiOpenAIImagesPayload(prompt, imgs, imageModel))
+        };
+      }
+
       function buildOpenAIResponsesImagePayload(prompt, imgs = [], model = getImageModel(), options = {}) {
         const context = getImageRequestContext(model, { images: imgs });
         const requestPrompt = getImagePromptWithAspect(prompt, context);
@@ -6098,10 +6487,13 @@
       }
 
       function buildPayload(prompt) {
-        const protocol = getProtocol();
+        const protocol = getImageProtocol();
         const imgs = getReferenceImagesForRequest(state.images, protocol);
 
         if (protocol === 'openai-images') {
+          if (activePlatformId === 'gemini') {
+            return buildGeminiOpenAIImagesPayload(prompt, imgs, getImageModel());
+          }
           // OpenAI Images 格式: POST /v1/images/generations
           const payload = {
             model: getImageModel(),
@@ -7008,7 +7400,12 @@
           externalSignal?.removeEventListener('abort', propagateAbort);
           if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
           if (fetchErr.name === 'AbortError') throw new Error('视频请求超时（10分钟），请稍后重试');
-          throw fetchErr;
+          let endpointHost = '';
+          try { endpointHost = new URL(request.endpoint, window.location.href).hostname; } catch {}
+          if (/^api\.openai\.com$/i.test(endpointHost) && !isApiProxyEnabled()) {
+            throw new Error('OpenAI 直连请求失败，当前网络无法访问 api.openai.com。请在设置中开启代理模式，或更换可用的中转地址后重试');
+          }
+          throw new Error(`网络请求失败（${endpointHost || '目标接口'}）：${fetchErr.message || fetchErr}`);
         }
         clearTimeout(timeoutId);
         externalSignal?.removeEventListener('abort', propagateAbort);
@@ -7200,11 +7597,36 @@
             signal: controller.signal
           });
         } catch (fetchErr) {
-          clearTimeout(timeoutId);
-          externalSignal?.removeEventListener('abort', propagateAbort);
-          if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
-          if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
-          throw fetchErr;
+          let proxyRecovered = false;
+          const directEndpoint = String(request.endpoint || '');
+          const canRetryThroughAppProxy = !externalSignal?.aborted
+            && fetchErr?.name !== 'AbortError'
+            && /^https:\/\//i.test(directEndpoint)
+            && !isAppProxyUrl(directEndpoint)
+            && !isApiProxyEnabled();
+          if (canRetryThroughAppProxy) {
+            try {
+              const proxyEndpoint = buildApiProxyUrlForTarget(directEndpoint);
+              debugLog('[callImageAPI] direct request failed, retrying through same-origin proxy:', proxyEndpoint);
+              res = await fetch(proxyEndpoint, {
+                method: 'POST',
+                headers: request.headers,
+                body: request.body,
+                signal: controller.signal
+              });
+              proxyRecovered = true;
+            } catch (proxyErr) {
+              proxyErr.cause = fetchErr;
+              fetchErr = proxyErr;
+            }
+          }
+          if (!proxyRecovered) {
+            clearTimeout(timeoutId);
+            externalSignal?.removeEventListener('abort', propagateAbort);
+            if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
+            if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
+            throw fetchErr;
+          }
         }
         clearTimeout(timeoutId);
         externalSignal?.removeEventListener('abort', propagateAbort);
@@ -7264,7 +7686,7 @@
             mime = inline.mime_type || inline.mimeType || mime;
           }
           if (p.file_data?.file_uri || p.fileData?.fileUri) {
-            imageUrl = p.file_data?.file_uri || p.fileData?.fileUri;
+            imageUrl = normalizeResultMediaUrl(p.file_data?.file_uri || p.fileData?.fileUri);
           }
         });
 
@@ -7425,12 +7847,26 @@
             ? result.imageBase64
             : `data:${result.mime || 'image/png'};base64,${result.imageBase64}`;
         }
-        return result.imageUrl || '';
+        return normalizeResultMediaUrl(result.imageUrl || '');
+      }
+
+      const RESULT_MEDIA_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+
+      function getResultImageDisplaySrc(src) {
+        const normalized = normalizeResultMediaUrl(src);
+        return isKnownMediaProxyHost(normalized) ? RESULT_MEDIA_PLACEHOLDER : normalized;
+      }
+
+      function getResultImageActionSrc(src) {
+        const normalized = normalizeResultMediaUrl(src);
+        return isKnownMediaProxyHost(normalized)
+          ? buildMediaProxyUrlForTarget(normalized, { retry: true })
+          : normalized;
       }
 
       function getResultVideoSrc(result) {
         if (!result) return '';
-        return result.videoSrc || result.videoUrl || '';
+        return normalizeResultMediaUrl(result.videoSrc || result.videoUrl || '');
       }
 
       function hasResultVideo(result) {
@@ -7464,6 +7900,7 @@
         try {
           const persistentSrc = await getPersistentImageSource(sourceState.displaySrc, {
             maxRetries: 2,
+            forceRefresh: options.forceRefresh === true,
             onProgress: (progress) => {
               sourceState.downloadProgress = progress;
               options.onProgress?.(progress);
@@ -7521,6 +7958,26 @@
       // 判断 result 是否包含图片
       function hasResultImage(result) {
         return !!(result && (result.imageBase64 || result.imageUrl));
+      }
+
+      function bindResultImageFallback(image, source) {
+        if (!image || !source || /^data:/i.test(source)) return;
+        const candidates = [source];
+        if (isKnownMediaProxyHost(source)) {
+          candidates.push(buildMediaProxyUrlForTarget(source, { retry: true }));
+        } else if (canProxyMediaUrl(source)) {
+          candidates.push(buildApiProxyUrlForTarget(source));
+        }
+        const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+        if (uniqueCandidates.length < 2) return;
+
+        let attempt = 0;
+        image.addEventListener('error', () => {
+          attempt += 1;
+          const next = uniqueCandidates[attempt];
+          if (!next || image.src === next) return;
+          image.src = next;
+        });
       }
 
       function hasVisualResult(result) {
@@ -7752,14 +8209,20 @@
       }
 
       async function callTextAPI(promptText, options = {}) {
+        const capability = getTextCapabilityStatus();
+        if (!capability.available) {
+          const error = new Error(capability.message);
+          error.code = 'GEMINI_NATIVE_TEXT_UNSUPPORTED';
+          throw error;
+        }
         const key = getTextApiKey();
         if (!key) throw new Error('请先配置 API Key');
 
         const payload = buildTextApiPayload(promptText, options);
 
-        const res = await fetch(buildApiUrl('/v1/chat/completions'), {
+        const res = await fetch(capability.endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          headers: buildRequestHeaders(key, 'openai-chat'),
           body: JSON.stringify(payload)
         });
 
@@ -8451,6 +8914,310 @@ ${chinesePrompt}
         `).join('');
       }
 
+      function showUpscaleToolDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'prompt-compare-overlay upscale-tool-overlay';
+        overlay.innerHTML = `
+          <div class="prompt-compare-panel upscale-tool-panel">
+            <div class="prompt-compare-header">
+              <h3>AI 超分</h3>
+              <button class="prompt-compare-close" type="button">✕</button>
+            </div>
+            <div class="prompt-compare-content upscale-tool-content">
+              <div class="upscale-upload-zone" tabindex="0">
+                <input class="upscale-file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <i class="upscale-upload-icon" data-lucide="upload" aria-hidden="true"></i>
+                <strong>拖放图片或点击上传</strong>
+                <small>支持 PNG / JPEG / WebP，建议小于 10MB</small>
+              </div>
+              <div class="upscale-workspace" hidden>
+                <div class="upscale-preview-row">
+                  <div class="upscale-preview-col">
+                    <div class="upscale-preview-label">原始图片</div>
+                    <div class="upscale-preview-box">
+                      <img class="upscale-original-img" alt="原始图片">
+                    </div>
+                    <div class="upscale-dimensions upscale-original-dim"></div>
+                  </div>
+                  <div class="upscale-preview-col">
+                    <div class="upscale-preview-label">超分结果</div>
+                    <div class="upscale-preview-box">
+                      <img class="upscale-result-img" alt="超分结果" hidden>
+                      <div class="upscale-preview-empty">点击"开始超分"后显示结果</div>
+                    </div>
+                    <div class="upscale-dimensions upscale-result-dim"></div>
+                  </div>
+                </div>
+                <div class="upscale-options">
+                  <label class="upscale-scale-option">
+                    <input type="radio" name="upscale-scale" value="2x" checked>
+                    <strong>2x</strong>
+                    <small>放大至 2 倍</small>
+                  </label>
+                  <label class="upscale-scale-option">
+                    <input type="radio" name="upscale-scale" value="4x">
+                    <strong>4x</strong>
+                    <small>放大至 4 倍</small>
+                  </label>
+                  <label class="upscale-scale-option">
+                    <input type="radio" name="upscale-scale" value="custom">
+                    <strong>自定义</strong>
+                    <small>指定目标尺寸</small>
+                  </label>
+                  <div class="upscale-custom-size" hidden>
+                    <label>宽
+                      <input class="upscale-custom-width" type="number" min="1" max="8192">
+                    </label>
+                    <label>高
+                      <input class="upscale-custom-height" type="number" min="1" max="8192">
+                    </label>
+                  </div>
+                </div>
+                <div class="upscale-progress" hidden>
+                  <div class="upscale-progress-bar">
+                    <div class="upscale-progress-fill"></div>
+                  </div>
+                  <span class="upscale-progress-text">准备中...</span>
+                </div>
+              </div>
+            </div>
+            <div class="prompt-compare-actions">
+              <button class="prompt-compare-btn prompt-compare-btn-secondary close-btn" type="button">关闭</button>
+              <button class="prompt-compare-btn prompt-compare-btn-secondary upscale-download-btn" type="button" disabled>下载结果</button>
+              <button class="prompt-compare-btn prompt-compare-btn-secondary upscale-send-btn" type="button" disabled>发送到输出</button>
+              <button class="prompt-compare-btn prompt-compare-btn-primary upscale-start-btn" type="button" disabled>开始超分</button>
+            </div>
+          </div>
+        `;
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.upscale-tool-panel'),
+          label: 'AI 超分'
+        });
+        const close = () => managed.close();
+        const uploadZone = overlay.querySelector('.upscale-upload-zone');
+        const fileInput = overlay.querySelector('.upscale-file-input');
+        const workspace = overlay.querySelector('.upscale-workspace');
+        const originalImg = overlay.querySelector('.upscale-original-img');
+        const resultImg = overlay.querySelector('.upscale-result-img');
+        const resultEmpty = overlay.querySelector('.upscale-preview-empty');
+        const originalDim = overlay.querySelector('.upscale-original-dim');
+        const resultDim = overlay.querySelector('.upscale-result-dim');
+        const startBtn = overlay.querySelector('.upscale-start-btn');
+        const downloadBtn = overlay.querySelector('.upscale-download-btn');
+        const sendBtn = overlay.querySelector('.upscale-send-btn');
+        const progressEl = overlay.querySelector('.upscale-progress');
+        const progressText = overlay.querySelector('.upscale-progress-text');
+        const progressFill = overlay.querySelector('.upscale-progress-fill');
+        const customSizeRow = overlay.querySelector('.upscale-custom-size');
+        const customWidthInput = overlay.querySelector('.upscale-custom-width');
+        const customHeightInput = overlay.querySelector('.upscale-custom-height');
+        try { window.lucide?.createIcons?.(); } catch {}
+
+        let sourceDataUrl = null;
+        let sourceDimensions = null;
+        let resultDataUrl = null;
+        let resultDimensions = null;
+        let isProcessing = false;
+        const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+        overlay.querySelector('.prompt-compare-close')?.addEventListener('click', close);
+        overlay.querySelector('.close-btn')?.addEventListener('click', close);
+
+        function readFileAsDataURL(file) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('文件读取失败'));
+            reader.readAsDataURL(file);
+          });
+        }
+
+        async function handleFile(file) {
+          if (!file) return;
+          if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
+            flashStatus('不支持的图片格式，请上传 PNG / JPEG / WebP', 'danger');
+            return;
+          }
+          if (file.size > MAX_FILE_SIZE) {
+            flashStatus('图片过大（超过 10MB），请压缩后重试', 'danger');
+            return;
+          }
+          try {
+            const dataUrl = await readFileAsDataURL(file);
+            const dimensions = await ImageRatio.measureImageSource(dataUrl);
+            if (!dimensions || !dimensions.width) {
+              flashStatus('图片读取失败，请更换图片重试', 'danger');
+              return;
+            }
+            sourceDataUrl = dataUrl;
+            sourceDimensions = dimensions;
+            resultDataUrl = null;
+            resultDimensions = null;
+            uploadZone.hidden = true;
+            workspace.hidden = false;
+            originalImg.src = dataUrl;
+            originalDim.textContent = `${dimensions.width} × ${dimensions.height} px`;
+            resultImg.hidden = true;
+            resultImg.src = '';
+            if (resultEmpty) resultEmpty.hidden = false;
+            resultDim.textContent = '';
+            downloadBtn.disabled = true;
+            sendBtn.disabled = true;
+            startBtn.disabled = false;
+            startBtn.textContent = '开始超分';
+            customWidthInput.value = dimensions.width * 2;
+            customHeightInput.value = dimensions.height * 2;
+            flashStatus('图片已加载，选择倍率后点击"开始超分"', 'success');
+          } catch (err) {
+            flashStatus(err.message || '图片加载失败', 'danger');
+          }
+        }
+
+        uploadZone?.addEventListener('click', () => fileInput?.click());
+        uploadZone?.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            fileInput?.click();
+          }
+        });
+        uploadZone?.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          uploadZone.classList.add('dragging');
+        });
+        uploadZone?.addEventListener('dragleave', () => uploadZone.classList.remove('dragging'));
+        uploadZone?.addEventListener('drop', (e) => {
+          e.preventDefault();
+          uploadZone.classList.remove('dragging');
+          handleFile(e.dataTransfer?.files?.[0]);
+        });
+        fileInput?.addEventListener('change', () => {
+          handleFile(fileInput.files?.[0]);
+          fileInput.value = '';
+        });
+
+        overlay.querySelectorAll('input[name="upscale-scale"]').forEach(radio => {
+          radio.addEventListener('change', () => {
+            const isCustom = radio.value === 'custom';
+            customSizeRow.hidden = !isCustom;
+            if (isCustom && sourceDimensions) {
+              customWidthInput.value = sourceDimensions.width * 2;
+              customHeightInput.value = sourceDimensions.height * 2;
+            }
+          });
+        });
+
+        function getTargetDimensions() {
+          if (!sourceDimensions) return null;
+          const selected = overlay.querySelector('input[name="upscale-scale"]:checked')?.value || '2x';
+          if (selected === '2x') {
+            return { width: sourceDimensions.width * 2, height: sourceDimensions.height * 2 };
+          } else if (selected === '4x') {
+            return { width: sourceDimensions.width * 4, height: sourceDimensions.height * 4 };
+          } else {
+            let w = parseInt(customWidthInput.value, 10);
+            let h = parseInt(customHeightInput.value, 10);
+            if (!w || w < 1) w = sourceDimensions.width * 2;
+            if (!h || h < 1) h = sourceDimensions.height * 2;
+            w = Math.min(w, 8192);
+            h = Math.min(h, 8192);
+            return { width: w, height: h };
+          }
+        }
+
+        startBtn?.addEventListener('click', async () => {
+          if (!sourceDataUrl || isProcessing) return;
+          const target = getTargetDimensions();
+          if (!target) {
+            flashStatus('请先上传图片', 'danger');
+            return;
+          }
+          isProcessing = true;
+          startBtn.disabled = true;
+          downloadBtn.disabled = true;
+          sendBtn.disabled = true;
+          progressEl.hidden = false;
+          progressFill.style.width = '0%';
+          progressText.textContent = '准备中...';
+          let progressPercent = 0;
+          const progressTimer = setInterval(() => {
+            progressPercent = Math.min(progressPercent + 5, 90);
+            progressFill.style.width = progressPercent + '%';
+          }, 500);
+          try {
+            const result = await ImageUpscaler.upscale(
+              sourceDataUrl,
+              target.width,
+              target.height,
+              { onProgress: (msg) => { progressText.textContent = msg; } }
+            );
+            clearInterval(progressTimer);
+            progressFill.style.width = '100%';
+            progressText.textContent = '超分完成！';
+            if (result && result.dataUrl) {
+              resultDataUrl = result.dataUrl;
+              resultDimensions = { width: result.width, height: result.height };
+              resultImg.src = result.dataUrl;
+              resultImg.hidden = false;
+              if (resultEmpty) resultEmpty.hidden = true;
+              resultDim.textContent = `${result.width} × ${result.height} px（${result.method === 'ai' ? 'AI' : '高速缩放'}）`;
+              downloadBtn.disabled = false;
+              sendBtn.disabled = false;
+              startBtn.disabled = false;
+              startBtn.textContent = '重新超分';
+              flashStatus(`超分完成：${result.width}×${result.height}（${result.method === 'ai' ? 'AI 模型' : '高速回退'}）`, 'success');
+              setTimeout(() => { progressEl.hidden = true; }, 1500);
+            } else {
+              throw new Error('超分结果为空');
+            }
+          } catch (err) {
+            clearInterval(progressTimer);
+            progressEl.hidden = true;
+            startBtn.disabled = false;
+            const msg = err?.message || '超分失败';
+            let userMsg = msg;
+            if (/timeout/i.test(msg)) userMsg = '超分超时，图片可能过大，请尝试更小的倍率';
+            else if (/WebGL/i.test(msg)) userMsg = '浏览器不支持 WebGL，已使用高速缩放替代';
+            else if (/Script load/i.test(msg)) userMsg = 'AI 模型加载失败，请检查网络后重试';
+            flashStatus(userMsg, 'danger');
+          } finally {
+            isProcessing = false;
+          }
+        });
+
+        downloadBtn?.addEventListener('click', async () => {
+          if (!resultDataUrl) return;
+          try {
+            await downloadImageSource(resultDataUrl, `upscale-${Date.now()}.png`);
+            flashStatus('超分图片已下载', 'success');
+          } catch (err) {
+            flashStatus(err.message || '下载失败', 'danger');
+          }
+        });
+
+        sendBtn?.addEventListener('click', async () => {
+          if (!resultDataUrl) return;
+          try {
+            const base64 = resultDataUrl.includes(',') ? resultDataUrl.split(',')[1] : resultDataUrl;
+            await appendResult({
+              imageBase64: base64,
+              mime: 'image/png',
+              text: '',
+              sourceWidth: resultDimensions?.width,
+              sourceHeight: resultDimensions?.height,
+              upscaled: true,
+              upscaleMethod: 'manual'
+            }, getCurrentGenerationParams({
+              prompt: `AI 超分：${sourceDimensions?.width}×${sourceDimensions?.height} → ${resultDimensions?.width}×${resultDimensions?.height}`,
+              model: 'local-upscaler',
+              protocol: 'local-upscaler'
+            }));
+            flashStatus('超分结果已添加到输出面板', 'success');
+          } catch (err) {
+            flashStatus(err.message || '发送到输出失败', 'danger');
+          }
+        });
+      }
+
       function showGifToolDialog() {
         const localSources = getGifSourceImages();
         let gridReferences = getInitialGifGridReferences();
@@ -8565,9 +9332,11 @@ ${chinesePrompt}
             </div>
           </div>
         `;
-        document.body.appendChild(overlay);
-
-        const close = () => overlay.remove();
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.gif-tool-panel'),
+          label: '动图生成'
+        });
+        const close = () => managed.close();
         const customPanel = overlay.querySelector('.gif-custom-panel');
         const generateBtn = overlay.querySelector('.gif-generate-btn');
         const referenceSliceBtn = overlay.querySelector('.gif-reference-slice-btn');
@@ -8825,9 +9594,11 @@ ${chinesePrompt}
             </div>
           </div>
         `;
-        document.body.appendChild(overlay);
-
-        const close = () => overlay.remove();
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.prompt-compare-panel'),
+          label: '反推提示词'
+        });
+        const close = () => managed.close();
         const textarea = overlay.querySelector('#reverse-prompt-textarea');
         const useBtn = overlay.querySelector('.use-reverse-btn');
         const saveBtn = overlay.querySelector('.save-reverse-btn');
@@ -8944,8 +9715,6 @@ ${chinesePrompt}
           </div>
         `;
 
-        document.body.appendChild(overlay);
-
         const closeBtn = overlay.querySelector('.close-btn');
         const closeIconBtn = overlay.querySelector('.prompt-compare-close');
         const optimizeNowBtn = overlay.querySelector('#optimize-now-btn');
@@ -8954,12 +9723,16 @@ ${chinesePrompt}
         const useOptimizedBtn = overlay.querySelector('.use-optimized-btn');
         const englishTranslationSection = overlay.querySelector('#english-translation-section');
         let isDialogClosed = false;
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.prompt-compare-panel'),
+          label: '提示词优化',
+          onClose: () => { isDialogClosed = true; }
+        });
 
         function closeDialog() {
           if (isDialogClosed) return;
           isDialogClosed = true;
-          document.removeEventListener('keydown', escHandler);
-          overlay.remove();
+          managed.close();
         }
 
         // "开始优化"按钮点击事件
@@ -9086,13 +9859,6 @@ ${chinesePrompt}
           }
         });
 
-        // ESC键关闭
-        const escHandler = (e) => {
-          if (e.key === 'Escape') {
-            closeDialog();
-          }
-        };
-        document.addEventListener('keydown', escHandler);
       }
 
       // 显示分镜输入框
@@ -9103,7 +9869,7 @@ ${chinesePrompt}
           <div class="storyboard-panel">
             <div class="storyboard-header">
               <h3>🎬 分镜脚本输入</h3>
-              <button class="storyboard-close">✕</button>
+              <button class="storyboard-close" type="button" aria-label="Close storyboard input" title="Close">✕</button>
             </div>
             <div class="storyboard-content">
               <div class="storyboard-input-area">
@@ -9122,7 +9888,11 @@ ${chinesePrompt}
           </div>
         `;
 
-        document.body.appendChild(overlay);
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.storyboard-panel'),
+          label: '分镜脚本输入'
+        });
+        const closeDialog = () => managed.close();
 
         const textarea = overlay.querySelector('.storyboard-textarea');
         const closeBtn = overlay.querySelectorAll('.close-btn, .storyboard-close');
@@ -9130,19 +9900,19 @@ ${chinesePrompt}
 
         // 关闭弹窗
         closeBtn.forEach(btn => {
-          btn.addEventListener('click', () => overlay.remove());
+          btn.addEventListener('click', closeDialog);
         });
 
         // 点击遮罩层关闭
         overlay.addEventListener('click', (e) => {
-          if (e.target === overlay) overlay.remove();
+          if (e.target === overlay) closeDialog();
         });
 
         // 识别分镜
         analyzeBtn.addEventListener('click', async () => {
           const scriptText = textarea.value.trim();
           if (!scriptText) {
-            alert('请输入分镜脚本');
+            showUiError('请输入分镜脚本');
             return;
           }
 
@@ -9152,10 +9922,10 @@ ${chinesePrompt}
 
           try {
             const result = await analyzeStoryboard(scriptText);
-            overlay.remove();
+            closeDialog();
             showStoryboardPreview(result, scriptText);
           } catch (error) {
-            alert('识别失败：' + error.message);
+            showUiError('识别失败：' + error.message);
             analyzeBtn.disabled = false;
             analyzeBtn.textContent = '识别分镜';
           }
@@ -9169,7 +9939,7 @@ ${chinesePrompt}
         const { globalRequirements, shots } = result;
 
         if (!shots || shots.length === 0) {
-          alert('未识别到分镜，请检查脚本格式');
+          showUiError('未识别到分镜，请检查脚本格式');
           return;
         }
 
@@ -9180,8 +9950,8 @@ ${chinesePrompt}
         shots.forEach(shot => {
           shotsHtml += `
             <div class="storyboard-shot-item">
-              <span class="storyboard-shot-number">分镜${shot.index}：</span>
-              <textarea class="storyboard-shot-desc" data-index="${shot.index}" rows="2">${shot.description}</textarea>
+              <span class="storyboard-shot-number">分镜${escapeHtml(shot.index)}：</span>
+              <textarea class="storyboard-shot-desc" data-index="${escapeHtml(shot.index)}" rows="2">${escapeHtml(shot.description || '')}</textarea>
             </div>
           `;
         });
@@ -9190,13 +9960,13 @@ ${chinesePrompt}
           <div class="storyboard-panel">
             <div class="storyboard-header">
               <h3>🎬 分镜识别结果</h3>
-              <button class="storyboard-close">✕</button>
+              <button class="storyboard-close" type="button" aria-label="Close storyboard result" title="Close">✕</button>
             </div>
             <div class="storyboard-content">
               ${globalRequirements ? `
                 <div class="storyboard-preview-section">
                   <div class="storyboard-section-title">全局要求：</div>
-                  <textarea class="storyboard-global-req" rows="2">${globalRequirements}</textarea>
+                  <textarea class="storyboard-global-req" rows="2">${escapeHtml(globalRequirements)}</textarea>
                 </div>
               ` : ''}
               <div class="storyboard-preview-section">
@@ -9213,19 +9983,23 @@ ${chinesePrompt}
           </div>
         `;
 
-        document.body.appendChild(overlay);
+        const managed = openManagedOverlay(overlay, {
+          surface: overlay.querySelector('.storyboard-panel'),
+          label: '分镜识别结果'
+        });
+        const closeDialog = () => managed.close();
 
         const closeBtn = overlay.querySelector('.storyboard-close');
         const retryBtn = overlay.querySelector('.retry-btn');
         const generateBtn = overlay.querySelector('.generate-btn');
 
-        closeBtn.addEventListener('click', () => overlay.remove());
+        closeBtn.addEventListener('click', closeDialog);
         overlay.addEventListener('click', (e) => {
-          if (e.target === overlay) overlay.remove();
+          if (e.target === overlay) closeDialog();
         });
 
         retryBtn.addEventListener('click', () => {
-          overlay.remove();
+          closeDialog();
           showStoryboardInput();
         });
 
@@ -9246,7 +10020,7 @@ ${chinesePrompt}
           });
 
           if (updatedShots.length === 0) {
-            alert('请至少保留一个分镜描述');
+            showUiError('请至少保留一个分镜描述');
             return;
           }
 
@@ -9256,7 +10030,7 @@ ${chinesePrompt}
             shots: updatedShots
           };
 
-          overlay.remove();
+          closeDialog();
           generateStoryboardImages(updatedResult);
         });
       }
@@ -9267,7 +10041,7 @@ ${chinesePrompt}
         const key = getApiKey();
         if (!key) throw new Error('请先配置 API Key');
 
-        const protocol = getProtocol();
+        const protocol = getImageProtocol();
         const imageModel = getImageModel();
         let imgs = getReferenceImagesForRequest((images || []).filter(img => img.dataUrl), protocol);
         if (typeof ImageRatio.compressReferenceImages === 'function') {
@@ -9276,7 +10050,11 @@ ${chinesePrompt}
         let response;
 
         if (protocol === 'openai-images') {
-          if (imgs.length > 0) {
+          if (activePlatformId === 'gemini') {
+            const request = buildGeminiOpenAIImagesRequest(prompt, imgs, imageModel, key);
+            debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
+            response = await sendImageRequest(request, 'gemini-openai-images', signal);
+          } else if (imgs.length > 0) {
             const editsRequest = await buildOpenAIImageEditsRequest(prompt, imgs, imageModel, key);
             debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', editsRequest.endpoint, 'hasImages:', true);
             response = await sendImageRequest(editsRequest, 'openai-images-edits', signal);
@@ -9290,7 +10068,7 @@ ${chinesePrompt}
                 debugLog('[callImageAPI] retrying with relay generations endpoint');
                 response = await sendImageRequest(relayRequest, 'openai-images-relay-generations', signal);
               } else {
-                throw new Error(errorText || `API 错误: ${response.status}`);
+                throw new Error(formatImageModelCompatibilityError(errorText, imageModel) || errorText || `API 错误: ${response.status}`);
               }
             }
           } else {
@@ -9363,7 +10141,7 @@ ${chinesePrompt}
         if (!response.ok) {
           const errorText = extractApiErrorMessage(response.data) || response.raw || `API 错误: ${response.status}`;
           console.error('[callImageAPI] error response:', response.raw);
-          throw new Error(errorText || `API 错误: ${response.status}`);
+          throw new Error(formatImageModelCompatibilityError(errorText, imageModel) || errorText || `API 错误: ${response.status}`);
         }
 
         const apiErrorMessage = extractApiErrorMessage(response.data);
@@ -9377,6 +10155,37 @@ ${chinesePrompt}
         if (!result.imageBase64 && !result.imageUrl && !result.text) {
           throw new Error('接口未返回可用图片');
         }
+
+        // === 自动超分 ===
+        if (isAutoUpscaleEnabled() && hasResultImage(result) && window.ImageUpscaler) {
+          try {
+            const detection = ImageUpscaler.detectUpscaleNeed(result, resolutionSelect?.value, aspectSelect?.value);
+            if (detection.needed) {
+              flashStatus('正在AI超分放大...', '');
+              const src = result.imageBase64
+                ? (String(result.imageBase64).startsWith('data:') ? result.imageBase64 : `data:${result.mime || 'image/png'};base64,${result.imageBase64}`)
+                : result.imageUrl;
+              const persistentSrc = src.startsWith('data:') ? src : await getPersistentImageSource(src);
+              const upscaled = await ImageUpscaler.upscale(persistentSrc, detection.targetWidth, detection.targetHeight, {
+                onProgress: (msg) => flashStatus(msg, '')
+              });
+              if (upscaled.dataUrl && !upscaled.error) {
+                result.imageBase64 = upscaled.dataUrl.split(',')[1] || upscaled.dataUrl;
+                result.imageUrl = '';
+                result.sourceWidth = upscaled.width;
+                result.sourceHeight = upscaled.height;
+                result.upscaled = true;
+                result.upscaleMethod = upscaled.method;
+                flashStatus(`超分完成：${upscaled.width}×${upscaled.height}（${upscaled.method === 'ai' ? 'AI' : '高速'}）`, 'success');
+              }
+            }
+          } catch (e) {
+            console.warn('[upscale] 超分失败，使用原图:', e);
+            flashStatus('超分失败，已使用原图', 'danger');
+          }
+        }
+        // === 自动超分结束 ===
+
         return result;
       }
 
@@ -9385,11 +10194,14 @@ ${chinesePrompt}
       }
 
       async function callVideoAPI(prompt, images, signal) {
-        const key = getApiKey();
-        if (!key) throw new Error('请先配置 API Key');
         if (activePlatformId !== 'openaiVideo' && activePlatformId !== 'geminiVideo' && activePlatformId !== 'qwenVideo' && activePlatformId !== 'doubaoVideo' && activePlatformId !== 'grokVideo') {
           throw new Error('当前视频平台暂未接入');
         }
+        if (activePlatformId === 'geminiVideo' && isGoogleNativeGeminiPlatform('geminiVideo')) {
+          throw new Error('Google 官方地址不支持当前 Veo 兼容协议，请切换到 Veo 兼容中转 Base URL。');
+        }
+        const key = getApiKey();
+        if (!key) throw new Error('请先配置 API Key');
 
         const protocol = getProtocol();
         const videoModel = getImageModel();
@@ -9646,6 +10458,8 @@ ${chinesePrompt}
 
         const imgSrc = getResultImgSrc(result);
         const continueSource = buildContinueSourceState(imgSrc);
+        const imageDisplaySrc = getResultImageDisplaySrc(imgSrc);
+        const imageActionSrc = getResultImageActionSrc(imgSrc);
         const filename = meta.filename || `gemini-${Date.now()}.${getExtensionFromMime(result.mime)}`;
         card._continueSource = continueSource;
 
@@ -9656,12 +10470,23 @@ ${chinesePrompt}
         imageButton.setAttribute('aria-label', '查看原图');
 
         const imgEl = document.createElement('img');
-        imgEl.src = imgSrc;
+        imgEl.src = imageDisplaySrc;
         imgEl.className = 'zoomable';
+        if (imageDisplaySrc !== RESULT_MEDIA_PLACEHOLDER) bindResultImageFallback(imgEl, imgSrc);
         imgEl.alt = meta.label || '生成结果';
         imageButton.appendChild(imgEl);
-        imageButton.addEventListener('click', () => openLightbox(imgSrc));
+        imageButton.addEventListener('click', () => openLightbox(
+          imgEl.currentSrc && imgEl.currentSrc !== RESULT_MEDIA_PLACEHOLDER ? imgEl.currentSrc : imageActionSrc
+        ));
         card.appendChild(imageButton);
+
+        if (result.upscaled) {
+          const badge = document.createElement('span');
+          badge.className = 'upscale-badge';
+          badge.textContent = result.upscaleMethod === 'ai' ? 'AI超分' : '已超分';
+          badge.title = `已从原分辨率超分放大至 ${result.sourceWidth}×${result.sourceHeight}`;
+          imageButton.appendChild(badge);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'actions result-card-actions';
@@ -9676,7 +10501,7 @@ ${chinesePrompt}
         const downloadLink = document.createElement('a');
         downloadLink.className = 'mini-btn';
         downloadLink.textContent = '下载';
-        downloadLink.href = imgSrc;
+        downloadLink.href = imageActionSrc;
         downloadLink.download = filename;
         actions.appendChild(downloadLink);
 
@@ -9684,7 +10509,7 @@ ${chinesePrompt}
         saveAlbumBtn.className = 'mini-btn primary';
         saveAlbumBtn.type = 'button';
         saveAlbumBtn.textContent = isMobileDevice() ? '保存相册' : '保存';
-        saveAlbumBtn.addEventListener('click', () => handleSaveToAlbum(imgSrc, filename));
+        saveAlbumBtn.addEventListener('click', () => handleSaveToAlbum(imageActionSrc, filename));
         actions.appendChild(saveAlbumBtn);
 
         const continueBtn = document.createElement('button');
@@ -9707,7 +10532,7 @@ ${chinesePrompt}
         canvasBtn.addEventListener('click', () => sendImagesToCanvas([{
           kind: 'image',
           origin: 'result-output',
-          src: imgSrc,
+          src: imageActionSrc,
           label: meta.label || filename
         }]));
         actions.appendChild(canvasBtn);
@@ -9926,6 +10751,7 @@ ${chinesePrompt}
             continueSource.failed = false;
             continueSource.error = '';
             const persistentImgSrc = await warmContinueImageSource(continueSource, {
+              forceRefresh: true,
               onProgress: (progress) => {
                 if (progress?.percent != null) setResultCacheStatus(card, `本地缓存 ${progress.percent}%`);
                 else if (progress?.stage) setResultCacheStatus(card, `本地缓存 ${progress.stage}`);
@@ -10109,6 +10935,8 @@ ${chinesePrompt}
             } catch (imageErr) {
               console.warn('继续生成源图不可用，改用原始 URL 记录:', imageErr);
               imageRecord = await buildHistoryImageRecordFallback(imgSrc);
+              setResultCacheStatus(card, '本地缓存失败，可点重新缓存', 'danger');
+              ensureRecacheButton(card, continueSource, meta, imgSrc);
             }
 
             const historyRecord = {
@@ -10324,7 +11152,9 @@ ${chinesePrompt}
                 // 继续下一轮重试
               } else {
                 // 不可重试或已达最大重试次数
-                console.error(`请求 #${index + 1} 失败:`, err);
+                if (!isExpectedCapabilityGuard(err)) {
+                  console.error(`请求 #${index + 1} 失败:`, err);
+                }
                 failed++;
                 lastErrorMsg = parseApiError(errMsg);
                 showErrorInCard(placeholderCard, lastErrorMsg);
@@ -10817,7 +11647,7 @@ ${chinesePrompt}
       async function openAngleModal() {
         // 检查是否有参考图
         if (!state.images || state.images.length === 0) {
-          alert('⚠️ 请先上传参考图\n\n请在主界面上传产品图片后再使用此功能。');
+          showUiError('请先上传参考图，然后再使用产品角度工具。');
           return;
         }
 
@@ -10832,7 +11662,16 @@ ${chinesePrompt}
 
         const modal = document.getElementById('angle-modal');
         if (modal) {
-          modal.classList.add('active');
+          angleDialogHandle?.close?.('replace', { restoreFocus: false });
+          angleDialogHandle = window.AppUtils?.dialog?.open?.({
+            element: modal.querySelector('.angle-modal') || modal,
+            container: modal,
+            label: '自定义产品角度',
+            openClass: 'active',
+            closeClass: 'active',
+            trigger: document.activeElement
+          }) || null;
+          if (!angleDialogHandle) modal.classList.add('active');
 
           // 延迟初始化3D场景，等待DOM渲染完成
           setTimeout(() => {
@@ -10848,7 +11687,13 @@ ${chinesePrompt}
       function closeAngleModal() {
         const modal = document.getElementById('angle-modal');
         if (modal) {
-          modal.classList.remove('active');
+          if (angleDialogHandle) {
+            const handle = angleDialogHandle;
+            angleDialogHandle = null;
+            handle.close('close');
+          } else {
+            modal.classList.remove('active');
+          }
 
           // 清理3D场景
           dispose3DScene();
@@ -10861,7 +11706,7 @@ ${chinesePrompt}
         if (scenario.isStoryboard) {
           const scriptText = promptInput.value.trim();
           if (!scriptText) {
-            alert('请先在提示词输入框中输入分镜脚本');
+            showUiError('请先在提示词输入框中输入分镜脚本');
             return;
           }
 
@@ -10881,18 +11726,22 @@ ${chinesePrompt}
         if (scenario.requiresReference) {
           const hasReference = state.images.length > 0;
           if (!hasReference) {
-            alert('⚠️ 此场景需要参考图\n\n请先上传参考图或生成一张满意的产品图，然后再使用此功能。');
+            showUiError('此场景需要参考图，请先上传参考图或生成一张产品图。');
             return;
           }
         }
 
         // 确认生成
-        const confirmed = confirm(
+        const confirmed = await confirmUiAction({
+          title: scenario.label,
+          message:
           `${scenario.label}\n\n` +
           `将基于当前参考图生成 ${scenario.prompts.length} 张图片。\n\n` +
           `⚠️ 提示：AI生成的多角度图可能存在细节差异，建议多次生成选择最佳效果。\n\n` +
-          `是否继续？`
-        );
+          `是否继续？`,
+          confirmLabel: '开始生成',
+          trigger: document.activeElement
+        });
 
         if (!confirmed) return;
 
@@ -11107,6 +11956,8 @@ ${chinesePrompt}
 
         const imgSrc = getResultImgSrc(result);
         const continueSource = buildContinueSourceState(imgSrc);
+        const imageDisplaySrc = getResultImageDisplaySrc(imgSrc);
+        const imageActionSrc = getResultImageActionSrc(imgSrc);
 
         const imageButton = document.createElement('button');
         imageButton.className = 'result-thumb-btn';
@@ -11115,11 +11966,14 @@ ${chinesePrompt}
         imageButton.setAttribute('aria-label', '查看原图');
 
         const imgEl = document.createElement('img');
-        imgEl.src = imgSrc;
+        imgEl.src = imageDisplaySrc;
         imgEl.className = 'zoomable';
         imgEl.alt = angleName || '生成结果';
+        if (imageDisplaySrc !== RESULT_MEDIA_PLACEHOLDER) bindResultImageFallback(imgEl, imgSrc);
         imageButton.appendChild(imgEl);
-        imageButton.addEventListener('click', () => openLightbox(imgSrc));
+        imageButton.addEventListener('click', () => openLightbox(
+          imgEl.currentSrc && imgEl.currentSrc !== RESULT_MEDIA_PLACEHOLDER ? imgEl.currentSrc : imageActionSrc
+        ));
         card.appendChild(imageButton);
 
         // 操作按钮
@@ -11136,14 +11990,14 @@ ${chinesePrompt}
         const downloadLink = document.createElement('a');
         downloadLink.className = 'mini-btn';
         downloadLink.textContent = '下载';
-        downloadLink.href = imgSrc;
+        downloadLink.href = imageActionSrc;
         downloadLink.download = `${angleName}-${Date.now()}.${getExtensionFromMime(result.mime)}`;
         actions.appendChild(downloadLink);
 
         const saveAlbumBtn = document.createElement('button');
         saveAlbumBtn.className = 'mini-btn primary';
         saveAlbumBtn.textContent = isMobileDevice() ? '保存相册' : '保存';
-        saveAlbumBtn.addEventListener('click', () => handleSaveToAlbum(imgSrc, downloadLink.download));
+        saveAlbumBtn.addEventListener('click', () => handleSaveToAlbum(imageActionSrc, downloadLink.download));
         actions.appendChild(saveAlbumBtn);
 
         const continueBtn = document.createElement('button');
@@ -11235,8 +12089,8 @@ ${chinesePrompt}
               continueSource.failed = false;
               continueSource.error = '';
 
-              imgEl.src = newImgSrc;
-              downloadLink.href = newImgSrc;
+              imgEl.src = getResultImageDisplaySrc(newImgSrc);
+              downloadLink.href = getResultImageActionSrc(newImgSrc);
               downloadLink.download = `${angleName}-${Date.now()}.${getExtensionFromMime(newResult.mime)}`;
 
               // 保存新图片
@@ -11373,6 +12227,7 @@ ${chinesePrompt}
       const angleToolBtn = document.getElementById('angle-tool-btn');
       const reversePromptToolBtn = document.getElementById('reverse-prompt-tool-btn');
       const gifToolBtn = document.getElementById('gif-tool-btn');
+      const upscaleToolBtn = document.getElementById('upscale-tool-btn');
 
       function setAdvancedToolsCollapsed(collapsed) {
         if (!advancedToolsPanel || !advancedToolsToggleBtn) return;
@@ -11418,6 +12273,9 @@ ${chinesePrompt}
       proxyModeInput?.addEventListener('change', () => {
         persistActivePlatformSnapshot();
         updateProviderStudioStatus();
+      });
+      autoUpscaleInput?.addEventListener('change', () => {
+        localStorage.setItem(AUTO_UPSCALE_KEY, autoUpscaleInput.checked ? '1' : '0');
       });
       apiKeyInput?.addEventListener('input', () => {
         if (settingsIsOpen) {
@@ -11483,6 +12341,7 @@ ${chinesePrompt}
       });
       storyboardToolBtn?.addEventListener('click', () => {
         if (!ensurePlatformFeatureAvailable('分镜生成')) return;
+        if (!ensureTextCapabilityAvailable('分镜分析')) return;
         showStoryboardInput();
       });
       angleToolBtn?.addEventListener('click', () => {
@@ -11491,13 +12350,18 @@ ${chinesePrompt}
       });
       reversePromptToolBtn?.addEventListener('click', () => {
         if (!ensurePlatformFeatureAvailable('反推提示词')) return;
+        if (!ensureTextCapabilityAvailable('反推提示词')) return;
         showReversePromptDialog();
       });
       gifToolBtn?.addEventListener('click', () => {
         showGifToolDialog();
       });
+      upscaleToolBtn?.addEventListener('click', () => {
+        showUpscaleToolDialog();
+      });
 
       optimizePromptBtn?.addEventListener('click', () => {
+        if (!ensureTextCapabilityAvailable('提示词优化')) return;
         const promptContent = promptInput.value.trim();
 
         if (!promptContent) {

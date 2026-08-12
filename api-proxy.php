@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 const MAX_PROXY_BODY_BYTES = 60 * 1024 * 1024;
 const MAX_COMMUNITY_MEDIA_BYTES = 15 * 1024 * 1024;
+const MEDIA_CACHE_DIR = __DIR__ . '/cache/media';
+const MEDIA_CACHE_TTL = 7 * 86400;
+const MEDIA_CACHE_FAILURE_TTL = 10 * 60;
+const MEDIA_CACHE_KEY_VERSION = '20260807-1';
+const MEDIA_CACHE_MAX_SIZE = 500 * 1024 * 1024;
 
 function set_cors_headers(): void
 {
@@ -172,6 +177,88 @@ function load_community_media_hosts(): array
     return array_values(array_filter(array_map(static fn($host) => strtolower(trim((string) $host)), $hosts)));
 }
 
+function load_community_auxiliary_hosts(): array
+{
+    $path = __DIR__ . '/data/community-image-hosts.json';
+    if (!is_file($path)) {
+        return ['images.weserv.nl', 'wsrv.nl', 'cdn.jsdelivr.net'];
+    }
+    $payload = json_decode((string) file_get_contents($path), true);
+    $hosts = is_array($payload['auxiliary'] ?? null) ? $payload['auxiliary'] : ['images.weserv.nl', 'wsrv.nl', 'cdn.jsdelivr.net'];
+    return array_values(array_filter(array_map(static fn($host) => strtolower(trim((string) $host)), $hosts)));
+}
+
+function load_community_relay_hosts(): array
+{
+    $path = __DIR__ . '/data/community-image-hosts.json';
+    if (!is_file($path)) {
+        return ['pbs.twimg.com', 'linux.do', 'i.mji.rip', 'i.mij.rip'];
+    }
+    $payload = json_decode((string) file_get_contents($path), true);
+    $hosts = is_array($payload['relay'] ?? null) ? $payload['relay'] : ['pbs.twimg.com', 'linux.do', 'i.mji.rip', 'i.mij.rip'];
+    return array_values(array_filter(array_map(static fn($host) => strtolower(trim((string) $host)), $hosts)));
+}
+
+function load_model_output_media_hosts(): array
+{
+    return [
+        'googleusercontent.com',
+        'lh3.googleusercontent.com',
+        'images.googleusercontent.com',
+    ];
+}
+
+function build_github_mirror_url(string $target): string
+{
+    $parts = parse_url($target);
+    if (!$parts) return '';
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    $path = (string) ($parts['path'] ?? '');
+    $query = isset($parts['query']) ? '?' . $parts['query'] : '';
+    $segments = explode('/', trim($path, '/'));
+
+    if ($host === 'raw.githubusercontent.com' && count($segments) >= 4) {
+        [$owner, $repo, $ref] = array_slice($segments, 0, 3);
+        $filePath = implode('/', array_slice($segments, 3));
+        return 'https://cdn.jsdelivr.net/gh/' . $owner . '/' . $repo . '@' . $ref . '/' . $filePath . $query;
+    }
+
+    if ($host === 'github.com' && count($segments) >= 5 && ($segments[2] === 'blob' || $segments[2] === 'raw')) {
+        [$owner, $repo, , $ref] = array_slice($segments, 0, 4);
+        $filePath = implode('/', array_slice($segments, 4));
+        return 'https://cdn.jsdelivr.net/gh/' . $owner . '/' . $repo . '@' . $ref . '/' . $filePath . $query;
+    }
+
+    if ($host === 'cdn.jsdelivr.net' && count($segments) >= 4 && $segments[0] === 'gh') {
+        $owner = $segments[1];
+        $repoRef = $segments[2];
+        $separator = strpos($repoRef, '@');
+        if ($owner !== '' && $separator !== false) {
+            $repo = substr($repoRef, 0, $separator);
+            $ref = substr($repoRef, $separator + 1);
+            $filePath = implode('/', array_slice($segments, 3));
+            if ($repo !== '' && $ref !== '' && $filePath !== '') {
+                return 'https://raw.githubusercontent.com/' . $owner . '/' . $repo . '/' . $ref . '/' . $filePath . $query;
+            }
+        }
+    }
+
+    return '';
+}
+
+function build_community_relay_urls(string $target): array
+{
+    $parts = parse_url($target);
+    if (!$parts) return [];
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    if ($host === '' || !in_array($host, load_community_relay_hosts(), true)) return [];
+    $encoded = urlencode($target);
+    return [
+        'https://images.weserv.nl/?url=' . $encoded . '&we',
+        'https://wsrv.nl/?url=' . $encoded,
+    ];
+}
+
 function validate_community_media_target(string $target): array
 {
     $parts = parse_url($target);
@@ -180,13 +267,401 @@ function validate_community_media_target(string $target): array
     }
 
     $host = strtolower((string) ($parts['host'] ?? ''));
-    if ($host === '' || !in_array($host, load_community_media_hosts(), true)) {
+    $allowedHosts = array_merge(load_community_media_hosts(), load_model_output_media_hosts());
+    if ($host === '' || !in_array($host, $allowedHosts, true)) {
         send_json(400, ['error' => 'community media host is not allowlisted']);
     }
 
     assert_public_host($host, 'private media address is not allowed or could not be verified');
 
     return $parts;
+}
+
+function normalize_redirect_path(string $path): string
+{
+    $segments = [];
+    foreach (explode('/', $path) as $segment) {
+        if ($segment === '' || $segment === '.') {
+            continue;
+        }
+        if ($segment === '..') {
+            array_pop($segments);
+            continue;
+        }
+        $segments[] = $segment;
+    }
+    return '/' . implode('/', $segments);
+}
+
+function resolve_community_media_redirect(string $base, string $location): string
+{
+    $location = trim($location);
+    if ($location === '') {
+        return '';
+    }
+
+    $locationParts = parse_url($location);
+    if ($locationParts !== false && isset($locationParts['scheme'])) {
+        return $location;
+    }
+
+    $baseParts = parse_url($base);
+    if (!$baseParts || empty($baseParts['scheme']) || empty($baseParts['host'])) {
+        return '';
+    }
+
+    $scheme = strtolower((string) $baseParts['scheme']);
+    $authority = $scheme . '://' . $baseParts['host'];
+    if (isset($baseParts['port'])) {
+        $authority .= ':' . (int) $baseParts['port'];
+    }
+    if (str_starts_with($location, '//')) {
+        return $scheme . ':' . $location;
+    }
+    if (str_starts_with($location, '?')) {
+        return $authority . ((string) ($baseParts['path'] ?? '/')) . $location;
+    }
+    if (str_starts_with($location, '#')) {
+        return $base;
+    }
+    if (str_starts_with($location, '/')) {
+        return $authority . $location;
+    }
+
+    $basePath = (string) ($baseParts['path'] ?? '/');
+    $directory = substr($basePath, 0, (int) strrpos($basePath, '/') + 1);
+    $relativeParts = parse_url($location);
+    $relativePath = (string) ($relativeParts['path'] ?? $location);
+    $query = isset($relativeParts['query']) ? '?' . $relativeParts['query'] : '';
+    return $authority . normalize_redirect_path($directory . $relativePath) . $query;
+}
+
+function get_media_cache_path(string $target): string
+{
+    $hash = hash('sha256', MEDIA_CACHE_KEY_VERSION . "\0" . $target);
+    return MEDIA_CACHE_DIR . '/' . substr($hash, 0, 2) . '/' . $hash;
+}
+
+function open_media_cache_lock(string $path)
+{
+    $handle = @fopen($path . '.lock', 'c');
+    if ($handle === false || !@flock($handle, LOCK_EX)) {
+        if (is_resource($handle)) {
+            @fclose($handle);
+        }
+        return null;
+    }
+    return $handle;
+}
+
+function close_media_cache_lock($handle): void
+{
+    if (!is_resource($handle)) {
+        return;
+    }
+    @flock($handle, LOCK_UN);
+    @fclose($handle);
+}
+
+function write_media_cache_meta(string $path, array $meta): bool
+{
+    $encoded = json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($encoded === false) {
+        return false;
+    }
+
+    $tempPath = $path . '.tmp-meta.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tempPath, $encoded, LOCK_EX) === false) {
+        @unlink($tempPath);
+        return false;
+    }
+    if (!@rename($tempPath, $path)) {
+        @unlink($tempPath);
+        return false;
+    }
+    return true;
+}
+
+function get_cached_media(string $target): ?array
+{
+    $path = get_media_cache_path($target);
+    if (!is_file($path)) return null;
+
+    $metaPath = $path . '.meta';
+    if (!is_file($metaPath)) return null;
+
+    $lock = open_media_cache_lock($path);
+    if ($lock === null) return null;
+
+    try {
+        $meta = json_decode((string) file_get_contents($metaPath), true);
+        if (!is_array($meta) || !isset($meta['time'], $meta['status'])) return null;
+
+        $isFailure = !empty($meta['failure']);
+        $ttl = $isFailure ? MEDIA_CACHE_FAILURE_TTL : MEDIA_CACHE_TTL;
+        if (time() - (int) $meta['time'] > $ttl) return null;
+
+        if ($isFailure) {
+            $meta['accessTime'] = time();
+            write_media_cache_meta($metaPath, $meta);
+            return [(int) $meta['status'], (string) ($meta['contentType'] ?? 'text/plain'), ''];
+        }
+
+        if (!isset($meta['contentType'])) return null;
+        $body = file_get_contents($path);
+        if ($body === false) return null;
+
+        $meta['accessTime'] = time();
+        write_media_cache_meta($metaPath, $meta);
+        return [(int) $meta['status'], (string) $meta['contentType'], $body];
+    } finally {
+        close_media_cache_lock($lock);
+    }
+}
+
+function save_cached_media(string $target, int $status, string $contentType, string $body): void
+{
+    if (strlen($body) > MAX_COMMUNITY_MEDIA_BYTES) return;
+
+    $path = get_media_cache_path($target);
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0755, true);
+        if (!is_dir($dir)) return;
+    }
+
+    $lock = open_media_cache_lock($path);
+    if ($lock === null) return;
+
+    try {
+        $tmpPath = $path . '.tmp.' . bin2hex(random_bytes(4));
+        if (file_put_contents($tmpPath, $body, LOCK_EX) === false) {
+            @unlink($tmpPath);
+            return;
+        }
+
+        if (!@rename($tmpPath, $path)) {
+            @unlink($tmpPath);
+            return;
+        }
+
+        write_media_cache_meta($path . '.meta', [
+            'status' => $status,
+            'contentType' => $contentType,
+            'time' => time(),
+            'accessTime' => time(),
+            'url' => $target,
+            'size' => strlen($body),
+        ]);
+    } finally {
+        close_media_cache_lock($lock);
+    }
+
+    if (random_int(1, 100) === 1) {
+        clean_media_cache();
+    }
+}
+
+function clean_media_cache(): void
+{
+    if (!is_dir(MEDIA_CACHE_DIR)) return;
+
+    $files = [];
+    $totalSize = 0;
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(MEDIA_CACHE_DIR, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY
+    );
+
+    foreach ($iterator as $file) {
+        if (!$file->isFile()) continue;
+        $fileName = $file->getFilename();
+        if ($fileName === '' || str_ends_with($fileName, '.meta') || str_ends_with($fileName, '.lock') || str_contains($fileName, '.tmp')) continue;
+        $metaFile = $file->getPathname() . '.meta';
+        $time = $file->getMTime();
+        if (is_file($metaFile)) {
+            $meta = json_decode((string) file_get_contents($metaFile), true);
+            if (is_array($meta) && isset($meta['time'])) {
+                $time = (int) ($meta['accessTime'] ?? $meta['time']);
+            }
+        }
+        $size = $file->getSize();
+        $files[] = ['path' => $file->getPathname(), 'time' => $time, 'size' => $size];
+        $totalSize += $size;
+    }
+
+    if ($totalSize <= MEDIA_CACHE_MAX_SIZE) return;
+
+    usort($files, static fn($a, $b) => $a['time'] <=> $b['time']);
+
+    foreach ($files as $file) {
+        if ($totalSize <= MEDIA_CACHE_MAX_SIZE) break;
+        $lock = @fopen($file['path'] . '.lock', 'c');
+        if ($lock === false || !@flock($lock, LOCK_EX | LOCK_NB)) {
+            if (is_resource($lock)) @fclose($lock);
+            continue;
+        }
+        @unlink($file['path']);
+        @unlink($file['path'] . '.meta');
+        @flock($lock, LOCK_UN);
+        @fclose($lock);
+        $totalSize -= $file['size'];
+    }
+}
+
+function fetch_community_media(string $target): array
+{
+    if (!function_exists('curl_init')) {
+        send_json(500, ['error' => 'community media proxy requires PHP cURL']);
+    }
+
+    $modelOutputHosts = load_model_output_media_hosts();
+    $allowedHosts = array_merge(load_community_media_hosts(), $modelOutputHosts);
+    $auxiliaryHosts = load_community_auxiliary_hosts();
+    $allAllowedHosts = array_merge($allowedHosts, $auxiliaryHosts);
+    $googleApiKey = get_request_header('X-Goog-Api-Key');
+
+    $validateTarget = static function (string $url) use ($allAllowedHosts): void {
+        $parts = parse_url($url);
+        if (!$parts || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+            send_json(400, ['error' => 'community media proxy requires https']);
+        }
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($host === '' || !in_array($host, $allAllowedHosts, true)) {
+            send_json(400, ['error' => 'community media host is not allowlisted']);
+        }
+        assert_public_host($host, 'private media address is not allowed or could not be verified');
+    };
+
+    $tryFetch = static function (string $url) use ($validateTarget, $googleApiKey, $modelOutputHosts): ?array {
+        $current = $url;
+        for ($hop = 0; $hop <= 3; $hop++) {
+            $validateTarget($current);
+            $ch = curl_init($current);
+            $body = '';
+            $tooLarge = false;
+            $location = '';
+            $contentType = '';
+            $currentHost = strtolower((string) (parse_url($current, PHP_URL_HOST) ?? ''));
+            $requestHeaders = [
+                'Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36',
+                $currentHost !== '' ? 'Referer: https://' . $currentHost . '/' : 'Referer: https://ai.falseai.cn/',
+            ];
+            if ($googleApiKey !== '' && in_array($currentHost, $modelOutputHosts, true)) {
+                $requestHeaders[] = 'X-Goog-Api-Key: ' . $googleApiKey;
+            }
+
+            curl_setopt_array($ch, [
+                CURLOPT_CUSTOMREQUEST => 'GET',
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_HEADER => false,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_ENCODING => '',
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_TIMEOUT => 20,
+                CURLOPT_HTTPHEADER => $requestHeaders,
+                CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$location, &$contentType): int {
+                    $trimmed = trim($line);
+                    if (stripos($trimmed, 'location:') === 0) {
+                        $location = trim(substr($trimmed, strlen('location:')));
+                    } elseif (stripos($trimmed, 'content-type:') === 0) {
+                        $contentType = trim(substr($trimmed, strlen('content-type:')));
+                    }
+                    return strlen($line);
+                },
+                CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
+                    if (strlen($body) + strlen($chunk) > MAX_COMMUNITY_MEDIA_BYTES) {
+                        $tooLarge = true;
+                        return 0;
+                    }
+                    $body .= $chunk;
+                    return strlen($chunk);
+                }
+            ]);
+            $response = curl_exec($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $reportedType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+            if ($reportedType !== '') {
+                $contentType = $reportedType;
+            }
+
+            if ($tooLarge) {
+                curl_close($ch);
+                send_json(413, ['error' => 'community image is too large']);
+            }
+            if ($response === false) {
+                curl_close($ch);
+                return null;
+            }
+            curl_close($ch);
+
+            if ($status >= 300 && $status < 400 && $location !== '') {
+                if ($hop >= 3) {
+                    return null;
+                }
+                $next = resolve_community_media_redirect($current, $location);
+                if ($next === '') {
+                    return null;
+                }
+                $current = $next;
+                continue;
+            }
+
+            if ($status < 200 || $status >= 300 || stripos($contentType, 'image/') !== 0) {
+                return null;
+            }
+            return [$status, $contentType ?: 'image/png', $body];
+        }
+        return null;
+    };
+
+    // 1. Try original target
+    $result = $tryFetch($target);
+    if ($result !== null) {
+        return $result;
+    }
+
+    // 2. Try GitHub mirror if applicable
+    $mirror = build_github_mirror_url($target);
+    if ($mirror !== '') {
+        $result = $tryFetch($mirror);
+        if ($result !== null) {
+            return $result;
+        }
+    }
+
+    // 3. Try relay if host is in relay-allowed list
+    $targetParts = parse_url($target);
+    $targetHost = strtolower((string) ($targetParts['host'] ?? ''));
+    $relayHosts = load_community_relay_hosts();
+    if (in_array($targetHost, $relayHosts, true)) {
+        foreach (build_community_relay_urls($target) as $relayUrl) {
+            $result = $tryFetch($relayUrl);
+            if ($result !== null) {
+                return $result;
+            }
+        }
+    }
+
+    // Keep failures briefly so a transient upstream outage does not poison the cache.
+    $failureMeta = [
+        'status' => 502,
+        'contentType' => 'text/plain',
+        'time' => time(),
+        'accessTime' => time(),
+        'url' => $target,
+        'size' => 0,
+        'failure' => true,
+        'reason' => 'all attempts exhausted'
+    ];
+    $failurePath = get_media_cache_path($target);
+    $failureDir = dirname($failurePath);
+    if (is_dir($failureDir) || @mkdir($failureDir, 0755, true)) {
+        @file_put_contents($failurePath . '.meta', json_encode($failureMeta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    send_json(502, ['error' => 'community media proxy failed: all attempts exhausted']);
 }
 
 function build_forward_headers(bool $skipContentType = false, string $contentTypeOverride = ''): array
@@ -318,47 +793,30 @@ if ($isCommunityMedia) {
     if ($method !== 'GET') {
         send_json(405, ['error' => 'community media proxy only supports GET']);
     }
-    validate_community_media_target($target);
-    $ch = curl_init($target);
-    $body = '';
-    $tooLarge = false;
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST => 'GET',
-        CURLOPT_RETURNTRANSFER => false,
-        CURLOPT_HEADER => false,
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => 15,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_HTTPHEADER => ['Accept: image/*'],
-        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
-            $body .= $chunk;
-            if (strlen($body) > MAX_COMMUNITY_MEDIA_BYTES) {
-                $tooLarge = true;
-                return 0;
-            }
-            return strlen($chunk);
-        }
-    ]);
-    $response = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $contentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-    if ($tooLarge) {
-        curl_close($ch);
-        send_json(413, ['error' => 'community image is too large']);
+
+    $forceRefresh = !empty($_GET['retry'])
+        || !empty($_GET['refresh'])
+        || !empty($_GET['prompt-library-retry']);
+    $cached = $forceRefresh ? null : get_cached_media($target);
+    if ($cached !== null) {
+        [$status, $contentType, $body] = $cached;
+        http_response_code($status);
+        set_cors_headers();
+        header('Content-Type: ' . ($contentType ?: 'image/png'));
+        header('Cache-Control: public, max-age=86400');
+        header('X-Cache: HIT');
+        echo $body;
+        exit;
     }
-    if ($response === false) {
-        $error = curl_error($ch);
-        curl_close($ch);
-        send_json(502, ['error' => 'community media proxy failed: ' . $error]);
-    }
-    curl_close($ch);
-    if ($status < 200 || $status >= 300 || stripos($contentType, 'image/') !== 0) {
-        send_json($status >= 400 ? $status : 502, ['error' => 'community target did not return an image']);
-    }
+
+    [$status, $contentType, $body] = fetch_community_media($target);
+    save_cached_media($target, $status, $contentType, $body);
+
     http_response_code($status);
     set_cors_headers();
     header('Content-Type: ' . ($contentType ?: 'image/png'));
     header('Cache-Control: public, max-age=86400');
+    header('X-Cache: ' . ($forceRefresh ? 'BYPASS' : 'MISS'));
     echo $body;
     exit;
 }

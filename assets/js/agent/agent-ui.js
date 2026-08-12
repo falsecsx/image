@@ -77,6 +77,25 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function compareAgentText(left, right) {
+  return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareAgentTimeDesc(left, right, field = 'updatedAt') {
+  const a = Number(left?.[field]) || 0;
+  const b = Number(right?.[field]) || 0;
+  return b - a;
+}
+
+function compareAgentRecordStable(left, right, { timeField = 'updatedAt', titleField = 'title', idField = 'id' } = {}) {
+  return compareAgentTimeDesc(left, right, timeField)
+    || compareAgentText(left?.[titleField], right?.[titleField])
+    || compareAgentText(left?.[idField], right?.[idField]);
+}
+
 function parseDataUrl(dataUrl = '') {
   const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
   if (!match) return null;
@@ -415,6 +434,57 @@ function buildCatalog(currentAgent, getImage) {
   return catalog;
 }
 
+function requestAgentText(options = {}) {
+  const dialogApi = window.AppUtils?.dialog;
+  if (!dialogApi?.open) return Promise.resolve(null);
+  const overlay = document.createElement('div');
+  overlay.className = 'app-dialog-overlay agent-input-dialog-overlay';
+  const title = String(options.title || '输入内容');
+  const label = String(options.label || title);
+  const value = String(options.value || '');
+  overlay.innerHTML = `
+    <section class="app-dialog agent-input-dialog" role="dialog" aria-labelledby="agent-input-dialog-title">
+      <h2 id="agent-input-dialog-title">${esc(title)}</h2>
+      <label class="agent-input-dialog-label">${esc(label)}<textarea class="agent-input-dialog-field" rows="4">${esc(value)}</textarea></label>
+      <div class="app-dialog-actions"><button type="button" class="btn app-dialog-cancel">取消</button><button type="button" class="btn btn-primary app-dialog-confirm">确定</button></div>
+    </section>`;
+  document.body.appendChild(overlay);
+  const surface = overlay.querySelector('.agent-input-dialog');
+  const field = overlay.querySelector('.agent-input-dialog-field');
+  let settled = false;
+  let handle = null;
+  const finish = result => {
+    if (settled) return;
+    settled = true;
+    handle?.close?.(result == null ? 'cancel' : 'confirm');
+    if (overlay.isConnected) overlay.remove();
+    resolvePromise?.(result);
+  };
+  let resolvePromise;
+  const promise = new Promise(resolve => { resolvePromise = resolve; });
+  handle = dialogApi.open({
+    element: surface,
+    container: overlay,
+    label: title,
+    onClose: reason => {
+      if (!settled) {
+        settled = true;
+        resolvePromise(reason === 'confirm' ? field?.value || '' : null);
+      }
+      if (overlay.isConnected) overlay.remove();
+    }
+  });
+  overlay.querySelector('.app-dialog-cancel')?.addEventListener('click', () => finish(null));
+  overlay.querySelector('.app-dialog-confirm')?.addEventListener('click', () => finish(field?.value || ''));
+  field?.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      finish(field.value || '');
+    }
+  });
+  return promise;
+}
+
 export function openAgentWorkspace() {
   const existing = document.querySelector('.agent-workspace');
   if (existing) {
@@ -423,7 +493,17 @@ export function openAgentWorkspace() {
     return { close() { if (existingClose) existingClose(); } };
   }
   const bridge = window.AgentBridge;
-  if (!bridge) { alert('主 app bridge 不可用'); return { close() { } }; }
+  if (!bridge) {
+    void window.AppUtils?.dialog?.confirm?.({ title: 'Agent 暂不可用', message: '主工作台 bridge 不可用，Agent 无法启动。', confirmLabel: '关闭' });
+    return { close() { } };
+  }
+  const requireTextCapability = () => {
+    const capability = bridge.getTextCapabilityStatus?.() || bridge.getTextCapability?.();
+    if (!capability || capability.available !== false) return;
+    const error = new Error(capability.message || capability.reason || '当前 Base URL 不支持文本能力，请切换到兼容中转。');
+    error.code = 'TEXT_CAPABILITY_UNAVAILABLE';
+    throw error;
+  };
   const returnFocus = document.activeElement;
   loadAgentList();
   // 图片内存是异步从 IndexedDB 填充的，拿到句柄等 hydrate 完成后再渲染一次，
@@ -548,6 +628,7 @@ export function openAgentWorkspace() {
     </section>
   `;
   document.body.appendChild(root);
+  window.AppUtils?.setActiveWorkspace?.('agent');
 
   for (const element of backgroundElements) {
     if ('inert' in element) element.inert = true;
@@ -672,16 +753,59 @@ export function openAgentWorkspace() {
     });
   }
 
+  function setAgentPanelInert(element, inert) {
+    if (!element) return;
+    if ('inert' in element) element.inert = Boolean(inert);
+    if (inert) element.setAttribute('inert', '');
+    else element.removeAttribute('inert');
+  }
+
+  function blurPanelFocus(element) {
+    const focused = document.activeElement;
+    if (element && focused && focused !== document.body && element.contains(focused)) focused.blur?.();
+  }
+
   function setMobilePanel(name = '') {
+    // Keep the focus/accessibility mode aligned with the CSS sheet breakpoint.
+    const isMobile = window.matchMedia?.('(max-width: 900px)').matches === true;
     if (name && !root.classList.contains('is-sidebar-open') && !root.classList.contains('is-sidepane-open')) {
       mobilePanelReturnFocus = document.activeElement;
     }
     root.classList.toggle('is-sidebar-open', name === 'sessions');
     root.classList.toggle('is-sidepane-open', name === 'tools');
-    if ($mobileBackdrop) $mobileBackdrop.hidden = !name;
-    if ($main) $main.inert = !!name;
-    if ($sidebar) $sidebar.inert = name === 'tools';
-    if ($sidePane) $sidePane.inert = name === 'sessions';
+    if ($mobileBackdrop) {
+      $mobileBackdrop.hidden = !name;
+      $mobileBackdrop.setAttribute('aria-hidden', String(!name));
+    }
+    if (name) blurPanelFocus($main);
+    setAgentPanelInert($main, !!name);
+    if ($main) {
+      $main.setAttribute('aria-hidden', String(Boolean(name)));
+    }
+    if ($sidebar) {
+      const open = name === 'sessions';
+      if (isMobile && !open) blurPanelFocus($sidebar);
+      setAgentPanelInert($sidebar, isMobile ? name !== 'sessions' : name === 'tools');
+      if (isMobile) {
+        $sidebar.hidden = !open;
+        $sidebar.setAttribute('aria-hidden', String(!open));
+      } else {
+        $sidebar.hidden = false;
+        $sidebar.removeAttribute('aria-hidden');
+      }
+    }
+    if ($sidePane) {
+      const open = name === 'tools';
+      if (isMobile && !open) blurPanelFocus($sidePane);
+      setAgentPanelInert($sidePane, isMobile ? name !== 'tools' : name === 'sessions');
+      if (isMobile) {
+        $sidePane.hidden = !open;
+        $sidePane.setAttribute('aria-hidden', String(!open));
+      } else {
+        $sidePane.hidden = false;
+        $sidePane.removeAttribute('aria-hidden');
+      }
+    }
     $mobileSessions?.setAttribute('aria-expanded', String(name === 'sessions'));
     $mobileTools?.setAttribute('aria-expanded', String(name === 'tools'));
     if (name) {
@@ -769,7 +893,7 @@ export function openAgentWorkspace() {
     const query = String($sessionSearch?.value || '').trim().toLowerCase();
     const ids = Object.keys(list.agents)
       .filter(id => !query || String(list.agents[id]?.title || '').toLowerCase().includes(query))
-      .sort((a, b) => Number(list.agents[b]?.updatedAt || 0) - Number(list.agents[a]?.updatedAt || 0));
+      .sort((a, b) => compareAgentRecordStable(list.agents[a], list.agents[b], { idField: 'id' }) || compareAgentText(a, b));
     $agentList.innerHTML = '';
     if (!ids.length) {
       $agentList.innerHTML = '<div class="agent-empty-state">没有匹配的会话</div>';
@@ -912,6 +1036,7 @@ export function openAgentWorkspace() {
     button.setAttribute('aria-busy', 'true');
     let caption = '';
     try {
+      requireTextCapability();
       const handle = streamAgentChat({
         apiKey: bridge.getApiKey(),
         model,
@@ -985,9 +1110,13 @@ export function openAgentWorkspace() {
         scheduleDraftSave();
         syncDraftReferencesFromWorkspace();
       });
-      card.querySelector('.agent-reference-note')?.addEventListener('click', () => {
+      card.querySelector('.agent-reference-note')?.addEventListener('click', async () => {
         if (!imgId) return;
-        const note = prompt('素材备注', getAgentImageMeta(imgId)?.note || '');
+        const note = await requestAgentText({
+          title: '素材备注',
+          label: '备注内容',
+          value: getAgentImageMeta(imgId)?.note || ''
+        });
         if (note === null) return;
         updateAgentImageMeta(imgId, { note: note.trim() });
         syncDraftReferencesFromWorkspace();
@@ -1025,7 +1154,15 @@ export function openAgentWorkspace() {
       }
     }
     if (!Array.isArray(records)) records = [];
-    const recent = [...records].sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0)).slice(0, 8);
+    const recent = [...records]
+      .sort((a, b) => compareAgentRecordStable(a, b, {
+        timeField: 'timestamp',
+        titleField: 'prompt'
+      }) || compareAgentText(
+        a?.id || a?.imageSrc || a?.videoSrc || a?.imageUrl,
+        b?.id || b?.imageSrc || b?.videoSrc || b?.imageUrl
+      ))
+      .slice(0, 8);
     $recentGrid.innerHTML = '';
     if (!recent.length) {
       $recentGrid.innerHTML = '<div class="agent-empty-state">还没有生成结果</div>';
@@ -1105,7 +1242,12 @@ export function openAgentWorkspace() {
     const session = activeSession();
     const filter = $taskFilter?.value || 'all';
     const proposals = Object.values(session?.proposals || {})
-      .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))
+      .sort((a, b) => compareAgentTimeDesc(a, b, 'createdAt')
+        || compareAgentText(
+        getProposalView(a?.raw, a?.userOverrides)?.prompt,
+        getProposalView(b?.raw, b?.userOverrides)?.prompt
+      )
+        || compareAgentText(a?.id, b?.id))
       .filter(proposal => {
         const state = proposal.executionState || 'pending';
         if (filter === 'active') return state === 'pending' || state === 'generating';
@@ -1174,7 +1316,9 @@ export function openAgentWorkspace() {
     const query = String($promptSearch?.value || '').trim().toLowerCase();
     const entries = promptEntries
       .filter(entry => !query || `${entry.title || ''} ${entry.content || ''}`.toLowerCase().includes(query))
-      .sort((a, b) => Number(b.usageCount || 0) - Number(a.usageCount || 0));
+      .sort((a, b) => Number(b.usageCount || 0) - Number(a.usageCount || 0)
+        || compareAgentText(a.title, b.title)
+        || compareAgentText(a.id, b.id));
     $promptList.innerHTML = '';
     if (!entries.length) {
       $promptList.innerHTML = '<div class="agent-empty-state">暂无匹配提示词</div>';
@@ -1862,6 +2006,7 @@ export function openAgentWorkspace() {
     if (sessForSend?.webSearchEnabled !== false) tools.push({ type: 'web_search' });
 
     try {
+      requireTextCapability();
       const handle = streamAgentChat({
         apiKey: bridge.getApiKey(),
         model,
@@ -1953,7 +2098,7 @@ export function openAgentWorkspace() {
     setMobilePanel('');
   };
 
-  $agentList.onclick = (e) => {
+  $agentList.onclick = async (e) => {
     const item = e.target.closest('.agent-agent-item');
     const id = item?.dataset.agentId;
     if (!item || !id) return;
@@ -1974,7 +2119,14 @@ export function openAgentWorkspace() {
     if (delBtn) {
       const list = loadAgentList();
       if (Object.keys(list.agents).length <= 1) return;
-      if (!confirm('确定删除这个会话吗？')) return;
+      const confirmed = await (window.AppUtils?.dialog?.confirm?.({
+        title: '删除会话',
+        message: '确定删除这个会话吗？会话内容将无法恢复。',
+        confirmLabel: '删除',
+        danger: true,
+        trigger: delBtn
+      }) ?? Promise.resolve(false));
+      if (!confirmed) return;
       if (id === getActiveAgentId() && ctrl.current) cancelCurrentResponse('已取消回答');
       deleteAgent(id);
       renderAll();
@@ -1992,7 +2144,7 @@ export function openAgentWorkspace() {
     if (id && id !== getActiveAgentId()) switchAgent(id);
   });
 
-  $export.onclick = () => {
+  $export.onclick = async () => {
     const sess = activeSession();
     if (!sess) return;
     if ((sess.messages || []).length === 0) {
@@ -2000,7 +2152,13 @@ export function openAgentWorkspace() {
       return;
     }
     if ((sess.messages || []).length > 200) {
-      if (!confirm('MD 较大，仍继续？')) return;
+      const confirmed = await (window.AppUtils?.dialog?.confirm?.({
+        title: '导出较大会话',
+        message: '当前 Markdown 超过 200 条消息，仍继续导出吗？',
+        confirmLabel: '继续导出',
+        trigger: $export
+      }) ?? Promise.resolve(false));
+      if (!confirmed) return;
     }
     downloadAgentMarkdown(sess);
     bridge.flashStatus?.('已导出 MD', 'success');
@@ -2060,6 +2218,7 @@ export function openAgentWorkspace() {
     document.removeEventListener('keydown', escClose);
     document.removeEventListener('focusin', keepFocusInside, true);
     document.body.classList.remove('agent-mode-open');
+    window.AppUtils?.setActiveWorkspace?.('studio');
     try { window.dispatchEvent(new CustomEvent('agent-workspace-closed')); } catch {}
     restoreBackground();
     root.remove();
@@ -2099,6 +2258,7 @@ export function openAgentWorkspace() {
     refreshAssetPanes();
   }).catch(() => {});
   setSidePaneTab('reference');
+  setMobilePanel('');
   root.__agentClose = close;
   if (!$input.disabled) $input.focus();
   return { close };

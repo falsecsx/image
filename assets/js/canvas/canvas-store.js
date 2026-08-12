@@ -10,7 +10,7 @@ import {
   createCanvasProject,
   createCanvasTextNode,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260803-4';
+} from './canvas-model.js?v=20260808-1';
 
 function readJSON(key, fallback) {
   try {
@@ -64,6 +64,21 @@ function formatStorageBytes(bytes) {
   return (size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
 }
 
+function compareCanvasStoreText(left, right) {
+  return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareCanvasStoreRecency(left, right) {
+  return (Number(right?.lastOpenedAt) || 0) - (Number(left?.lastOpenedAt) || 0)
+    || (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0)
+    || (Number(right?.createdAt) || 0) - (Number(left?.createdAt) || 0)
+    || compareCanvasStoreText(left?.title, right?.title)
+    || compareCanvasStoreText(left?.id, right?.id);
+}
+
 export function getCanvasProjectsStorageHealth(projectsInput) {
   const projects = ensureArray(projectsInput != null ? projectsInput : loadCanvasProjects())
     .map(project => normalizeCanvasProject(project));
@@ -88,7 +103,11 @@ export function getCanvasProjectsStorageHealth(projectsInput) {
       lastOpenedAt: Number(project.lastOpenedAt) || 0,
       createdAt: Number(project.createdAt) || 0
     };
-  }).sort((a, b) => (b.bytes - a.bytes) || (b.updatedAt - a.updatedAt));
+  }).sort((a, b) => (b.bytes - a.bytes)
+    || (b.updatedAt - a.updatedAt)
+    || (b.createdAt - a.createdAt)
+    || compareCanvasStoreText(a.title, b.title)
+    || compareCanvasStoreText(a.id, b.id));
 
   let level = 'ok';
   if (bytes >= criticalBytes || projects.length >= 24) level = 'critical';
@@ -130,12 +149,7 @@ export function pruneCanvasProjects(projectsInput, options = {}) {
   const maxProjects = Number.isFinite(Number(options.maxProjects))
     ? Math.max(1, Math.floor(Number(options.maxProjects)))
     : 8;
-  const ranked = [...list].sort((a, b) => {
-    const ao = Number(a?.lastOpenedAt) || 0;
-    const bo = Number(b?.lastOpenedAt) || 0;
-    if (bo !== ao) return bo - ao;
-    return (Number(b?.updatedAt) || 0) - (Number(a?.updatedAt) || 0);
-  });
+  const ranked = [...list].sort(compareCanvasStoreRecency);
 
   // Always keep forced IDs first (e.g. resume project), then fill remaining slots by recency.
   const kept = [];

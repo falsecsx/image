@@ -8,17 +8,60 @@ import {
   pruneCanvasProjects,
   renameCanvasProject,
   saveCanvasProjects
-} from './canvas-store.js?v=20260803-4';
-import { mountCanvasEditor } from './canvas-editor.js?v=20260803-4';
-import { cacheCanvasResourceRecord, garbageCollectCanvasResources, getCanvasResourceStore, prepareCanvasResourceRecord } from './canvas-resources.js?v=20260803-4';
-import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260803-4';
-import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260803-4';
-import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260803-4';
+} from './canvas-store.js?v=20260808-1';
+import { mountCanvasEditor } from './canvas-editor.js?v=20260808-1';
+import { cacheCanvasResourceRecord, garbageCollectCanvasResources, getCanvasResourceStore, prepareCanvasResourceRecord } from './canvas-resources.js?v=20260808-1';
+import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260808-1';
+import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260808-1';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260808-1';
 
 let isCanvasWorkspaceOpen = false;
 let activeWorkspaceCloser = null;
 
+function compareCanvasText(left, right) {
+  return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareCanvasProjects(left, right, mode = 'updated') {
+  const time = (field, descending = true) => {
+    const a = Number(left?.[field]) || 0;
+    const b = Number(right?.[field]) || 0;
+    if (a === b) return 0;
+    return descending ? b - a : a - b;
+  };
+  if (mode === 'name') {
+    return compareCanvasText(left?.title, right?.title)
+      || time('updatedAt')
+      || time('lastOpenedAt')
+      || time('createdAt')
+      || compareCanvasText(left?.id, right?.id);
+  }
+  if (mode === 'opened') {
+    return time('lastOpenedAt')
+      || time('updatedAt')
+      || time('createdAt')
+      || compareCanvasText(left?.title, right?.title)
+      || compareCanvasText(left?.id, right?.id);
+  }
+  if (mode === 'created') {
+    return time('createdAt')
+      || time('updatedAt')
+      || time('lastOpenedAt')
+      || compareCanvasText(left?.title, right?.title)
+      || compareCanvasText(left?.id, right?.id);
+  }
+  return time('updatedAt')
+    || time('lastOpenedAt')
+    || time('createdAt')
+    || compareCanvasText(left?.title, right?.title)
+    || compareCanvasText(left?.id, right?.id);
+}
+
 function setWorkspaceNavActive(workspace) {
+  if (globalThis.AppUtils?.setActiveWorkspace) return globalThis.AppUtils.setActiveWorkspace(workspace);
   const value = String(workspace || 'studio');
   document.querySelectorAll('[data-workspace-nav]').forEach(button => {
     button.classList.toggle('is-active', button.dataset.workspaceNav === value);
@@ -27,6 +70,51 @@ function setWorkspaceNavActive(workspace) {
 
 export function closeCanvasWorkspace() {
   activeWorkspaceCloser?.();
+}
+
+function requestCanvasText(title, initialValue = '') {
+  const dialogApi = globalThis.AppUtils?.dialog;
+  if (!dialogApi?.open) return Promise.resolve(null);
+  const overlay = document.createElement('div');
+  overlay.className = 'app-dialog-overlay canvas-input-dialog-overlay';
+  overlay.innerHTML = `
+    <section class="app-dialog canvas-input-dialog" role="dialog" aria-labelledby="canvas-input-title">
+      <h2 id="canvas-input-title"></h2>
+      <label class="canvas-input-dialog-label">名称<textarea rows="2"></textarea></label>
+      <div class="app-dialog-actions"><button type="button" class="btn app-dialog-cancel">取消</button><button type="button" class="btn btn-primary app-dialog-confirm">确定</button></div>
+    </section>`;
+  document.body.appendChild(overlay);
+  const surface = overlay.querySelector('.canvas-input-dialog');
+  const titleElement = overlay.querySelector('#canvas-input-title');
+  const field = overlay.querySelector('textarea');
+  if (titleElement) titleElement.textContent = title;
+  if (field) field.value = initialValue;
+  let settled = false;
+  let resolvePromise;
+  let handle;
+  const promise = new Promise(resolve => { resolvePromise = resolve; });
+  const finish = value => {
+    if (settled) return;
+    settled = true;
+    handle?.close?.(value == null ? 'cancel' : 'confirm');
+    if (overlay.isConnected) overlay.remove();
+    resolvePromise(value);
+  };
+  handle = dialogApi.open({
+    element: surface,
+    container: overlay,
+    label: title,
+    onClose: reason => {
+      if (!settled) {
+        settled = true;
+        resolvePromise(reason === 'confirm' ? field?.value || '' : null);
+      }
+      if (overlay.isConnected) overlay.remove();
+    }
+  });
+  overlay.querySelector('.app-dialog-cancel')?.addEventListener('click', () => finish(null));
+  overlay.querySelector('.app-dialog-confirm')?.addEventListener('click', () => finish(field?.value || ''));
+  return promise;
 }
 
 function formatProjectTime(value) {
@@ -135,10 +223,7 @@ function resolveResumeProject(projects) {
   const opened = list.filter(project => Number(project?.lastOpenedAt) > 0);
   if (!opened.length) return null;
   return [...opened].sort((a, b) => {
-    const ao = Number(a?.lastOpenedAt) || 0;
-    const bo = Number(b?.lastOpenedAt) || 0;
-    if (bo !== ao) return bo - ao;
-    return (Number(b?.updatedAt) || 0) - (Number(a?.updatedAt) || 0);
+    return compareCanvasProjects(a, b, 'opened');
   })[0] || null;
 }
 
@@ -196,11 +281,7 @@ function getProjectThumbnail(project) {
 
 export function getCanvasProjectTargets(projects = null) {
   const list = Array.isArray(projects) ? projects : loadCanvasProjects();
-  return [...list].sort((a, b) => {
-    const ao = Number(a?.lastOpenedAt || a?.updatedAt) || 0;
-    const bo = Number(b?.lastOpenedAt || b?.updatedAt) || 0;
-    return bo - ao;
-  }).map(project => {
+  return [...list].sort((a, b) => compareCanvasProjects(a, b, 'opened')).map(project => {
     const summary = summarizeProject(project);
     return {
       id: String(project?.id || ''),
@@ -258,9 +339,10 @@ function renderStorageHealthCard(health) {
   ].join('');
 }
 
-function renderWorkspaceHome(projects, state, health = null) {
+function renderWorkspaceHome(projects, state, health = null, allProjects = projects) {
   const list = Array.isArray(projects) ? projects : [];
-  const resumeProject = resolveResumeProject(list);
+  const resumeProject = resolveResumeProject(allProjects);
+  const recentProjectId = String(resumeProject?.id || '');
   const resumeSummary = resumeProject ? summarizeProject(resumeProject) : null;
   const storageHealth = health || getCanvasProjectsStorageHealth(list);
     const items = list.length
@@ -274,10 +356,10 @@ function renderWorkspaceHome(projects, state, health = null) {
           + '</div>'
         : '<div class="canvas-project-thumbnail is-empty" data-project-thumbnail><span>暂无预览</span></div>';
       const isResume = Boolean(resumeProject && project.id === resumeProject.id);
-      const isRecent = index === 0 || isResume;
+      const isRecent = Boolean(recentProjectId && project.id === recentProjectId);
       const badges = [];
       if (isResume) badges.push('<span class="canvas-project-badge is-resume">继续</span>');
-      else if (index === 0) badges.push('<span class="canvas-project-badge">最近</span>');
+      else if (isRecent) badges.push('<span class="canvas-project-badge">最近</span>');
       if (summary.workflowStep === 'failed') badges.push('<span class="canvas-project-badge is-failed">失败</span>');
       else if (summary.workflowStep === 'ready') badges.push('<span class="canvas-project-badge is-ready">可生成</span>');
       return [
@@ -331,13 +413,12 @@ function renderWorkspaceHome(projects, state, health = null) {
     '<div class="canvas-project-shell">',
     '<div class="canvas-project-header">',
     '<div class="canvas-project-title"><span>CANVAS WORKSPACE</span><strong>无限画布</strong></div>',
-    '<button type="button" class="canvas-close-btn" data-action="close" aria-label="关闭无限画布" title="关闭">×</button>',
+    '<button type="button" class="canvas-close-btn" data-action="close" aria-label="关闭无限画布" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>',
     '</div>',
     '<p class="canvas-project-copy canvas-home-lead">从上次项目继续，或创建「参考图 → 编排 → 结果图」工作流。Studio 素材支持批量导入并自动接线。</p>',
     resumeCard,
     renderStorageHealthCard(storageHealth),
     '<div class="canvas-project-actions">',
-    '<button type="button" class="canvas-create-btn" data-action="prompt-library"><i data-lucide="library" aria-hidden="true"></i> 提示词库</button>',
     '<button type="button" class="canvas-create-btn is-primary" data-action="create-quick">一键起步工作流</button>',
     '<button type="button" class="canvas-create-btn" data-action="create">新建空白画布</button>',
     '<button type="button" class="canvas-create-btn" data-action="create-sample">创建示例项目</button>',
@@ -368,17 +449,7 @@ function renderWorkspaceHome(projects, state, health = null) {
 
 function sortProjects(projects, mode = 'updated') {
   const list = [...(Array.isArray(projects) ? projects : [])];
-  if (mode === 'created') return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  if (mode === 'name') return list.sort((a, b) => String(a?.title || '').localeCompare(String(b?.title || ''), 'zh-CN'));
-  if (mode === 'opened') {
-    return list.sort((a, b) => {
-      const ao = Number(a?.lastOpenedAt) || 0;
-      const bo = Number(b?.lastOpenedAt) || 0;
-      if (bo !== ao) return bo - ao;
-      return (Number(b?.updatedAt) || 0) - (Number(a?.updatedAt) || 0);
-    });
-  }
-  return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return list.sort((a, b) => compareCanvasProjects(a, b, mode));
 }
 
 function filterProjects(projects, keyword = '') {
@@ -694,22 +765,29 @@ export function openCanvasWorkspace(options = {}) {
     renderWorkspace();
   };
 
-  const handleRenameProject = projectId => {
+  const handleRenameProject = async projectId => {
     const projects = loadCanvasProjects();
     const project = projects.find(entry => entry?.id === projectId);
     if (!project) return;
-    const nextTitle = globalThis.prompt?.('输入新的画布名称', project.title || '未命名画布');
+    const nextTitle = await requestCanvasText('重命名画布', project.title || '未命名画布');
     if (nextTitle == null) return;
-    renameCanvasProject(projects, projectId, nextTitle);
+    const normalizedTitle = String(nextTitle).trim();
+    if (!normalizedTitle) return;
+    renameCanvasProject(projects, projectId, normalizedTitle);
     saveProjectsSafely(projects);
     renderWorkspace();
   };
 
-  const handleDeleteProject = projectId => {
+  const handleDeleteProject = async projectId => {
     const projects = loadCanvasProjects();
     const project = projects.find(entry => entry?.id === projectId);
     if (!project) return;
-    const confirmed = globalThis.confirm?.(`确认删除「${project.title || '未命名画布'}」吗？`);
+    const confirmed = await (globalThis.AppUtils?.dialog?.confirm?.({
+      title: '删除画布项目',
+      message: `确认删除「${project.title || '未命名画布'}」吗？此操作不可恢复。`,
+      confirmLabel: '删除',
+      danger: true
+    }) ?? Promise.resolve(false));
     if (!confirmed) return;
     deleteCanvasProject(projects, projectId);
     const saved = saveProjectsSafely(projects);
@@ -756,9 +834,12 @@ export function openCanvasWorkspace(options = {}) {
     }
     const preview = plan.removed.slice(0, 5).map(item => item.title || '未命名画布').join('、');
     const extra = plan.removedCount > 5 ? (' 等 ' + plan.removedCount + ' 个') : '';
-    const confirmed = globalThis.confirm?.(
-      '将保留最近 8 个项目（含继续上次），并删除：' + preview + extra + '。\n建议先导出备份。是否继续清理？'
-    );
+    const confirmed = await (globalThis.AppUtils?.dialog?.confirm?.({
+      title: '清理旧画布项目',
+      message: '将保留最近 8 个项目（含继续上次），并删除：' + preview + extra + '。建议先导出备份。是否继续清理？',
+      confirmLabel: '清理并备份',
+      danger: true
+    }) ?? Promise.resolve(false));
     if (!confirmed) return;
     // Save first so cleanup remains useful even if backup download/IDB is blocked.
     const saved = saveProjectsSafely(plan.projects);
@@ -808,7 +889,8 @@ export function openCanvasWorkspace(options = {}) {
     const projects = loadCanvasProjects();
     const health = getCanvasProjectsStorageHealth(projects);
     const visibleProjects = filterProjects(sortProjects(projects, workspaceState.sortMode), workspaceState.search);
-    root.innerHTML = renderWorkspaceHome(visibleProjects, workspaceState, health);
+    root.innerHTML = renderWorkspaceHome(visibleProjects, workspaceState, health, projects);
+    try { globalThis.lucide?.createIcons?.(); } catch {}
 
     root.querySelectorAll('[data-project-thumbnail] img').forEach(image => {
       image.addEventListener('error', () => {
@@ -822,9 +904,6 @@ export function openCanvasWorkspace(options = {}) {
     });
 
     root.querySelector('[data-action="close"]')?.addEventListener('click', closeWorkspace);
-    root.querySelector('[data-action="prompt-library"]')?.addEventListener('click', () => {
-      globalThis.PromptLibraryBridge?.open?.({ context: 'canvas-home' });
-    });
     root.querySelector('[data-action="create-quick"]')?.addEventListener('click', createQuickWorkflowProject);
     root.querySelector('[data-action="create"]')?.addEventListener('click', createProject);
     root.querySelector('[data-action="create-sample"]')?.addEventListener('click', createSampleProject);
@@ -858,11 +937,11 @@ export function openCanvasWorkspace(options = {}) {
       button.addEventListener('click', () => handleDuplicateProject(button.dataset.projectId));
     });
     root.querySelectorAll('[data-action="rename-project"]').forEach(button => {
-      button.addEventListener('click', () => handleRenameProject(button.dataset.projectId));
+      button.addEventListener('click', () => void handleRenameProject(button.dataset.projectId));
     });
 
     root.querySelectorAll('[data-action="delete-project"]').forEach(button => {
-      button.addEventListener('click', () => handleDeleteProject(button.dataset.projectId));
+      button.addEventListener('click', () => void handleDeleteProject(button.dataset.projectId));
     });
 
     root.querySelectorAll('[data-action="export-project"]').forEach(button => {

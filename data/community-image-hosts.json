@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-31T19:18:52.244Z",
+  "generatedAt": "2026-08-06T14:30:16.352Z",
   "hosts": [
     "camo.githubusercontent.com",
     "cdn.imgedify.com",
@@ -8,7 +8,20 @@
     "github.com",
     "i.mji.rip",
     "linux.do",
+    "objects.githubusercontent.com",
     "pbs.twimg.com",
-    "raw.githubusercontent.com"
+    "raw.githubusercontent.com",
+    "i.mij.rip"
+  ],
+  "auxiliary": [
+    "images.weserv.nl",
+    "wsrv.nl",
+    "cdn.jsdelivr.net"
+  ],
+  "relay": [
+    "pbs.twimg.com",
+    "linux.do",
+    "i.mji.rip",
+    "i.mij.rip"
   ]
 }

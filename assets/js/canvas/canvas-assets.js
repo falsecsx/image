@@ -1,6 +1,6 @@
 // Global asset library: cross-project favorites, reusable via @asset:<id> tokens.
 // Separate from canvas-resources.js (project resource snapshots): this is a persistent favorites layer.
-import { createId } from './canvas-model.js?v=20260803-4';
+import { createId } from './canvas-model.js?v=20260808-1';
 
 export const CANVAS_ASSETS_DB_NAME = 'image_app:canvas_assets';
 export const CANVAS_ASSETS_STORE_NAME = 'assets';
