@@ -36,7 +36,9 @@
 │  ├─ community-prompts.json
 │  └─ community-image-hosts.json
 ├─ LICENSE
+├─ LICENSE-MIT-INFINITE-CANVAS
 ├─ NOTICE
+├─ DATA_NOTICE.md
 └─ THIRD_PARTY_NOTICES.md
 ```
 
@@ -67,6 +69,11 @@ npx serve .
 
 ## 许可证
 
-本项目按 [GNU Affero General Public License v3.0](./LICENSE) 发布。
-无限画布包含基于 [`basketikun/infinite-canvas`](https://github.com/basketikun/infinite-canvas) 改写的原生 JavaScript 实现，来源和修改范围见 [NOTICE](./NOTICE)。
-运行时第三方依赖的许可证见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+本项目采用分层许可：
+
+- **项目原始代码**：按 [PolyForm Noncommercial License 1.0.0](./LICENSE) 发布。该许可证允许非商业目的的使用、复制、修改和分发，但不授予商业使用权；它是源码可见（source-available）许可证，不是 OSI 批准的开源许可证。
+- **改编自上游的代码**：基于 [`basketikun/infinite-canvas`](https://github.com/basketikun/infinite-canvas) 的上游改编部分继续适用 MIT 许可证，来源、历史许可证和范围见 [NOTICE](./NOTICE)，完整文本见 [LICENSE-MIT-INFINITE-CANVAS](./LICENSE-MIT-INFINITE-CANVAS)。
+- **第三方依赖**：`assets/vendor/` 下的运行时依赖保留各自原始许可证，详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+- **社区数据**：`data/` 下的提示词、作者信息和外部图片 URL 不自动适用项目许可证，来源、归属和下架方式见 [DATA_NOTICE.md](./DATA_NOTICE.md)。
+
+本许可证生效前的历史发布版本依据 AGPL-3.0 授权，继续有效。本项目没有向原创代码授予商业使用权；如需商业授权，请通过项目仓库联系作者。

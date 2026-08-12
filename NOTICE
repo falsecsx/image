@@ -1,18 +1,65 @@
-This project includes adapted code from infinite-canvas.
+# Project Notice
 
-Upstream project: https://github.com/basketikun/infinite-canvas
-Upstream version: v0.11.0
-Upstream commit: b6e9954c0a584b9a63e810a4fb632ee93c049f3b
-Upstream author: HouYunFei and contributors
-License: GNU Affero General Public License v3.0
+This project is distributed under layered terms. The root `LICENSE` applies
+only to original code contributed by this project. It does not replace the
+licenses of upstream code, vendored dependencies, or community data.
 
-The adapted implementation keeps this project's native JavaScript architecture and
-existing canvas data model. React-specific code and dependencies were not imported.
+## Upstream infinite-canvas
 
-This distribution also vendors the following browser dependencies under
-assets/vendor/. Their license notices are preserved in the distributed files and
-summarized in THIRD_PARTY_NOTICES.md:
+This project includes portions adapted from
+[`basketikun/infinite-canvas`](https://github.com/basketikun/infinite-canvas).
 
-- Marked 18.0.7, MIT License
-- DOMPurify 3.4.12, Apache License 2.0 / Mozilla Public License 2.0
-- Lucide 1.27.0, ISC License (with Feather-derived icon notices)
+- Upstream project: https://github.com/basketikun/infinite-canvas
+- Upstream author: HouYunFei and contributors
+- Adaptation baseline: v0.11.0, commit
+  [`b6e9954c0a584b9a63e810a4fb632ee93c049f3b`](https://github.com/basketikun/infinite-canvas/commit/b6e9954c0a584b9a63e810a4fb632ee93c049f3b)
+- License at that historical commit: GNU AGPL-3.0
+- Later upstream licensing change: commit
+  [`890ba95858bbb13496d23978003716656109abb2`](https://github.com/basketikun/infinite-canvas/commit/890ba95858bbb13496d23978003716656109abb2)
+- Current upstream license: MIT, as published in the upstream repository
+
+The historical v0.11.0 snapshot was AGPL-3.0 at the time it was published.
+The upstream project later reauthorized the relevant project code under MIT.
+The upstream-derived portions included in this project rely on that later MIT
+grant and are not subject to this project's noncommercial restriction. The
+complete MIT text is provided in
+[`LICENSE-MIT-INFINITE-CANVAS`](./LICENSE-MIT-INFINITE-CANVAS).
+
+The known upstream-derived canvas implementation is located in
+`assets/js/canvas/` and the related canvas sections of
+`assets/css/canvas.css`. Project-authored additions in mixed files remain
+licensed under the root `LICENSE`; this notice does not relicense those
+original contributions.
+
+## Project-original code
+
+Original contributions in the non-vendored application code, including the
+application shell, proxy, Agent, prompt library, and project-specific canvas
+features, are licensed under the PolyForm Noncommercial License 1.0.0 in
+[`LICENSE`](./LICENSE). That license is source-available and is not an
+OSI-approved Open Source license. It permits noncommercial use, copying,
+modification, and distribution subject to its terms, but does not grant a
+commercial-use license.
+
+## Vendored dependencies
+
+Runtime files under `assets/vendor/` retain their own licenses. Their notices
+are preserved in the bundled files and summarized in
+[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md):
+
+- Marked 18.0.7: MIT License
+- DOMPurify 3.4.12: Apache License 2.0 / Mozilla Public License 2.0
+- Lucide 1.27.0: ISC License, including its Feather-derived notices
+
+## Community data
+
+The JSON files under `data/` contain third-party prompts, attribution fields,
+source URLs, and external image URLs. They are not automatically licensed
+under the root `LICENSE`. See [`DATA_NOTICE.md`](./DATA_NOTICE.md) for source,
+attribution, reuse, and takedown information.
+
+## Historical releases
+
+Releases made before adoption of the PolyForm Noncommercial License remain
+available under the AGPL-3.0 terms that applied to those releases. This notice
+does not retroactively change their license.
