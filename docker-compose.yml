@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    container_name: ai-image-studio
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    volumes:
+      - app-cache:/var/www/html/cache
+
+volumes:
+  app-cache:
