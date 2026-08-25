@@ -1,58 +1,24 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/api/bootstrap.php';
+require_once __DIR__ . '/api/quota.php';
+
 const MAX_PROXY_BODY_BYTES = 60 * 1024 * 1024;
 const MAX_COMMUNITY_MEDIA_BYTES = 15 * 1024 * 1024;
 const MEDIA_CACHE_DIR = __DIR__ . '/cache/media';
 const MEDIA_CACHE_TTL = 7 * 86400;
 const MEDIA_CACHE_FAILURE_TTL = 10 * 60;
-const MEDIA_CACHE_KEY_VERSION = '20260807-1';
+const MEDIA_CACHE_KEY_VERSION = '20260813-4';
 const MEDIA_CACHE_MAX_SIZE = 500 * 1024 * 1024;
 
-function set_cors_headers(): void
+function media_cache_dir(): string
 {
-    $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '');
-    if ($origin === '') {
-        return;
+    $env = getenv('AI_CACHE_DIR');
+    if (is_string($env) && trim($env) !== '') {
+        return rtrim(trim($env), '/\\') . '/media';
     }
-
-    $originHost = strtolower((string) (parse_url($origin, PHP_URL_HOST) ?? ''));
-    $serverHost = strtolower((string) (parse_url('http://' . ($_SERVER['HTTP_HOST'] ?? ''), PHP_URL_HOST) ?? ''));
-    if ($originHost !== '' && $originHost === $serverHost) {
-        header('Access-Control-Allow-Origin: ' . $origin);
-        header('Vary: Origin');
-    }
-}
-
-function send_json(int $status, array $payload): void
-{
-    http_response_code($status);
-    set_cors_headers();
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    exit;
-}
-
-function get_request_header(string $name): string
-{
-    $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
-    if (isset($_SERVER[$serverKey])) {
-        return trim((string) $_SERVER[$serverKey]);
-    }
-
-    if (strtolower($name) === 'authorization') {
-        return trim((string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? ''));
-    }
-
-    if (function_exists('apache_request_headers')) {
-        foreach (apache_request_headers() as $headerName => $value) {
-            if (strcasecmp($headerName, $name) === 0) {
-                return trim((string) $value);
-            }
-        }
-    }
-
-    return '';
+    return MEDIA_CACHE_DIR;
 }
 
 function is_private_ip(string $ip): bool
@@ -95,17 +61,30 @@ function resolve_host_ips(string $host): array
     return array_values(array_unique($ips));
 }
 
-function assert_public_host(string $host, string $error): void
+function is_public_host(string $host): bool
 {
     $ips = resolve_host_ips($host);
     if (!$ips) {
-        send_json(400, ['error' => $error]);
+        return false;
     }
-
     foreach ($ips as $ip) {
         if (is_private_ip($ip)) {
-            send_json(400, ['error' => $error]);
+            return false;
         }
+    }
+    return true;
+}
+
+function apply_curl_ca($ch): void
+{
+    $ca = getenv('AI_CA_BUNDLE');
+    if (is_string($ca) && trim($ca) !== '' && is_file($ca)) {
+        curl_setopt($ch, CURLOPT_CAINFO, $ca);
+        return;
+    }
+    $gitCa = 'C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt';
+    if (is_file($gitCa)) {
+        curl_setopt($ch, CURLOPT_CAINFO, $gitCa);
     }
 }
 
@@ -168,7 +147,7 @@ function validate_target(string $target): array
 
 function load_community_media_hosts(): array
 {
-    $path = __DIR__ . '/data/community-image-hosts.json';
+    $path = ai_data_dir() . '/community-image-hosts.json';
     if (!is_file($path)) {
         return [];
     }
@@ -179,7 +158,7 @@ function load_community_media_hosts(): array
 
 function load_community_auxiliary_hosts(): array
 {
-    $path = __DIR__ . '/data/community-image-hosts.json';
+    $path = ai_data_dir() . '/community-image-hosts.json';
     if (!is_file($path)) {
         return ['images.weserv.nl', 'wsrv.nl', 'cdn.jsdelivr.net'];
     }
@@ -190,7 +169,7 @@ function load_community_auxiliary_hosts(): array
 
 function load_community_relay_hosts(): array
 {
-    $path = __DIR__ . '/data/community-image-hosts.json';
+    $path = ai_data_dir() . '/community-image-hosts.json';
     if (!is_file($path)) {
         return ['pbs.twimg.com', 'linux.do', 'i.mji.rip', 'i.mij.rip'];
     }
@@ -339,7 +318,7 @@ function resolve_community_media_redirect(string $base, string $location): strin
 function get_media_cache_path(string $target): string
 {
     $hash = hash('sha256', MEDIA_CACHE_KEY_VERSION . "\0" . $target);
-    return MEDIA_CACHE_DIR . '/' . substr($hash, 0, 2) . '/' . $hash;
+    return media_cache_dir() . '/' . substr($hash, 0, 2) . '/' . $hash;
 }
 
 function open_media_cache_lock(string $path)
@@ -385,10 +364,8 @@ function write_media_cache_meta(string $path, array $meta): bool
 function get_cached_media(string $target): ?array
 {
     $path = get_media_cache_path($target);
-    if (!is_file($path)) return null;
-
     $metaPath = $path . '.meta';
-    if (!is_file($metaPath)) return null;
+    if (!is_file($path) && !is_file($metaPath)) return null;
 
     $lock = open_media_cache_lock($path);
     if ($lock === null) return null;
@@ -408,6 +385,7 @@ function get_cached_media(string $target): ?array
         }
 
         if (!isset($meta['contentType'])) return null;
+        if (!is_file($path)) return null;
         $body = file_get_contents($path);
         if ($body === false) return null;
 
@@ -462,14 +440,39 @@ function save_cached_media(string $target, int $status, string $contentType, str
     }
 }
 
+function save_media_failure(string $target, int $status, string $reason): void
+{
+    $path = get_media_cache_path($target);
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) return;
+
+    $lock = open_media_cache_lock($path);
+    if ($lock === null) return;
+
+    try {
+        write_media_cache_meta($path . '.meta', [
+            'status'      => $status,
+            'contentType' => 'text/plain',
+            'time'        => time(),
+            'accessTime'  => time(),
+            'url'         => $target,
+            'size'        => 0,
+            'failure'     => true,
+            'reason'      => $reason,
+        ]);
+    } finally {
+        close_media_cache_lock($lock);
+    }
+}
+
 function clean_media_cache(): void
 {
-    if (!is_dir(MEDIA_CACHE_DIR)) return;
+    if (!is_dir(media_cache_dir())) return;
 
     $files = [];
     $totalSize = 0;
     $iterator = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator(MEDIA_CACHE_DIR, FilesystemIterator::SKIP_DOTS),
+        new RecursiveDirectoryIterator(media_cache_dir(), FilesystemIterator::SKIP_DOTS),
         RecursiveIteratorIterator::LEAVES_ONLY
     );
 
@@ -521,23 +524,29 @@ function fetch_community_media(string $target): array
     $allAllowedHosts = array_merge($allowedHosts, $auxiliaryHosts);
     $googleApiKey = get_request_header('X-Goog-Api-Key');
 
-    $validateTarget = static function (string $url) use ($allAllowedHosts): void {
+    $validateTarget = static function (string $url) use ($allAllowedHosts): bool {
         $parts = parse_url($url);
         if (!$parts || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
-            send_json(400, ['error' => 'community media proxy requires https']);
+            return false;
         }
         $host = strtolower((string) ($parts['host'] ?? ''));
         if ($host === '' || !in_array($host, $allAllowedHosts, true)) {
-            send_json(400, ['error' => 'community media host is not allowlisted']);
+            return false;
         }
-        assert_public_host($host, 'private media address is not allowed or could not be verified');
+        if (!is_public_host($host)) {
+            return false;
+        }
+        return true;
     };
 
     $tryFetch = static function (string $url) use ($validateTarget, $googleApiKey, $modelOutputHosts): ?array {
         $current = $url;
         for ($hop = 0; $hop <= 3; $hop++) {
-            $validateTarget($current);
+            if (!$validateTarget($current)) {
+                return null;
+            }
             $ch = curl_init($current);
+            apply_curl_ca($ch);
             $body = '';
             $tooLarge = false;
             $location = '';
@@ -645,21 +654,7 @@ function fetch_community_media(string $target): array
     }
 
     // Keep failures briefly so a transient upstream outage does not poison the cache.
-    $failureMeta = [
-        'status' => 502,
-        'contentType' => 'text/plain',
-        'time' => time(),
-        'accessTime' => time(),
-        'url' => $target,
-        'size' => 0,
-        'failure' => true,
-        'reason' => 'all attempts exhausted'
-    ];
-    $failurePath = get_media_cache_path($target);
-    $failureDir = dirname($failurePath);
-    if (is_dir($failureDir) || @mkdir($failureDir, 0755, true)) {
-        @file_put_contents($failurePath . '.meta', json_encode($failureMeta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-    }
+    save_media_failure($target, 502, 'all attempts exhausted');
 
     send_json(502, ['error' => 'community media proxy failed: all attempts exhausted']);
 }
@@ -771,13 +766,6 @@ function build_multipart_body(array $fields, array $files): array
 }
 
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
-if ($method === 'OPTIONS') {
-    http_response_code(204);
-    set_cors_headers();
-    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-    header('Access-Control-Allow-Headers: Authorization, Content-Type, Accept, X-Goog-Api-Key');
-    exit;
-}
 
 if (!in_array($method, ['GET', 'POST'], true)) {
     send_json(405, ['error' => '代理模式只支持 GET 和 POST']);
@@ -821,7 +809,49 @@ if ($isCommunityMedia) {
     exit;
 }
 
-validate_target($target);
+$parts = validate_target($target);
+
+// === Quota Check ===
+$targetPath = $parts['path'] ?? '';
+$isGenerationRequest = preg_match('#/(images/generations|images/edits|videos|video/create|video/generations|multimodal-generation|aigc/video)#i', $targetPath);
+$isUpscaleRequest = isset($_GET['upscale']) && $_GET['upscale'] === '1';
+$quotaChecked = false;
+$quotaImageCount = 0;
+$quotaCost = 0;
+$quotaRequestType = 'generate';
+$quotaRawBody = null;
+$quotaTxnId = null;
+
+if ($isGenerationRequest || $isUpscaleRequest) {
+    // Read body early for quota check (php://input can only be read once)
+    if ($method === 'POST') {
+        $quotaRawBody = file_get_contents('php://input');
+        if ($quotaRawBody === false) $quotaRawBody = '';
+    } else {
+        $quotaRawBody = '';
+    }
+
+    $quotaImageCount = $isUpscaleRequest ? 1 : parse_image_count($quotaRawBody);
+    $quotaRequestType = $isUpscaleRequest ? 'upscale' : 'generate';
+    // Upscale: fixed 1 per image, not affected by proxy multiplier
+    $quotaCost = $isUpscaleRequest ? $quotaImageCount : $quotaImageCount * get_multiplier('proxy');
+
+    $preDeduct = pre_deduct($quotaImageCount, 'proxy', $target, $quotaRequestType, $quotaCost);
+    if (!$preDeduct['allowed']) {
+        send_json(429, [
+            'error' => '今日生成次数已达上限',
+            'quota' => $preDeduct['quota'] ?? [
+                'daily_limit'            => 0,
+                'daily_used'             => 0,
+                'monthly_bonus_remaining'=> 0,
+                'quota_cost'             => $quotaCost,
+                'mode'                   => 'proxy',
+            ],
+        ]);
+    }
+    $quotaTxnId = $preDeduct['txn_id'] ?? null;
+    $quotaChecked = true;
+}
 
 $contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
 if ($contentLength > MAX_PROXY_BODY_BYTES) {
@@ -838,9 +868,14 @@ $skipContentType = false;
 $contentTypeOverride = '';
 
 if ($method === 'POST') {
-    $rawBody = file_get_contents('php://input');
-    if ($rawBody === false) {
-        $rawBody = '';
+    // Reuse body already read during quota check if available
+    if ($quotaRawBody !== null) {
+        $rawBody = $quotaRawBody;
+    } else {
+        $rawBody = file_get_contents('php://input');
+        if ($rawBody === false) {
+            $rawBody = '';
+        }
     }
     if ($rawBody !== '' && strlen($rawBody) > MAX_PROXY_BODY_BYTES) {
         send_json(413, ['error' => '请求体过大']);
@@ -857,6 +892,7 @@ if ($method === 'POST') {
 }
 
 $ch = curl_init($target);
+apply_curl_ca($ch);
 curl_setopt_array($ch, [
     CURLOPT_CUSTOMREQUEST => $method,
     CURLOPT_RETURNTRANSFER => true,
@@ -876,6 +912,10 @@ $response = curl_exec($ch);
 if ($response === false) {
     $error = curl_error($ch);
     curl_close($ch);
+    // Rollback quota deduction if proxy request failed
+    if ($quotaChecked && $quotaTxnId !== null) {
+        rollback_transaction($quotaTxnId);
+    }
     send_json(502, ['error' => '代理请求失败: ' . $error]);
 }
 
@@ -884,6 +924,14 @@ $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
 $responseHeaders = substr($response, 0, $headerSize);
 $body = substr($response, $headerSize);
 curl_close($ch);
+
+if ($quotaChecked && $quotaTxnId !== null) {
+    if ($status >= 200 && $status < 400) {
+        confirm_transaction($quotaTxnId);
+    } else {
+        rollback_transaction($quotaTxnId);
+    }
+}
 
 http_response_code($status ?: 502);
 set_cors_headers();
@@ -896,5 +944,15 @@ foreach (explode("\r\n", $responseHeaders) as $line) {
     }
 }
 header('Content-Type: ' . $contentType);
+
+// Inject quota status headers for frontend
+if ($quotaChecked) {
+    $quotaStatus = get_quota_status();
+    header('X-Quota-Daily-Limit: ' . $quotaStatus['daily_limit']);
+    header('X-Quota-Daily-Remaining: ' . max(0, $quotaStatus['daily_remaining']));
+    header('X-Quota-Monthly-Bonus-Remaining: ' . $quotaStatus['monthly_bonus_remaining']);
+    header('X-Quota-Mode: proxy');
+    header('X-Quota-Multiplier: ' . $quotaStatus['proxy_multiplier']);
+}
 
 echo $body;

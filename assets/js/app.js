@@ -66,8 +66,8 @@
 
       const _appScriptSrc = document.currentScript?.src || '';
       const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
-      const _assetVersion = '20260808-1';
-      const _canvasWorkspaceModulePath = 'canvas/canvas-workspace.js?v=20260808-1';
+      const _assetVersion = '20260813-4';
+      const _canvasWorkspaceModulePath = 'canvas/canvas-workspace.js?v=20260813-4';
       const _agentUiUrl = new URL(`agent/agent-ui.js?v=${_assetVersion}`, _appBase).href;
 
       function showUiError(message) {
@@ -78,6 +78,49 @@
 
       function confirmUiAction(options = {}) {
         return window.AppUtils?.dialog?.confirm?.(options) || Promise.resolve(false);
+      }
+
+      function compareStableText(left, right) {
+        return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+          numeric: true,
+          sensitivity: 'base'
+        });
+      }
+
+      function compareStableId(left, right) {
+        const a = Number(left);
+        const b = Number(right);
+        if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return b - a;
+        return compareStableText(left, right);
+      }
+
+      function compareHistoryRecords(left, right) {
+        const leftTime = Number(left?.updatedAt) || Number(left?.timestamp) || Number(left?.createdAt) || 0;
+        const rightTime = Number(right?.updatedAt) || Number(right?.timestamp) || Number(right?.createdAt) || 0;
+        return rightTime - leftTime
+          || compareStableText(left?.title || left?.prompt, right?.title || right?.prompt)
+          || compareStableText(left?.filename || left?.name, right?.filename || right?.name)
+          || compareStableId(left?.id, right?.id);
+      }
+
+      function compareLocalPromptRecords(left, right) {
+        const leftTime = Number(left?.updatedAt) || Number(left?.createdAt) || 0;
+        const rightTime = Number(right?.updatedAt) || Number(right?.createdAt) || 0;
+        return rightTime - leftTime
+          || compareStableText(left?.title || left?.content, right?.title || right?.content)
+          || compareStableId(left?.id, right?.id);
+      }
+
+      function setOverlayState(overlay, open) {
+        if (!overlay) return;
+        const active = Boolean(open);
+        overlay.hidden = !active;
+        overlay.classList.toggle('active', active);
+        overlay.classList.toggle('show', active);
+        overlay.setAttribute('aria-hidden', String(!active));
+        if ('inert' in overlay) overlay.inert = !active;
+        if (active) overlay.removeAttribute('inert');
+        else overlay.setAttribute('inert', '');
       }
 
       function openManagedOverlay(overlay, options = {}) {
@@ -162,7 +205,11 @@
         });
       });
       document.querySelectorAll('[data-open-agent]').forEach(button => {
-        button.addEventListener('click', openAgentFromWorkspace);
+        button.addEventListener('click', async () => {
+          const allowed = await window.AuthGate?.requireMembership?.('Agent');
+          if (!allowed) return;
+          openAgentFromWorkspace();
+        });
       });
       window.addEventListener('agent-workspace-closed', () => setWorkspaceNavActive('studio'));
       window.AppUtils?.setActiveWorkspace?.('studio', { initial: true });
@@ -315,6 +362,7 @@
       }
 
       function isAutoUpscaleEnabled() {
+        if (window.AuthGate?.canUseUpscale && !window.AuthGate.canUseUpscale()) return false;
         return localStorage.getItem(AUTO_UPSCALE_KEY) === '1';
       }
 
@@ -552,6 +600,31 @@
           ],
           promptHint: ''
         },
+        sensenova: {
+          id: 'sensenova',
+          label: '商汤 SenseNova',
+          kind: 'image',
+          supported: true,
+          defaultProtocol: 'sensenova-images',
+          protocolOptions: [
+            { value: 'sensenova-images', label: 'SenseNova 官方' }
+          ],
+          defaultImageModel: 'sensenova-u1.5-lite',
+          defaultTextModel: DEFAULT_TEXT_MODEL,
+          staticImageModels: ['sensenova-u1.5-lite', 'sensenova-u1-fast'],
+          summary: '',
+          templateHint: '',
+          supportNote: '',
+          baseUrlPlaceholder: 'https://token.sensenova.cn',
+          baseUrlValue: 'https://token.sensenova.cn',
+          apiHome: 'https://platform.sensenova.cn/',
+          paramSummary: 'SenseNova U1 系列：U1.5 Lite 支持文生图与参考图编辑（/v1/images/edits）；U1 Fast 为信息图加速模型，不支持参考图。默认返回 Base64。',
+          fields: ['aspect', 'resolution', 'count'],
+          extraFields: [
+            { title: 'SenseNova U1', body: 'U1.5 Lite（sensenova-u1.5-lite）支持参考图编辑；U1 Fast（sensenova-u1-fast）专为信息图生成优化且不支持图片输入。官方 url 返回的链接仅 24 小时有效，本站固定使用 Base64 模式。' }
+          ],
+          promptHint: ''
+        },
         openaiVideo: {
           id: 'openaiVideo',
           label: 'OpenAI',
@@ -675,7 +748,7 @@
           promptHint: ''
         }
       };
-      const IMAGE_PLATFORM_ORDER = ['openai', 'gemini', 'grok', 'qwen', 'doubao', 'flux'];
+      const IMAGE_PLATFORM_ORDER = ['openai', 'gemini', 'grok', 'qwen', 'doubao', 'flux', 'sensenova'];
       const VIDEO_PLATFORM_ORDER = ['openaiVideo', 'geminiVideo', 'qwenVideo', 'doubaoVideo', 'grokVideo'];
       PLATFORM_REGISTRY.openai.endpointResolver = ({ protocol }) => {
         if (protocol === 'openai-chat') return buildApiUrl('/v1/chat/completions');
@@ -704,6 +777,11 @@
         if (protocol === 'open-images') return buildApiUrl('/v1/images/generations');
         return buildApiUrl(`/v1/models/${imageModel || 'black-forest-labs/flux-kontext-dev'}/predictions`);
       };
+      PLATFORM_REGISTRY.sensenova.endpointResolver = ({ protocol }) => {
+        if (protocol === 'open-images') return buildApiUrl('/v1/images/generations');
+        return buildApiUrl('/v1/images/generations');
+      };
+      PLATFORM_REGISTRY.sensenova.flashEndpointResolver = () => buildApiUrl('/v1/chat/completions');
       PLATFORM_REGISTRY.openaiVideo.endpointResolver = ({ protocol }) => {
         if (protocol === 'openai-video-chat') return buildApiUrl('/v1/chat/completions');
         return buildApiUrl('/v1/videos');
@@ -840,6 +918,11 @@
 
         if (platformConfig.defaultImageModel) {
           ensureModelOption(imageModelSelect, platformConfig.defaultImageModel, platformConfig.defaultImageModel);
+        }
+        if (Array.isArray(platformConfig.staticImageModels)) {
+          platformConfig.staticImageModels.forEach(modelId => {
+            if (modelId) ensureModelOption(imageModelSelect, modelId, modelId);
+          });
         }
         if (platformConfig.defaultTextModel) {
           ensureModelOption(textModelSelect, platformConfig.defaultTextModel, platformConfig.defaultTextModel);
@@ -1242,6 +1325,7 @@
       function getReferenceImageLimit(protocol = getImageProtocol()) {
         if (activePlatformId === 'openaiVideo' && protocol === 'openai-videos') return 1;
         if (activePlatformId === 'geminiVideo') return 3;
+        if (activePlatformId === 'sensenova') return 1;
         if (activePlatformId === 'gemini' && protocol === 'openai-images') return 1;
         if (activePlatformId === 'qwenVideo') return String(getImageModel() || '').includes('r2v') ? 9 : 1;
         if (activePlatformId === 'doubaoVideo') return 4;
@@ -1374,6 +1458,9 @@
         }
         if (protocol === 'replicate-flux') {
           return buildApiUrl(`/v1/models/${getImageModel()}/predictions`);
+        }
+        if (protocol === 'sensenova-images') {
+          return buildApiUrl('/v1/images/generations');
         }
         // Gemini 原生
         return buildApiUrl(`/v1beta/models/${getImageModel()}:generateContent`);
@@ -1580,7 +1667,7 @@
 
       function syncMobileGenerateBar(options = {}) {
         if (!mobileGenerateBtn && !mobileGenerateMeta) return;
-        const count = Math.max(1, Math.min(10, parseInt(countInput?.value, 10) || 1));
+        const count = Math.max(1, Math.min(window.AuthGate?.getMaxBatch?.() || 1, parseInt(countInput?.value, 10) || 1));
         const platformConfig = typeof getActivePlatformConfig === 'function' ? getActivePlatformConfig() : null;
         const isSupported = platformConfig ? !!platformConfig.supported : !runBtn?.disabled;
         const busy = !!generationInFlight || options.busy === true;
@@ -1787,7 +1874,7 @@
           closeClass: 'show',
           trigger: document.activeElement
         }) || null;
-        if (!lightboxDialogHandle) lightbox.classList.add('show');
+        if (!lightboxDialogHandle) setOverlayState(lightbox, true);
       }
 
       // 关闭 Lightbox
@@ -1797,8 +1884,7 @@
           lightboxDialogHandle = null;
           handle.close('close');
         } else {
-          lightbox.classList.remove('show');
-          lightbox.hidden = true;
+          setOverlayState(lightbox, false);
         }
       }
 
@@ -1814,8 +1900,7 @@
           trigger: announcementBtn
         }) || null;
         if (!announcementDialogHandle) {
-          announcementModal.classList.add('active');
-          announcementModal.setAttribute('aria-hidden', 'false');
+          setOverlayState(announcementModal, true);
         }
       }
 
@@ -1826,8 +1911,7 @@
           announcementDialogHandle = null;
           handle.close('close');
         } else {
-          announcementModal.classList.remove('active');
-          announcementModal.setAttribute('aria-hidden', 'true');
+          setOverlayState(announcementModal, false);
         }
       }
 
@@ -1885,6 +1969,7 @@
           textApiKey: draft.textApiKey || '',
           rememberApiKey: !!draft.rememberApiKey,
           historyRetention: draft.historyRetention || 'original',
+          autoUpscale: !!draft.autoUpscale,
           folderAction: draft.folderAction || null,
           folderName: draft.folderHandle?.name || ''
         });
@@ -1901,7 +1986,8 @@
           apiKey: apiKeyValue || '',
           textApiKey: textApiKeyValue || '',
           rememberApiKey: !!rememberApiKeyInput?.checked,
-          historyRetention: getHistoryImageRetention()
+          historyRetention: getHistoryImageRetention(),
+          autoUpscale: localStorage.getItem(AUTO_UPSCALE_KEY) === '1'
         };
       }
 
@@ -1926,6 +2012,7 @@
           textApiKey: textApiKeyValue || '',
           rememberApiKey: !!rememberApiKeyInput?.checked,
           historyRetention: getHistoryImageRetention(),
+          autoUpscale: localStorage.getItem(AUTO_UPSCALE_KEY) === '1',
           folderHandle,
           folderAction: null,
           dirtyPlatforms: new Set(),
@@ -2086,7 +2173,7 @@
       }
 
       function setSettingsTab(tabName) {
-        const next = ['platform', 'storage', 'backup'].includes(tabName) ? tabName : 'platform';
+        const next = ['platform', 'account', 'storage', 'cloud', 'backup'].includes(tabName) ? tabName : 'platform';
         if (next !== 'platform' && settingsMoreMenu) {
           settingsMoreMenu.hidden = true;
           settingsMoreBtn?.setAttribute('aria-expanded', 'false');
@@ -2165,9 +2252,12 @@
           settingsDrawer.classList.remove('active');
           settingsDrawer.setAttribute('aria-hidden', 'true');
           settingsDrawer.hidden = true;
+          settingsDrawer.setAttribute('inert', '');
         }
         settingsDrawerOverlay.classList.remove('active');
+        settingsDrawerOverlay.hidden = true;
         settingsDrawerOverlay.setAttribute('aria-hidden', 'true');
+        settingsDrawerOverlay.setAttribute('inert', '');
         document.body.classList.remove('settings-drawer-open');
         setMobilePlatformPickerExpanded(false);
         setSettingsBackgroundInert(false);
@@ -2193,9 +2283,13 @@
           restoreFocus: false
         }) || null;
         if (!settingsDialogHandle) {
+          settingsDrawer.hidden = false;
+          settingsDrawer.removeAttribute('inert');
           settingsDrawer.classList.add('active');
           settingsDrawer.setAttribute('aria-hidden', 'false');
         }
+        settingsDrawerOverlay.hidden = false;
+        settingsDrawerOverlay.removeAttribute('inert');
         settingsDrawerOverlay.classList.add('active');
         settingsDrawerOverlay.setAttribute('aria-hidden', 'false');
         document.body.classList.add('settings-drawer-open');
@@ -2210,6 +2304,9 @@
           panel.scrollTop = 0;
         });
         renderSettingsDraftPlatform();
+        if (autoUpscaleInput && settingsDraft) {
+          autoUpscaleInput.checked = !!settingsDraft.autoUpscale;
+        }
         settingsCloseBtn?.focus();
         window.setTimeout(() => {
           if (settingsIsOpen && !settingsConfirmDialogHandle) settingsCloseBtn?.focus?.();
@@ -2418,6 +2515,8 @@
             if (legacyKey && activeSettings[key] !== undefined) localStorage.setItem(legacyKey, activeSettings[key]);
           });
           localStorage.setItem(HISTORY_IMAGE_RETENTION_KEY, draft.historyRetention === 'thumbnail' ? 'thumbnail' : 'original');
+          localStorage.setItem(AUTO_UPSCALE_KEY, draft.autoUpscale ? '1' : '0');
+          if (autoUpscaleInput) autoUpscaleInput.checked = !!draft.autoUpscale;
 
           if (draft.folderAction === 'reset' || draft.folderAction === 'default') {
             folderHandle = null;
@@ -2438,7 +2537,8 @@
             apiKey: apiKeyValue,
             textApiKey: textApiKeyValue,
             rememberApiKey: !!draft.rememberApiKey,
-            historyRetention: draft.historyRetention
+            historyRetention: draft.historyRetention,
+            autoUpscale: !!draft.autoUpscale
           };
           applyPlatformSettings(getActivePlatformConfig(), safeMap[activePlatformId]);
           renderPlatformSwitcher();
@@ -3034,7 +3134,7 @@
 
           request.onsuccess = () => {
             // 按时间戳倒序排列（最新的在前）
-            const records = request.result.sort((a, b) => b.timestamp - a.timestamp);
+            const records = request.result.sort(compareHistoryRecords);
             resolve(records);
           };
           request.onerror = () => reject(request.error);
@@ -3359,7 +3459,7 @@
 
           request.onsuccess = () => {
             // 按创建时间倒序排列（最新的在前）
-            const records = request.result.sort((a, b) => b.createdAt - a.createdAt);
+            const records = request.result.sort(compareLocalPromptRecords);
             resolve(records);
           };
           request.onerror = () => reject(request.error);
@@ -3754,6 +3854,70 @@
         throw new Error('这条历史记录没有可下载的视频');
       }
 
+      function getDataUrlByteSize(source) {
+        const match = String(source || '').match(/^data:[^,]*;base64,(.*)$/s);
+        if (!match) return null;
+        const base64 = match[1];
+        const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+        return Math.max(0, Math.floor(base64.length * 3 / 4) - padding);
+      }
+
+      async function getMediaByteSize(source) {
+        const src = String(source || '');
+        if (!src) return null;
+        if (/^data:/i.test(src)) {
+          const size = getDataUrlByteSize(src);
+          if (size != null) return size;
+        }
+        if (/^https?:\/\//i.test(src)) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 6000);
+            const response = await fetch(src, {
+              method: 'HEAD',
+              signal: controller.signal,
+              cache: 'force-cache'
+            });
+            clearTimeout(timer);
+            const length = Number(response.headers.get('content-length') || 0);
+            if (response.ok && length > 0) return length;
+          } catch (err) {
+            // Fall through to a full fetch when HEAD is unavailable.
+          }
+        }
+        const blob = await fetchMediaBlob(src, '媒体', { maxRetries: 0, idleTimeoutMs: 8000 });
+        return blob.size;
+      }
+
+      async function getHistoryFileSize(record) {
+        try {
+          const isVideo = record.mediaType === 'video';
+          const primarySrc = isVideo
+            ? (record.videoSrc || record.videoUrl || '')
+            : (record.imageSrc || record.imageUrl || record.thumbnail || '');
+          const localFilename = getHistoryLocalFilename(record);
+          const hasFolderRead = !!(localFilename && folderHandle && await ensureFolderPermission(folderHandle, 'read', false));
+
+          if (hasFolderRead) {
+            const item = isVideo
+              ? await getHistoryDownloadVideo(record)
+              : await getHistoryDownloadImage(record);
+            const size = await getMediaByteSize(item.src);
+            if (size != null) return size;
+          }
+
+          if (primarySrc) {
+            const size = await getMediaByteSize(primarySrc);
+            if (size != null) return size;
+          }
+
+          return null;
+        } catch (err) {
+          console.warn('获取历史记录文件大小失败:', err);
+          return null;
+        }
+      }
+
       async function openHistoryPreview(record) {
         if (record.mediaType === 'video') {
           let videoSrc = record.videoSrc || record.videoUrl;
@@ -3968,8 +4132,14 @@
               googleApiKey ? { 'X-Goog-Api-Key': googleApiKey } : {}
             );
           } catch (err) {
-            const detail = err?.message || String(err || '读取失败');
-            throw new Error(`Google 返回的临时图片地址无法读取，可能已过期或需要有效 API Key（${detail}）`);
+            // A proxy can be unavailable while the signed Google URL is still
+            // directly readable by the browser. Keep both paths available.
+            try {
+              return await fetchBlob(normalizedSrc);
+            } catch (directErr) {
+              const detail = directErr?.message || err?.message || String(err || '读取失败');
+              throw new Error(`Google 返回的临时图片地址无法读取，可能已过期或需要有效 API Key（${detail}）`);
+            }
           }
         }
 
@@ -4068,6 +4238,10 @@
               ? `<button class="action-btn play-btn" type="button" title="播放历史视频"><span class="action-icon">▶</span><span class="action-text">播放</span></button>`
               : `<button class="action-btn add-btn" title="从保存文件夹读取 ${escapeHtml(filenameHint)} 并添加到参考图"><span class="action-icon">➕</span><span class="action-text">参考</span></button>`;
 
+
+            const uploadActionMarkup = isVideoRecord
+              ? ''
+              : `<button class="action-btn cloud-upload-btn" type="button" title="上传到云端图库" aria-label="上传到云端图库"><span class="action-icon">☁️</span><span class="action-text">上传云端</span></button>`;
             card.innerHTML = `
               <div class="history-image-wrap">
                 ${previewMarkup}
@@ -4086,8 +4260,9 @@
                 </div>
                 <div class="meta">
                   <span>${formatDate(record.timestamp)}</span>
-                  <div class="history-actions">
+                  <div class="history-actions${isVideoRecord ? '' : ' history-actions-upload'}">
                     ${primaryActionMarkup}
+                    ${uploadActionMarkup}
                     <button class="action-btn download-btn" type="button" title="${isVideoRecord ? '下载历史视频' : '下载历史图片'}"><span class="action-icon">⬇️</span><span class="action-text">下载</span></button>
                     <button class="action-btn delete-btn" data-id="${record.id}" title="删除历史记录"><span class="action-icon">🗑️</span><span class="action-text">删除</span></button>
                   </div>
@@ -4227,6 +4402,50 @@
                 } finally {
                   downloadBtn.innerHTML = originalHtml;
                   downloadBtn.disabled = false;
+                }
+              });
+            }
+
+            // 上传历史图片到云端图库按钮
+            const cloudUploadBtn = card.querySelector('.cloud-upload-btn');
+            if (cloudUploadBtn) {
+              cloudUploadBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!window.AuthGate?.isAuthenticated?.()) {
+                  window.AuthGate?.requireAuth?.('云端图库');
+                  return;
+                }
+                const originalHtml = cloudUploadBtn.innerHTML;
+                setHistoryActionButtonContent(cloudUploadBtn, '⏳', '上传中');
+                cloudUploadBtn.disabled = true;
+                try {
+                  if (!window.CloudGallery?.uploadImage) {
+                    throw new Error('云端图库组件未加载，请刷新页面重试');
+                  }
+                  const uploadItem = await getHistoryDownloadImage(record);
+                  const dataUrl = await getPersistentImageSource(uploadItem.src);
+                  const uploadResult = await window.CloudGallery.uploadImage(
+                    dataUrl,
+                    uploadItem.filename || getHistoryLocalFilename(record),
+                    record.prompt || '',
+                    record.imageUrl || '',
+                    buildCloudParams(record)
+                  );
+                  if (uploadResult?.success) {
+                    flashStatus('已上传到云端图库', 'success');
+                    setHistoryActionButtonContent(cloudUploadBtn, '✅', '已上传');
+                    setTimeout(() => {
+                      cloudUploadBtn.innerHTML = originalHtml;
+                      cloudUploadBtn.disabled = false;
+                    }, 1600);
+                    return;
+                  }
+                  throw new Error(describeApiError(uploadResult?.error, uploadResult?.message || '上传失败'));
+                } catch (err) {
+                  console.error('上传历史图片到云端失败:', err);
+                  showUiError(err.message || '上传失败');
+                  cloudUploadBtn.innerHTML = originalHtml;
+                  cloudUploadBtn.disabled = false;
                 }
               });
             }
@@ -4578,7 +4797,7 @@
         const maps = {
           aspect: { auto: 'auto[自动]' },
           quality: { auto: 'auto[自动]', low: 'low[低]', medium: 'medium[中]', high: 'high[高]', standard: 'standard[标准]', hd: 'hd[高清]' },
-          protocol: { gemini: 'Gemini 原生', 'openai-chat': 'OpenAI Chat', 'openai-images': 'OpenAI Images', 'openai-responses': 'OpenAI Responses', 'open-images': 'Open Images', 'aliyun-images': '阿里云百炼', 'doubao-images': '豆包官方', 'replicate-flux': 'Replicate 官方', 'openai-videos': 'OpenAI Videos', 'openai-video-chat': 'OpenAI Chat 兼容', 'veo-generations': 'Veo Generations', 'veo-create': 'Video Create', 'aliyun-happyhorse': '阿里 HappyHorse', 'doubao-seedance': '豆包 Seedance', 'grok-video-create': 'Grok Video Create', 'local-gif': '本地动图生成', 'gif-grid': '网格生帧' }
+          protocol: { gemini: 'Gemini 原生', 'openai-chat': 'OpenAI Chat', 'openai-images': 'OpenAI Images', 'openai-responses': 'OpenAI Responses', 'open-images': 'Open Images', 'aliyun-images': '阿里云百炼', 'doubao-images': '豆包官方', 'replicate-flux': 'Replicate 官方', 'sensenova-images': 'SenseNova 官方', 'openai-videos': 'OpenAI Videos', 'openai-video-chat': 'OpenAI Chat 兼容', 'veo-generations': 'Veo Generations', 'veo-create': 'Video Create', 'aliyun-happyhorse': '阿里 HappyHorse', 'doubao-seedance': '豆包 Seedance', 'grok-video-create': 'Grok Video Create', 'local-gif': '本地动图生成', 'gif-grid': '网格生帧' }
         };
         if (key === 'videoDuration') return `${normalized} 秒`;
         return maps[key]?.[normalized] || normalized;
@@ -4606,25 +4825,42 @@
               ['生成耗时', 'runtimeMs', record.runtimeMs ? formatDurationMs(record.runtimeMs) : '']
             ];
         return rows
-          .map(([label, key, value]) => [label, formatGenerationParamValue(key, value)])
-          .filter(([, value]) => value);
+          .map(([label, key, value]) => [label, key, formatGenerationParamValue(key, value)])
+          .filter(([, , value]) => value);
+      }
+
+      function buildCloudParams(record = {}) {
+        const keys = record.mediaType === 'video'
+          ? ['aspect', 'resolution', 'videoDuration', 'model', 'protocol', 'runtimeMs']
+          : ['aspect', 'resolution', 'quality', 'model', 'protocol', 'runtimeMs'];
+        const params = {};
+        keys.forEach(key => {
+          const raw = record[key];
+          if (raw == null || String(raw).trim() === '') return;
+          const formatted = formatGenerationParamValue(key, raw);
+          if (formatted != null && String(formatted).trim() !== '') {
+            params[key] = formatted;
+          }
+        });
+        return params;
       }
 
       function showHistoryParamsDialog(record) {
         const rows = getHistoryParamRows(record);
+        const hasSavedParams = rows.length > 0;
+        rows.splice(1, 0, ['文件大小', 'fileSize', '读取中...']);
         const dialogOverlay = document.createElement('div');
         dialogOverlay.className = 'dialog-overlay active';
         dialogOverlay.innerHTML = `
           <div class="dialog-content history-params-dialog">
             <div class="dialog-title">生成参数</div>
-            ${rows.length ? `
-              <div class="history-param-grid">
-                ${rows.map(([label, value]) => `
-                  <div class="history-param-label">${escapeHtml(label)}</div>
-                  <div class="history-param-value">${escapeHtml(value)}</div>
-                `).join('')}
-              </div>
-            ` : '<div class="dialog-desc">这条历史记录没有保存参数信息，新的生成记录会自动保存。</div>'}
+            ${!hasSavedParams ? '<div class="dialog-desc">这条历史记录没有保存参数信息，新的生成记录会自动保存。</div>' : ''}
+            <div class="history-param-grid">
+              ${rows.map(([label, key, value]) => `
+                <div class="history-param-label">${escapeHtml(label)}</div>
+                <div class="history-param-value" data-param-key="${escapeHtml(key)}">${escapeHtml(value)}</div>
+              `).join('')}
+            </div>
             <div class="dialog-actions">
               <button class="dialog-btn dialog-btn-cancel" type="button">关闭</button>
             </div>
@@ -4637,6 +4873,14 @@
         });
         const closeDialog = () => managed.close();
         dialogOverlay.querySelector('.dialog-btn-cancel')?.addEventListener('click', closeDialog);
+
+        const fileSizeCell = dialogOverlay.querySelector('[data-param-key="fileSize"]');
+        if (fileSizeCell) {
+          getHistoryFileSize(record).then(size => {
+            if (!fileSizeCell.isConnected) return;
+            fileSizeCell.textContent = size != null ? formatByteSize(size) : '未知';
+          });
+        }
       }
 
       // ========== 提示词库 UI 交互 ==========
@@ -5888,7 +6132,9 @@
       }
 
       document.querySelectorAll('[data-open-canvas]').forEach(button => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
+          const allowed = await window.AuthGate?.requireMembership?.('无限画布');
+          if (!allowed) return;
           openCanvasTool();
         });
       });
@@ -6519,6 +6765,10 @@
           return buildReplicateFluxPayload(prompt, imgs);
         }
 
+        if (protocol === 'sensenova-images') {
+          return buildSenseNovaImagePayload(prompt, imgs, getImageModel());
+        }
+
         if (protocol === 'openai-chat') {
           // OpenAI Chat 格式: POST /v1/chat/completions
           return buildOpenAIChatImagePayload(prompt, imgs);
@@ -6807,6 +7057,46 @@
         const payload = hasImages
           ? buildGrokImageEditsPayload(prompt, imgs, imageModel)
           : buildGrokImageGenerationsPayload(prompt, imageModel);
+        return {
+          endpoint,
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify(payload)
+        };
+      }
+
+      // ===== SenseNova (商汤) =====
+      // 协议: sensenova-images
+      // 端点: token.sensenova.cn/v1/images/generations (文生图) / /v1/images/edits (图生图, 仅 U1.5 Lite)
+      // 认证: Authorization: Bearer; 响应 OpenAI images 兼容 { data: [{ b64_json }] }
+      function buildSenseNovaImagePayload(prompt, imgs, imageModel = getImageModel()) {
+        const model = imageModel || 'sensenova-u1.5-lite';
+        const isFastModel = String(model).toLowerCase().includes('u1-fast');
+        const referenceImgs = isFastModel ? [] : (imgs || []).filter(img => img && img.dataUrl);
+        const base = {
+          model,
+          prompt,
+          size: getImageSize(model),
+          output_format: 'png',
+          response_format: 'b64_json',
+          watermark: false
+        };
+        if (referenceImgs.length > 0) {
+          return {
+            ...base,
+            images: referenceImgs.map(img => ({ image_url: img.dataUrl }))
+          };
+        }
+        return base;
+      }
+
+      function buildSenseNovaImageRequest(prompt, imgs, imageModel, key) {
+        const model = imageModel || 'sensenova-u1.5-lite';
+        const isFastModel = String(model).toLowerCase().includes('u1-fast');
+        const hasImages = !isFastModel && (imgs || []).some(img => img && img.dataUrl);
+        const endpoint = hasImages
+          ? buildApiUrl('/v1/images/edits')
+          : buildApiUrl('/v1/images/generations');
+        const payload = buildSenseNovaImagePayload(prompt, imgs, model);
         return {
           endpoint,
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
@@ -7380,6 +7670,28 @@
           hasBody: !!request.body
         });
 
+        // === Quota: Pre-deduct for direct mode ===
+        const _isProxyReq = isAppProxyUrl(request.endpoint);
+        let _quotaTxnId = null;
+        if (!_isProxyReq && /^https:\/\//i.test(request.endpoint) && window.AuthGate?.isQuotaEnabled?.()) {
+          try {
+            const _preRes = await fetch('/api/quota/pre-deduct', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+              credentials: 'same-origin',
+              body: JSON.stringify({ image_count: 1, mode: 'direct', api_endpoint: request.endpoint, request_type: 'generate' })
+            });
+            const _preData = await _preRes.json();
+            if (!_preData.allowed) {
+              window.AuthGate.showQuotaExceeded(_preData.quota);
+              throw new Error('配额不足');
+            }
+            _quotaTxnId = _preData.txn_id;
+          } catch (e) {
+            if (e.message === '配额不足') throw e;
+          }
+        }
+
         const controller = new AbortController();
         const propagateAbort = () => {
           try { controller.abort(externalSignal?.reason); } catch { controller.abort(); }
@@ -7398,6 +7710,15 @@
         } catch (fetchErr) {
           clearTimeout(timeoutId);
           externalSignal?.removeEventListener('abort', propagateAbort);
+          // Rollback quota on failure
+          if (_quotaTxnId) {
+            fetch('/api/quota/rollback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+              credentials: 'same-origin',
+              body: JSON.stringify({ txn_id: _quotaTxnId })
+            }).catch(() => {});
+          }
           if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
           if (fetchErr.name === 'AbortError') throw new Error('视频请求超时（10分钟），请稍后重试');
           let endpointHost = '';
@@ -7409,6 +7730,25 @@
         }
         clearTimeout(timeoutId);
         externalSignal?.removeEventListener('abort', propagateAbort);
+
+        // Confirm quota transaction on success
+        if (_quotaTxnId) {
+          fetch('/api/quota/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+            credentials: 'same-origin',
+            body: JSON.stringify({ txn_id: _quotaTxnId })
+          }).catch(() => {});
+        }
+        // Parse quota headers from proxy response
+        const _qRemaining = res.headers.get('X-Quota-Daily-Remaining');
+        if (_qRemaining !== null) {
+          window.AuthGate?.updateQuota?.({ daily_remaining: parseInt(_qRemaining) });
+        }
+        const _qMonthly = res.headers.get('X-Quota-Monthly-Bonus-Remaining');
+        if (_qMonthly !== null) {
+          window.AuthGate?.updateQuota?.({ monthly_bonus_remaining: parseInt(_qMonthly) });
+        }
 
         const raw = await res.text();
         debugLog(`[callVideoAPI] raw response (${label}):`, raw.slice(0, 2000));
@@ -7581,6 +7921,32 @@
           hasBody: !!request.body
         });
 
+        // === Quota: Pre-deduct for direct mode ===
+        const _isProxyReq = isAppProxyUrl(request.endpoint);
+        let _quotaTxnId = null;
+        if (!_isProxyReq && /^https:\/\//i.test(request.endpoint) && window.AuthGate?.isQuotaEnabled?.()) {
+          try {
+            let _imgCount = 1;
+            if (typeof request.body === 'string') {
+              try { const _b = JSON.parse(request.body); if (_b?.n) _imgCount = Math.max(1, parseInt(_b.n) || 1); } catch {}
+            }
+            const _preRes = await fetch('/api/quota/pre-deduct', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+              credentials: 'same-origin',
+              body: JSON.stringify({ image_count: _imgCount, mode: 'direct', api_endpoint: request.endpoint, request_type: 'generate' })
+            });
+            const _preData = await _preRes.json();
+            if (!_preData.allowed) {
+              window.AuthGate.showQuotaExceeded(_preData.quota);
+              throw new Error('配额不足');
+            }
+            _quotaTxnId = _preData.txn_id;
+          } catch (e) {
+            if (e.message === '配额不足') throw e;
+          }
+        }
+
         const controller = new AbortController();
         const propagateAbort = () => {
           try { controller.abort(externalSignal?.reason); } catch { controller.abort(); }
@@ -7615,6 +7981,16 @@
                 signal: controller.signal
               });
               proxyRecovered = true;
+              // Rollback direct pre-deduction since proxy handles its own quota
+              if (_quotaTxnId) {
+                fetch('/api/quota/rollback', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                  credentials: 'same-origin',
+                  body: JSON.stringify({ txn_id: _quotaTxnId })
+                }).catch(() => {});
+                _quotaTxnId = null;
+              }
             } catch (proxyErr) {
               proxyErr.cause = fetchErr;
               fetchErr = proxyErr;
@@ -7623,6 +7999,15 @@
           if (!proxyRecovered) {
             clearTimeout(timeoutId);
             externalSignal?.removeEventListener('abort', propagateAbort);
+            // Rollback quota on failure
+            if (_quotaTxnId) {
+              fetch('/api/quota/rollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                credentials: 'same-origin',
+                body: JSON.stringify({ txn_id: _quotaTxnId })
+              }).catch(() => {});
+            }
             if (externalSignal?.aborted) throw externalSignal.reason || fetchErr;
             if (fetchErr.name === 'AbortError') throw new Error('请求超时（10分钟），请稍后重试');
             throw fetchErr;
@@ -7630,6 +8015,21 @@
         }
         clearTimeout(timeoutId);
         externalSignal?.removeEventListener('abort', propagateAbort);
+
+        // Confirm quota transaction on success
+        if (_quotaTxnId) {
+          fetch('/api/quota/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+            credentials: 'same-origin',
+            body: JSON.stringify({ txn_id: _quotaTxnId })
+          }).catch(() => {});
+        }
+        // Parse quota headers from proxy response
+        const _qImgRemaining = res.headers.get('X-Quota-Daily-Remaining');
+        if (_qImgRemaining !== null) {
+          window.AuthGate?.updateQuota?.({ daily_remaining: parseInt(_qImgRemaining) });
+        }
 
         const raw = await res.text();
         debugLog(`[callImageAPI] raw response (${label}):`, raw.slice(0, 2000));
@@ -7920,13 +8320,21 @@
 
       function applyContinueSourceAvailability(continueBtn, sourceState) {
         if (!continueBtn || !sourceState) return;
-        const hasSource = !!(sourceState.cachedSrc || sourceState.displaySrc);
+        const hasSource = !!(sourceState.cachedSrc || (sourceState.displaySrc && !sourceState.failed));
         continueBtn.disabled = !hasSource;
         continueBtn.title = sourceState.cachedSrc
           ? '基于这张图继续生成'
           : hasSource
             ? '点击后会先准备图片，若失败请下载后上传为参考图'
             : '该图片没有可用图源，请先下载后再上传';
+      }
+
+      function restoreRemoteResultPreview(card, source) {
+        const image = card?._resultImgEl;
+        const normalized = normalizeResultMediaUrl(source || '');
+        if (!image || !normalized) return;
+        image.src = normalized;
+        bindResultImageFallback(image, normalized);
       }
 
       async function getPersistentImageSource(src, options = {}) {
@@ -9143,6 +9551,30 @@ ${chinesePrompt}
             progressPercent = Math.min(progressPercent + 5, 90);
             progressFill.style.width = progressPercent + '%';
           }, 500);
+          // Quota pre-deduct for upscale (fixed 1 per image)
+          let _upscaleTxnId = null;
+          if (window.AuthGate?.isQuotaEnabled?.()) {
+            try {
+              const _preRes = await fetch('/api/quota/pre-deduct', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                credentials: 'same-origin',
+                body: JSON.stringify({ image_count: 1, mode: 'direct', request_type: 'upscale', custom_cost: window.AuthGate?.getQuotaStatus?.()?.upscale_cost ?? 1 })
+              });
+              const _preData = await _preRes.json();
+              if (!_preData.allowed) {
+                window.AuthGate.showQuotaExceeded(_preData.quota);
+                isProcessing = false;
+                startBtn.disabled = false;
+                progressEl.hidden = true;
+                return;
+              }
+              _upscaleTxnId = _preData.txn_id;
+            } catch (e) {
+              console.warn('[quota] upscale pre-deduct failed:', e);
+            }
+          }
+
           try {
             const result = await ImageUpscaler.upscale(
               sourceDataUrl,
@@ -9166,10 +9598,28 @@ ${chinesePrompt}
               startBtn.textContent = '重新超分';
               flashStatus(`超分完成：${result.width}×${result.height}（${result.method === 'ai' ? 'AI 模型' : '高速回退'}）`, 'success');
               setTimeout(() => { progressEl.hidden = true; }, 1500);
+              // Confirm quota on successful upscale
+              if (_upscaleTxnId) {
+                fetch('/api/quota/confirm', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                  credentials: 'same-origin',
+                  body: JSON.stringify({ txn_id: _upscaleTxnId })
+                }).catch(() => {});
+              }
             } else {
               throw new Error('超分结果为空');
             }
           } catch (err) {
+            // Rollback quota on upscale failure
+            if (_upscaleTxnId) {
+              fetch('/api/quota/rollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                credentials: 'same-origin',
+                body: JSON.stringify({ txn_id: _upscaleTxnId })
+              }).catch(() => {});
+            }
             clearInterval(progressTimer);
             progressEl.hidden = true;
             startBtn.disabled = false;
@@ -10098,6 +10548,10 @@ ${chinesePrompt}
           debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
           response = await sendImageRequest(request, 'replicate-flux-create', signal);
           response = await pollReplicateFluxPrediction(response, key);
+        } else if (protocol === 'sensenova-images') {
+          const request = buildSenseNovaImageRequest(prompt, imgs, imageModel, key);
+          debugLog('[callImageAPI] protocol:', protocol, 'endpoint:', request.endpoint, 'hasImages:', imgs.length > 0);
+          response = await sendImageRequest(request, 'sensenova-images', signal);
         } else if (protocol === 'open-images') {
           const activePlatform = getActivePlatformConfig().id;
           const request = (activePlatform === 'qwen' || activePlatform === 'doubao' || activePlatform === 'flux')
@@ -10158,6 +10612,27 @@ ${chinesePrompt}
 
         // === 自动超分 ===
         if (isAutoUpscaleEnabled() && hasResultImage(result) && window.ImageUpscaler) {
+          // Quota pre-deduct for auto-upscale (fixed 1 per image)
+          let _autoUpscaleTxnId = null;
+          if (window.AuthGate?.isQuotaEnabled?.()) {
+            try {
+              const _preRes = await fetch('/api/quota/pre-deduct', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                credentials: 'same-origin',
+                body: JSON.stringify({ image_count: 1, mode: 'direct', request_type: 'upscale', custom_cost: window.AuthGate?.getQuotaStatus?.()?.upscale_cost ?? 1 })
+              });
+              const _preData = await _preRes.json();
+              if (!_preData.allowed) {
+                console.warn('[upscale] 配额不足，跳过自动超分');
+              } else {
+                _autoUpscaleTxnId = _preData.txn_id;
+              }
+            } catch (e) {
+              console.warn('[quota] auto-upscale pre-deduct failed:', e);
+            }
+          }
+          if (_autoUpscaleTxnId || !window.AuthGate?.isQuotaEnabled?.()) {
           try {
             const detection = ImageUpscaler.detectUpscaleNeed(result, resolutionSelect?.value, aspectSelect?.value);
             if (detection.needed) {
@@ -10177,11 +10652,30 @@ ${chinesePrompt}
                 result.upscaled = true;
                 result.upscaleMethod = upscaled.method;
                 flashStatus(`超分完成：${upscaled.width}×${upscaled.height}（${upscaled.method === 'ai' ? 'AI' : '高速'}）`, 'success');
+                // Confirm quota on successful auto-upscale
+                if (_autoUpscaleTxnId) {
+                  fetch('/api/quota/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ txn_id: _autoUpscaleTxnId })
+                  }).catch(() => {});
+                }
               }
             }
           } catch (e) {
             console.warn('[upscale] 超分失败，使用原图:', e);
             flashStatus('超分失败，已使用原图', 'danger');
+            // Rollback quota on auto-upscale failure
+            if (_autoUpscaleTxnId) {
+              fetch('/api/quota/rollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.AuthGate.getCsrfToken() },
+                credentials: 'same-origin',
+                body: JSON.stringify({ txn_id: _autoUpscaleTxnId })
+              }).catch(() => {});
+            }
+          }
           }
         }
         // === 自动超分结束 ===
@@ -10859,6 +11353,7 @@ ${chinesePrompt}
               console.warn('结果图无法缓存为本地数据，历史记录降级为 URL 记录:', imageErr);
               imageRecord = await buildHistoryImageRecordFallback(imgSrc);
               setResultCacheStatus(replacementCard, '本地缓存失败，可点重新缓存', 'danger');
+              restoreRemoteResultPreview(replacementCard, imgSrc);
               ensureRecacheButton(replacementCard, continueSource, meta, imgSrc);
             }
 
@@ -10936,6 +11431,7 @@ ${chinesePrompt}
               console.warn('继续生成源图不可用，改用原始 URL 记录:', imageErr);
               imageRecord = await buildHistoryImageRecordFallback(imgSrc);
               setResultCacheStatus(card, '本地缓存失败，可点重新缓存', 'danger');
+              restoreRemoteResultPreview(card, imgSrc);
               ensureRecacheButton(card, continueSource, meta, imgSrc);
             }
 
@@ -11055,7 +11551,7 @@ ${chinesePrompt}
         const headerName = 'Authorization';
         const prefix = 'Bearer ';
         const prompt = promptInput.value.trim();
-        const count = Math.max(1, Math.min(10, parseInt(countInput.value, 10) || 1));
+        const count = Math.max(1, Math.min(window.AuthGate?.getMaxBatch?.() || 1, parseInt(countInput.value, 10) || 1));
         if (!key) return flashStatus('需要 API Key', 'danger');
         if (!prompt) return flashStatus('提示词必填', 'danger');
 
@@ -11671,7 +12167,7 @@ ${chinesePrompt}
             closeClass: 'active',
             trigger: document.activeElement
           }) || null;
-          if (!angleDialogHandle) modal.classList.add('active');
+          if (!angleDialogHandle) setOverlayState(modal, true);
 
           // 延迟初始化3D场景，等待DOM渲染完成
           setTimeout(() => {
@@ -11692,7 +12188,7 @@ ${chinesePrompt}
             angleDialogHandle = null;
             handle.close('close');
           } else {
-            modal.classList.remove('active');
+            setOverlayState(modal, false);
           }
 
           // 清理3D场景
@@ -12156,24 +12652,43 @@ ${chinesePrompt}
         }
 
         card.appendChild(actions);
+        card._resultImgEl = imgEl;
+        card._downloadLink = downloadLink;
+        card._continueBtn = continueBtn;
         gridEl.appendChild(card);
 
         // 自动保存
         try {
           let imageRecord;
           try {
+            if (!/^data:/i.test(imgSrc || '')) setResultCacheStatus(card, '本地缓存 0%');
             const persistentImgSrc = await warmContinueImageSource(continueSource, {
-                onProgress: meta?.onCacheProgress
-              });
+              onProgress: progress => {
+                if (progress?.percent != null) setResultCacheStatus(card, `本地缓存 ${progress.percent}%`);
+                else if (progress?.stage) setResultCacheStatus(card, `本地缓存 ${progress.stage}`);
+              }
+            });
             if (!persistentImgSrc) {
               applyContinueSourceAvailability(continueBtn, continueSource);
               throw new Error(continueSource.error || '图片不可用');
             }
             applyContinueSourceAvailability(continueBtn, continueSource);
             imageRecord = await resolveHistoryImageRecord(persistentImgSrc);
+            if (!/^data:/i.test(imgSrc || '')) setResultCacheStatus(card, '已缓存到本地', 'success');
           } catch (imageErr) {
             console.warn('生成结果源图不可用，改用原始 URL 记录:', imageErr);
             imageRecord = await buildHistoryImageRecordFallback(imgSrc);
+            setResultCacheStatus(card, '本地缓存失败，可点重新缓存', 'danger');
+            restoreRemoteResultPreview(card, imgSrc);
+            ensureRecacheButton(card, continueSource, {
+              prompt: angleName,
+              aspect: aspectSelect?.value || '',
+              resolution: resolutionSelect?.value || '',
+              quality: imageQualitySelect?.value || '',
+              model: getImageModel(),
+              protocol: getProtocol(),
+              runtimeMs: actualElapsedMs || 0
+            }, imgSrc);
           }
           const historyRecord = {
             thumbnail: imageRecord.thumbnail,
@@ -12275,7 +12790,17 @@ ${chinesePrompt}
         updateProviderStudioStatus();
       });
       autoUpscaleInput?.addEventListener('change', () => {
-        localStorage.setItem(AUTO_UPSCALE_KEY, autoUpscaleInput.checked ? '1' : '0');
+        if (autoUpscaleInput.checked && window.AuthGate?.canUseUpscale && !window.AuthGate.canUseUpscale()) {
+          autoUpscaleInput.checked = false;
+          window.AuthGate.requireAuth('AI 超分');
+          return;
+        }
+        if (settingsIsOpen && settingsDraft) {
+          settingsDraft.autoUpscale = autoUpscaleInput.checked;
+          markSettingsDirty();
+        } else {
+          localStorage.setItem(AUTO_UPSCALE_KEY, autoUpscaleInput.checked ? '1' : '0');
+        }
       });
       apiKeyInput?.addEventListener('input', () => {
         if (settingsIsOpen) {
@@ -12305,14 +12830,21 @@ ${chinesePrompt}
       videoDurationSelect?.addEventListener('change', persistActivePlatformSnapshot);
       countInput.addEventListener('input', () => {
         let val = parseInt(countInput.value, 10);
-        if (val > 10) countInput.value = 10;
+        const maxBatch = window.AuthGate?.getMaxBatch?.() || 1;
+        if (val > maxBatch) {
+          countInput.value = maxBatch;
+          if (maxBatch === 1 && typeof flashStatus === 'function') {
+            flashStatus('批量生成（最多10张）为会员专属功能', 'danger');
+          }
+        }
         if (val < 1 && countInput.value !== '') countInput.value = 1;
         persistActivePlatformSnapshot();
       });
       countInput.addEventListener('blur', () => {
         let val = parseInt(countInput.value, 10);
+        const maxBatch = window.AuthGate?.getMaxBatch?.() || 1;
         if (isNaN(val) || val < 1) countInput.value = 1;
-        if (val > 10) countInput.value = 10;
+        if (val > maxBatch) countInput.value = maxBatch;
         persistActivePlatformSnapshot();
       });
       clearResultsBtn.addEventListener('click', clearResults);
@@ -12357,6 +12889,10 @@ ${chinesePrompt}
         showGifToolDialog();
       });
       upscaleToolBtn?.addEventListener('click', () => {
+        if (window.AuthGate?.canUseUpscale && !window.AuthGate.canUseUpscale()) {
+          window.AuthGate.requireAuth('AI 超分');
+          return;
+        }
         showUpscaleToolDialog();
       });
 

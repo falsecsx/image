@@ -7,7 +7,7 @@ import {
   createCanvasProject,
   createCanvasTextNode,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260808-1';
+} from './canvas-model.js?v=20260813-4';
 
 function createDemoImageDataUri(title, accent = '#7c3aed', background = '#0f172a') {
   const svg = `

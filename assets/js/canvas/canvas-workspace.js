@@ -8,12 +8,12 @@ import {
   pruneCanvasProjects,
   renameCanvasProject,
   saveCanvasProjects
-} from './canvas-store.js?v=20260808-1';
-import { mountCanvasEditor } from './canvas-editor.js?v=20260808-1';
-import { cacheCanvasResourceRecord, garbageCollectCanvasResources, getCanvasResourceStore, prepareCanvasResourceRecord } from './canvas-resources.js?v=20260808-1';
-import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260808-1';
-import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260808-1';
-import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260808-1';
+} from './canvas-store.js?v=20260813-4';
+import { mountCanvasEditor } from './canvas-editor.js?v=20260813-4';
+import { cacheCanvasResourceRecord, garbageCollectCanvasResources, getCanvasResourceStore, prepareCanvasResourceRecord } from './canvas-resources.js?v=20260813-4';
+import { exportCanvasProjectsToJson, importCanvasProjectsFromFile } from './canvas-project-transfer.js?v=20260813-4';
+import { createCanvasSampleProject, isCanvasSampleProject, upgradeCanvasSampleProject } from './canvas-sample.js?v=20260813-4';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260813-4';
 
 let isCanvasWorkspaceOpen = false;
 let activeWorkspaceCloser = null;
@@ -482,7 +482,7 @@ export async function addPromptEntryToCanvas(entry, options = {}) {
     createdProject = true;
   }
   if (!project) {
-    project = [...projects].sort((a, b) => (Number(b?.lastOpenedAt || b?.updatedAt) || 0) - (Number(a?.lastOpenedAt || a?.updatedAt) || 0))[0];
+    project = [...projects].sort((a, b) => compareCanvasProjects(a, b, 'opened'))[0];
   }
   if (!project) {
     project = createCanvasProject(`提示词 · ${String(entry?.title || '新分支').trim().slice(0, 36)}`);

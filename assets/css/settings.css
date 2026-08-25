@@ -1235,3 +1235,19 @@ body.settings-drawer-open .mobile-generate-bar {
     transition: none;
   }
 }
+
+/* ===== Auth & Membership additions ===== */
+/* Account tab in settings */
+.settings-tab[data-settings-tab="account"] {
+  position: relative;
+}
+.settings-panel[data-settings-panel="account"] {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* User menu button inherits icon-action-btn */
+.user-menu-btn {
+  font-family: inherit;
+  cursor: pointer;
+}

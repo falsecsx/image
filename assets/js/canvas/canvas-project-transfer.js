@@ -2,8 +2,8 @@ import {
   CANVAS_EXPORT_VERSION,
   cloneCanvasProject,
   normalizeCanvasProject
-} from './canvas-model.js?v=20260808-1';
-import { prepareCanvasResourceRecord } from './canvas-resources.js?v=20260808-1';
+} from './canvas-model.js?v=20260813-4';
+import { prepareCanvasResourceRecord } from './canvas-resources.js?v=20260813-4';
 
 function createDownload(name, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });

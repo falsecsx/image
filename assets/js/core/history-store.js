@@ -11,6 +11,28 @@
   const MAX_HISTORY = 100;
   let db = null;
 
+  function compareText(left, right) {
+    return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+      numeric: true,
+      sensitivity: 'base'
+    });
+  }
+
+  function compareHistoryRecords(left, right) {
+    return (Number(right?.updatedAt) || Number(right?.timestamp) || Number(right?.createdAt) || 0)
+      - (Number(left?.updatedAt) || Number(left?.timestamp) || Number(left?.createdAt) || 0)
+      || compareText(left?.prompt || left?.title, right?.prompt || right?.title)
+      || compareText(left?.filename, right?.filename)
+      || compareText(left?.id || left?.imageSrc || left?.imageUrl, right?.id || right?.imageSrc || right?.imageUrl);
+  }
+
+  function compareLocalPrompts(left, right) {
+    return (Number(right?.updatedAt) || Number(right?.createdAt) || 0)
+      - (Number(left?.updatedAt) || Number(left?.createdAt) || 0)
+      || compareText(left?.title, right?.title)
+      || compareText(left?.id || left?.content, right?.id || right?.content);
+  }
+
   function initDB() {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -161,7 +183,7 @@
 
       request.onsuccess = () => {
         // 按时间戳倒序排列（最新的在前）
-        const records = request.result.sort((a, b) => b.timestamp - a.timestamp);
+        const records = request.result.sort(compareHistoryRecords);
         resolve(records);
       };
       request.onerror = () => reject(request.error);
@@ -253,7 +275,7 @@
 
       request.onsuccess = () => {
         // 按创建时间倒序排列（最新的在前）
-        const records = request.result.sort((a, b) => b.createdAt - a.createdAt);
+        const records = request.result.sort(compareLocalPrompts);
         resolve(records);
       };
       request.onerror = () => reject(request.error);

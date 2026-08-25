@@ -4,8 +4,8 @@ import {
   createCanvasMediaNode,
   createCanvasMediaNodeFromResource,
   createId
-} from './canvas-model.js?v=20260808-1';
-import { createCanvasResourceRecord, createEmbeddedResourceId } from './canvas-resources.js?v=20260808-1';
+} from './canvas-model.js?v=20260813-4';
+import { createCanvasResourceRecord, createEmbeddedResourceId } from './canvas-resources.js?v=20260813-4';
 
 function text(value) {
   return String(value ?? '').trim();

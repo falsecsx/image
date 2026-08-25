@@ -21,7 +21,7 @@ import {
   extractNodeReferenceIds,
   getNodeReferenceToken,
   createNodeReferenceSnapshot
-} from './canvas-model.js?v=20260808-1';
+} from './canvas-model.js?v=20260813-4';
 import {
   renderCanvasGrid,
   renderCanvasNodes,
@@ -33,8 +33,8 @@ import {
   resolveCanvasEdgeGeometry,
   buildCanvasNodeRenderSignature,
   buildCanvasNodeMarkup
-} from './canvas-renderer.js?v=20260808-1';
-import { createCanvasInteractionScheduler } from './canvas-interactions.js?v=20260808-1';
+} from './canvas-renderer.js?v=20260813-4';
+import { createCanvasInteractionScheduler } from './canvas-interactions.js?v=20260813-4';
 import {
   createCanvasResourceRecord,
   getCanvasImportSourcesFromBridge,
@@ -44,8 +44,8 @@ import {
   cacheCanvasResourceRecord,
   garbageCollectCanvasResources,
   prepareCanvasResourceRecord
-} from './canvas-resources.js?v=20260808-1';
-import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260808-1';
+} from './canvas-resources.js?v=20260813-4';
+import { createPromptBranch, removePromptBranchResourceNodes } from './canvas-prompt.js?v=20260813-4';
 import {
   createCanvasProjectSnapshot,
   removeCanvasNode,
@@ -54,20 +54,20 @@ import {
   upsertCanvasEdge,
   upsertCanvasNode,
   duplicateCanvasNode
-} from './canvas-store.js?v=20260808-1';
+} from './canvas-store.js?v=20260813-4';
 import {
   getCanvasAssetStore,
   createCanvasAsset,
   extractAssetReferenceIds,
   assetToReferenceImage
-} from './canvas-assets.js?v=20260808-1';
+} from './canvas-assets.js?v=20260813-4';
 import {
   cropImage,
   upscaleImage,
   buildMaskFromStrokes,
   composeOutpaint,
   composeOutpaintMask
-} from './canvas-edit.js?v=20260808-1';
+} from './canvas-edit.js?v=20260813-4';
 import {
   splitImage,
   buildAngleLabel,
@@ -75,8 +75,8 @@ import {
   loadImageQuickTools,
   saveImageQuickTools,
   DEFAULT_IMAGE_QUICK_TOOLS
-} from './canvas-image-tools.js?v=20260808-1';
-import { mountCanvasAssistant } from './canvas-assistant.js?v=20260808-1';
+} from './canvas-image-tools.js?v=20260813-4';
+import { mountCanvasAssistant } from './canvas-assistant.js?v=20260813-4';
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 5;
@@ -89,6 +89,32 @@ const CANVAS_NO_ZOOM_SELECTOR = [
   'select',
   '[contenteditable="true"]'
 ].join(',');
+
+function compareCanvasNodeText(left, right) {
+  return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareCanvasNodeStable(left, right, axis = '') {
+  const position = axis === 'y'
+    ? (Number(left?.y) || 0) - (Number(right?.y) || 0)
+    : axis === 'x'
+      ? (Number(left?.x) || 0) - (Number(right?.x) || 0)
+      : 0;
+  return position
+    || compareCanvasNodeText(left?.title || left?.label, right?.title || right?.label)
+    || compareCanvasNodeText(left?.id, right?.id);
+}
+
+function compareCanvasNodePosition(left, right, primary = 'x') {
+  const secondary = primary === 'x' ? 'y' : 'x';
+  return ((Number(left?.[primary]) || 0) - (Number(right?.[primary]) || 0))
+    || ((Number(left?.[secondary]) || 0) - (Number(right?.[secondary]) || 0))
+    || compareCanvasNodeText(left?.title || left?.label, right?.title || right?.label)
+    || compareCanvasNodeText(left?.id, right?.id);
+}
 export function zoomAroundPoint(viewport, point, nextScale) {
   const currentScale = Number.isFinite(viewport?.scale) && viewport.scale > 0 ? viewport.scale : 1;
   const scale = Number.isFinite(nextScale) && nextScale > 0 ? nextScale : currentScale;
@@ -2179,6 +2205,8 @@ function bindEditorEvents(state) {
   window.addEventListener('pointercancel', state._onWindowPointerUp);
   window.addEventListener('keydown', state._onWindowKeyDown);
   window.addEventListener('keyup', state._onWindowKeyUp);
+  state._onCanvasResize = () => scheduleCanvasResponsiveSync(state);
+  window.addEventListener('resize', state._onCanvasResize, { passive: true });
   state._onWindowPaste = event => {
     void handleCanvasPaste(state, event);
   };
@@ -2607,11 +2635,14 @@ function applyInspectorField(state, field, node) {
   rerenderEditor(state, { skipPersist: true });
 }
 
-function setSidebarTab(state, tabId = 'actions') {
+function setSidebarTab(state, tabId = 'actions', options = {}) {
   state.activeSidebarTab = tabId === 'inspector' ? 'inspector' : 'actions';
   // Focus mode owns chrome density: don't auto-expand sidebar just because inspector is active.
   // Explicit open-inspector actions still expand via openInspectorForSelection / open-inspector.
-  if (state.activeSidebarTab === 'inspector' && state.sidebarCollapsed && !state.focusMode) {
+  if (options.expand !== false
+    && state.activeSidebarTab === 'inspector'
+    && state.sidebarCollapsed
+    && !state.focusMode) {
     setSidebarCollapsed(state, false, { persist: true });
   }
   state.sidebarTabs.forEach(button => {
@@ -5101,7 +5132,8 @@ function findPreferredGeneratorNode(state, preferredIds = []) {
     .filter(item => item.readiness.canGenerate)
     .sort((a, b) => {
       const rank = level => (level === 'ready' ? 0 : (level === 'warn' ? 1 : 2));
-      return rank(a.readiness.level) - rank(b.readiness.level);
+      return rank(a.readiness.level) - rank(b.readiness.level)
+        || compareCanvasNodeStable(a.node, b.node);
     });
   if (ready.length) return ready[0].node;
 
@@ -5934,7 +5966,8 @@ function tidySelectedNodes(state, options = {}) {
   const ordered = [...nodes].sort((a, b) => {
     const dy = (Number(a.y) || 0) - (Number(b.y) || 0);
     if (Math.abs(dy) > 8) return dy;
-    return (Number(a.x) || 0) - (Number(b.x) || 0);
+    return (Number(a.x) || 0) - (Number(b.x) || 0)
+      || compareCanvasNodeStable(a, b);
   });
   const originX = Math.min(...ordered.map(node => Number(node.x) || 0));
   const originY = Math.min(...ordered.map(node => Number(node.y) || 0));
@@ -6224,7 +6257,7 @@ function distributeSelectedNodes(state, axis = 'horizontal') {
   }
   pushHistory(state);
   if (axis === 'horizontal') {
-    const ordered = [...nodes].sort((a, b) => (Number(a.x) || 0) - (Number(b.x) || 0));
+    const ordered = [...nodes].sort((a, b) => compareCanvasNodePosition(a, b, 'x'));
     const first = getNodeBox(ordered[0]);
     const last = getNodeBox(ordered[ordered.length - 1]);
     const totalWidth = ordered.reduce((sum, node) => sum + getNodeBox(node).width, 0);
@@ -6244,7 +6277,7 @@ function distributeSelectedNodes(state, axis = 'horizontal') {
       upsertCanvasNode(state.project, node);
     });
   } else {
-    const ordered = [...nodes].sort((a, b) => (Number(a.y) || 0) - (Number(b.y) || 0));
+    const ordered = [...nodes].sort((a, b) => compareCanvasNodePosition(a, b, 'y'));
     const first = getNodeBox(ordered[0]);
     const last = getNodeBox(ordered[ordered.length - 1]);
     const totalHeight = ordered.reduce((sum, node) => sum + getNodeBox(node).height, 0);
@@ -8949,7 +8982,8 @@ function rerenderEditor(state, options = {}) {
 
   state.viewportElement.style.transform = `translate(${state.viewport.x}px, ${state.viewport.y}px) scale(${state.viewport.scale})`;
   state.titleLabel.textContent = state.project.title || '画布项目';
-  setSidebarTab(state, state.activeSidebarTab);
+  // Rendering reconciles the tab without reopening a mobile sheet owned by another surface.
+  setSidebarTab(state, state.activeSidebarTab, { expand: false });
   if (state.scaleLabel) state.scaleLabel.textContent = `${Math.round(state.viewport.scale * 100)}%`;
   if (state.backgroundSelect) state.backgroundSelect.value = state.project.backgroundMode || 'lines';
   if (state.miniMap) state.miniMap.hidden = !state.miniMapOpen;
@@ -12102,13 +12136,20 @@ function setCanvasPanelInert(element, inert) {
   else element.removeAttribute('inert');
 }
 
+function blurCanvasPanelFocus(element) {
+  const focused = document.activeElement;
+  if (!element || !focused || focused === document.body || !element.contains(focused)) return;
+  focused.blur?.();
+  if (element.contains(document.activeElement)) document.activeElement?.blur?.();
+}
+
 function syncCanvasMobileSheets(state) {
   const workspace = state?.root?.querySelector?.('.canvas-workspace');
   if (!workspace) return;
   const narrow = isNarrowCanvasViewport();
   const assistantOpen = Boolean(state.assistantRoot && !state.assistantRoot.hidden);
-  const sidebarOpen = narrow && !state.sidebarCollapsed;
-  const timelineOpen = narrow && !state.timelineCollapsed;
+  const sidebarOpen = narrow && !state.sidebarCollapsed && !assistantOpen;
+  const timelineOpen = narrow && !state.timelineCollapsed && !assistantOpen && !sidebarOpen;
   workspace.classList.toggle('is-sidebar-sheet-open', sidebarOpen);
   workspace.classList.toggle('is-timeline-sheet-open', timelineOpen);
   workspace.classList.toggle('is-assistant-sheet-open', narrow && assistantOpen);
@@ -12118,9 +12159,11 @@ function syncCanvasMobileSheets(state) {
   if (backdrop) {
     backdrop.hidden = !panelOpen;
     backdrop.setAttribute('aria-hidden', String(!panelOpen));
+    setCanvasPanelInert(backdrop, !panelOpen);
   }
 
   if (state.assistantRoot) {
+    if (!assistantOpen) blurCanvasPanelFocus(state.assistantRoot);
     state.assistantRoot.hidden = !assistantOpen;
     state.assistantRoot.setAttribute('aria-hidden', String(!assistantOpen));
     setCanvasPanelInert(state.assistantRoot, !assistantOpen);
@@ -12128,6 +12171,7 @@ function syncCanvasMobileSheets(state) {
   const sidebar = state.root.querySelector('.canvas-project-shell--editor');
   if (sidebar) {
     if (narrow) {
+      if (!sidebarOpen) blurCanvasPanelFocus(sidebar);
       sidebar.hidden = !sidebarOpen;
       sidebar.setAttribute('aria-hidden', String(!sidebarOpen));
       setCanvasPanelInert(sidebar, !sidebarOpen);
@@ -12139,6 +12183,7 @@ function syncCanvasMobileSheets(state) {
   }
   if (state.timelinePanel) {
     if (narrow) {
+      if (!timelineOpen) blurCanvasPanelFocus(state.timelinePanel);
       state.timelinePanel.hidden = !timelineOpen;
       state.timelinePanel.setAttribute('aria-hidden', String(!timelineOpen));
       setCanvasPanelInert(state.timelinePanel, !timelineOpen);
@@ -12148,6 +12193,19 @@ function syncCanvasMobileSheets(state) {
       setCanvasPanelInert(state.timelinePanel, false);
     }
   }
+}
+
+function scheduleCanvasResponsiveSync(state) {
+  if (!state || state.destroyed) return;
+  syncCanvasMobileSheets(state);
+  if (state._canvasResizeFrame) return;
+  const requestFrame = globalThis.requestAnimationFrame || (callback => globalThis.setTimeout(callback, 0));
+  state._canvasResizeFrame = requestFrame(() => {
+    state._canvasResizeFrame = null;
+    if (state.destroyed) return;
+    try { syncStageSize(state); } catch {}
+    try { syncStageNav(state); } catch {}
+  });
 }
 
 function setCanvasAssistantOpen(state, open) {
@@ -12164,6 +12222,9 @@ function setCanvasAssistantOpen(state, open) {
 
 function setSidebarCollapsed(state, collapsed, options = {}) {
   state.sidebarCollapsed = Boolean(collapsed);
+  if (!state.sidebarCollapsed && isNarrowCanvasViewport() && !options.fromSheet) {
+    setTimelineCollapsed(state, true, { persist: false, fromSheet: true });
+  }
   if (!options.fromFocusMode && state.focusMode && !state.sidebarCollapsed) {
     // Expanding sidebar manually exits focus mode.
     state.focusMode = false;
@@ -12205,6 +12266,9 @@ function setSidebarCollapsed(state, collapsed, options = {}) {
 
 function setTimelineCollapsed(state, collapsed, options = {}) {
   state.timelineCollapsed = Boolean(collapsed);
+  if (!state.timelineCollapsed && isNarrowCanvasViewport() && !options.fromSheet) {
+    setSidebarCollapsed(state, true, { persist: false, fromSheet: true });
+  }
   if (!options.fromFocusMode && state.focusMode && !state.timelineCollapsed) {
     state.focusMode = false;
     state._focusModeRestore = null;
@@ -12785,11 +12849,20 @@ function destroyCanvasEditor(state, options = {}) {
   if (state._onWindowPointerUp) window.removeEventListener('pointercancel', state._onWindowPointerUp);
   if (state._onWindowKeyDown) window.removeEventListener('keydown', state._onWindowKeyDown);
   if (state._onWindowKeyUp) window.removeEventListener('keyup', state._onWindowKeyUp);
+  if (state._onCanvasResize) window.removeEventListener('resize', state._onCanvasResize);
   if (state._onWindowPaste) window.removeEventListener('paste', state._onWindowPaste);
   state._onWindowPointerMove = null;
   state._onWindowPointerUp = null;
   state._onWindowKeyDown = null;
   state._onWindowKeyUp = null;
+  state._onCanvasResize = null;
+  if (state._canvasResizeFrame) {
+    try {
+      if (globalThis.cancelAnimationFrame) globalThis.cancelAnimationFrame(state._canvasResizeFrame);
+      else globalThis.clearTimeout(state._canvasResizeFrame);
+    } catch {}
+    state._canvasResizeFrame = null;
+  }
   state.interactionScheduler = null;
   state._onStagePointerDownGesture = null;
   state._onStagePointerMoveGesture = null;

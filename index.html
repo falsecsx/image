@@ -8,10 +8,19 @@
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Ai 绘图助手</title>
-  <link rel="icon" href="assets/icons/favicon.ico?v=20260808-1" type="image/x-icon">
-  <link rel="stylesheet" href="assets/css/main.css?v=20260808-1">
-  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260808-1" data-app-stylesheet="ui-polish">
-  <link rel="stylesheet" href="assets/css/settings.css?v=20260808-1" data-app-stylesheet="settings">
+  <link rel="icon" href="assets/icons/favicon.ico?v=20260816-1" type="image/x-icon">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AI绘图">
+  <link rel="stylesheet" href="assets/css/main.css?v=20260813-4">
+  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260813-6" data-app-stylesheet="ui-polish">
+  <link rel="stylesheet" href="assets/css/settings.css?v=20260813-4" data-app-stylesheet="settings">
+  <link rel="stylesheet" href="assets/css/auth.css?v=20260814-3" data-app-stylesheet="auth">
+  <link rel="stylesheet" href="assets/css/cloud-gallery.css?v=20260813-9" data-app-stylesheet="cloud-gallery">
 
   <script>
     window.APP_CONFIG = window.APP_CONFIG || {
@@ -19,19 +28,19 @@
       defaultBaseUrl: 'https://api.openai.com',
       apiHomeUrl: 'https://api.openai.com',
       promptApiUrl: false,
-      communityPromptStaticUrl: 'data/community-prompts.json?v=20260808-1',
-      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260808-1',
+      communityPromptStaticUrl: 'data/community-prompts.json?v=20260813-4',
+      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260813-4',
       forceDefaultBaseUrl: false,
       apiProxyEndpoint: 'api-proxy.php'
     };
   </script>
   <!-- Platform config must load before app.js so registry exists when builders register -->
-  <script src="assets/js/core/utils.js?v=20260808-1"></script>
-  <script src="assets/js/core/image-compress.js?v=20260808-1"></script>
-  <script src="assets/js/core/history-store.js?v=20260808-1"></script>
-  <script src="assets/js/core/image-ratio.js?v=20260808-1"></script>
-  <script src="assets/js/core/image-upscaler.js?v=20260812-1"></script>
-  <script src="assets/js/platform-config.js?v=20260808-1"></script>
+  <script src="assets/js/core/utils.js?v=20260813-4"></script>
+  <script src="assets/js/core/image-compress.js?v=20260813-4"></script>
+  <script src="assets/js/core/history-store.js?v=20260813-4"></script>
+  <script src="assets/js/core/image-ratio.js?v=20260813-4"></script>
+  <script src="assets/js/core/image-upscaler.js?v=20260813-4"></script>
+  <script src="assets/js/platform-config.js?v=20260813-4"></script>
 </head>
 
 <body>
@@ -348,8 +357,8 @@
   <div id="canvas-workspace-root" hidden aria-hidden="true" inert></div>
   <div id="prompt-library-root" hidden aria-hidden="true" inert></div>
 
-  <div class="settings-drawer-overlay" id="settings-drawer-overlay" aria-hidden="true"></div>
-  <aside class="settings-drawer settings-dialog" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">
+  <div class="settings-drawer-overlay" id="settings-drawer-overlay" hidden aria-hidden="true" inert></div>
+  <aside class="settings-drawer settings-dialog" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" hidden aria-hidden="true" inert tabindex="-1">
     <header class="settings-drawer-head">
       <div>
         <h2 id="settings-drawer-title">工作台设置</h2>
@@ -361,7 +370,9 @@
 
     <nav class="settings-tabs" id="settings-tabs" role="tablist" aria-label="设置分类">
       <button type="button" class="settings-tab is-active" id="settings-tab-platform" role="tab" aria-selected="true" aria-controls="settings-panel-platform" data-settings-tab="platform">平台模型</button>
+      <button type="button" class="settings-tab needs-login" id="settings-tab-account" role="tab" aria-selected="false" aria-controls="settings-panel-account" data-settings-tab="account">账户 · 登录</button>
       <button type="button" class="settings-tab" id="settings-tab-storage" role="tab" aria-selected="false" aria-controls="settings-panel-storage" data-settings-tab="storage">存储历史</button>
+      <button type="button" class="settings-tab needs-login" id="settings-tab-cloud" role="tab" aria-selected="false" aria-controls="settings-panel-cloud" data-settings-tab="cloud">云端图库</button>
       <button type="button" class="settings-tab" id="settings-tab-backup" role="tab" aria-selected="false" aria-controls="settings-panel-backup" data-settings-tab="backup">备份恢复</button>
     </nav>
 
@@ -478,6 +489,16 @@
         </div>
       </section>
 
+      <section class="settings-panel" id="settings-panel-account" role="tabpanel" aria-labelledby="settings-tab-account" data-settings-panel="account" hidden>
+        <div class="account-section" id="account-content">
+          <div class="account-login-hint">
+            <p>登录后可使用无限画布、Agent、批量生成、AI超分等高级功能</p>
+            <button class="auth-submit-btn" id="account-login-btn" type="button">登录</button>
+            <button class="auth-switch-btn" id="account-register-btn" type="button">没有账号？去注册</button>
+          </div>
+        </div>
+      </section>
+
       <section class="settings-panel" id="settings-panel-storage" role="tabpanel" aria-labelledby="settings-tab-storage" data-settings-panel="storage" hidden>
         <div class="storage-settings-grid">
           <section class="settings-group storage-section">
@@ -525,6 +546,14 @@
         <p class="settings-note" id="folder-support-note">支持 File System Access 的浏览器可选择文件夹；其他环境使用浏览器默认下载位置。</p>
       </section>
 
+      <section class="settings-panel" id="settings-panel-cloud" role="tabpanel" aria-labelledby="settings-tab-cloud" data-settings-panel="cloud" hidden>
+        <div id="cloud-gallery-content" class="cloud-gallery-container">
+          <div class="cloud-gallery-login-hint">
+            <p>登录后可使用云端图库功能</p>
+          </div>
+        </div>
+      </section>
+
       <section class="settings-panel" id="settings-panel-backup" role="tabpanel" aria-labelledby="settings-tab-backup" data-settings-panel="backup" hidden>
         <section class="settings-group backup-group">
           <div class="backup-action-list">
@@ -570,11 +599,11 @@
   </aside>
 
 
-  <div class="dialog-overlay" id="announcement-modal" aria-hidden="true">
+  <div class="dialog-overlay" id="announcement-modal" hidden inert aria-hidden="true">
     <div class="dialog-content announcement-dialog" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
       <div class="dialog-title" id="announcement-title">公告</div>
       <div class="announcement-copy">
-        <p>项目源码已公开，欢迎去 GitHub 点个<a href="https://github.com/falsecsx/image" target="_blank" rel="noopener noreferrer"><code>Star</code></a>支持一下~</p>
+        <p>项目已开源，帮忙去github上点点<a href="https://github.com/falsecsx/image" target="_blank" rel="noopener noreferrer"><code>Starred</code></a>吧~</p>
 		<p>交流群：<a href="https://qm.qq.com/q/8kDSNHC6go" target="_blank" rel="noopener noreferrer"><code>771289757</code></a></p>
         <p>图片生成时间可能较长，如果没有报错，可以稍等一会。</p>
       </div>
@@ -584,17 +613,78 @@
     </div>
   </div>
 
+  <!-- 认证弹窗 -->
+  <div class="auth-modal-overlay" id="auth-modal" hidden inert aria-hidden="true">
+    <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <button class="auth-modal-close" id="auth-modal-close" type="button" aria-label="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+      <h2 class="auth-modal-title" id="auth-modal-title">登录</h2>
+      <p class="auth-modal-subtitle" id="auth-modal-subtitle" style="display:none;"></p>
+      <form id="auth-form" class="auth-form">
+        <div class="auth-form-field">
+          <label for="auth-username">用户名</label>
+          <input id="auth-username" type="text" autocomplete="username" required>
+        </div>
+        <div class="auth-form-field" id="auth-email-field" hidden>
+          <label for="auth-email">邮箱（选填）</label>
+          <input id="auth-email" type="email" autocomplete="email">
+        </div>
+        <div class="auth-form-field" id="auth-invite-field" hidden>
+          <label for="auth-invite" id="auth-invite-label">邀请码（选填）</label>
+          <input id="auth-invite" type="text" autocomplete="off" maxlength="32">
+          <p class="auth-form-hint" id="auth-invite-hint" hidden></p>
+        </div>
+        <div class="auth-form-field">
+          <label for="auth-password">密码</label>
+          <div class="auth-password-wrap">
+            <input id="auth-password" type="password" autocomplete="current-password" required>
+            <button class="auth-password-toggle" id="auth-password-toggle" type="button" aria-label="切换密码可见性">
+              <i data-lucide="eye" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <div class="auth-error" id="auth-error" hidden></div>
+        <button class="auth-submit-btn" id="auth-submit" type="submit">登录</button>
+        <button class="auth-switch-btn" id="auth-switch" type="button">没有账号？去注册</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 会员引导弹窗 -->
+  <div class="auth-modal-overlay" id="membership-prompt" hidden inert aria-hidden="true">
+    <div class="auth-modal membership-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="membership-prompt-title">
+      <button class="auth-modal-close" id="membership-prompt-close" type="button" aria-label="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+      <div class="membership-prompt-content">
+        <i data-lucide="crown" class="membership-prompt-icon" aria-hidden="true"></i>
+        <h2 id="membership-prompt-title">会员专属功能</h2>
+        <p id="membership-prompt-text">此功能需要开通会员</p>
+        <div class="membership-benefits">
+          <ul>
+            <li>无限画布</li>
+            <li>Agent 智能助手</li>
+            <li>4K高清生成</li>
+            <li>批量生成（最多10张）</li>
+          </ul>
+        </div>
+        <button class="auth-submit-btn" id="membership-prompt-action" type="button">输入卡密激活</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 图片放大模态框 -->
-  <div class="lightbox" id="lightbox" aria-hidden="true">
+  <div class="lightbox" id="lightbox" hidden inert aria-hidden="true" role="dialog" aria-modal="true" aria-label="图片预览">
     <button class="close-btn" id="lightbox-close" type="button" aria-label="关闭图片预览" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
     <img src="" alt="放大图片" id="lightbox-img">
   </div>
 
   <!-- 角度调整弹窗 -->
-  <div class="angle-modal-overlay" id="angle-modal">
-    <div class="angle-modal">
+  <div class="angle-modal-overlay" id="angle-modal" hidden inert aria-hidden="true">
+    <div class="angle-modal" role="dialog" aria-modal="true" aria-labelledby="angle-modal-title">
       <div class="angle-modal-header">
-        <div class="angle-modal-title">自定义产品角度</div>
+        <div class="angle-modal-title" id="angle-modal-title">自定义产品角度</div>
         <button class="angle-modal-close" id="angle-modal-close" type="button" aria-label="关闭产品角度工具" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
       </div>
       <div class="angle-modal-body">
@@ -654,7 +744,9 @@
     </div>
   </div>
   <script src="assets/vendor/lucide.min.js?v=1.27.0"></script>
-  <script src="assets/js/app.js?v=20260808-1"></script>
+  <script src="assets/js/auth.js?v=20260814-4"></script>
+  <script src="assets/js/cloud-gallery.js?v=20260813-11"></script>
+  <script src="assets/js/app.js?v=20260816-2"></script>
   <script>
     // 诊断：捕获加载错误，弹窗告诉你
     window.addEventListener('error', (e) => {

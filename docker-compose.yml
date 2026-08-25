@@ -6,7 +6,9 @@ services:
       - "8080:8080"
     restart: unless-stopped
     volumes:
+      - app-data:/var/www/html/data
       - app-cache:/var/www/html/cache
 
 volumes:
+  app-data:
   app-cache:

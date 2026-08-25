@@ -10,10 +10,6 @@ cache/
 data/auth.db*
 data/community-prompts-blacklist.json
 data/community-prompts-sync-report.json
-api/
-.htaccess
-assets/css/auth.css
-assets/js/auth.js
 node_modules/
 .codex-cache/
 .superpowers/

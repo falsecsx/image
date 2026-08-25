@@ -1,4 +1,4 @@
-import { createId } from './canvas-model.js?v=20260808-1';
+import { createId } from './canvas-model.js?v=20260813-4';
 
 export const CANVAS_RESOURCES_DB_NAME = 'image_app:canvas_resources';
 export const CANVAS_RESOURCES_STORE_NAME = 'resources';

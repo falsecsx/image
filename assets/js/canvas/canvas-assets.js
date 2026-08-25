@@ -1,6 +1,6 @@
 // Global asset library: cross-project favorites, reusable via @asset:<id> tokens.
 // Separate from canvas-resources.js (project resource snapshots): this is a persistent favorites layer.
-import { createId } from './canvas-model.js?v=20260808-1';
+import { createId } from './canvas-model.js?v=20260813-4';
 
 export const CANVAS_ASSETS_DB_NAME = 'image_app:canvas_assets';
 export const CANVAS_ASSETS_STORE_NAME = 'assets';
@@ -8,6 +8,20 @@ export const CANVAS_ASSETS_DB_VERSION = 1;
 
 function trimText(value) {
   return String(value ?? '').trim();
+}
+
+function compareAssetText(left, right) {
+  return trimText(left).localeCompare(trimText(right), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function compareAssetsStable(left, right) {
+  return (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0)
+    || (Number(right?.createdAt) || 0) - (Number(left?.createdAt) || 0)
+    || compareAssetText(left?.title, right?.title)
+    || compareAssetText(left?.id, right?.id);
 }
 
 function inferKind(source = {}) {
@@ -140,7 +154,7 @@ export function getCanvasAssetStore(options = {}) {
     list() {
       return run('readonly', store => requestToPromise(store.getAll()).then(values => {
         const list = Array.isArray(values) ? values : [];
-        return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0) || (b.createdAt || 0) - (a.createdAt || 0));
+        return list.sort(compareAssetsStable);
       }));
     },
     delete(id) {

@@ -116,6 +116,7 @@
   const stylesheetPromises = new Map();
   const dialogStack = [];
   const dialogIsolation = new Map();
+  let workspaceFocusTimer = null;
   const dialogFocusableSelector = [
     'a[href]',
     'area[href]',
@@ -137,7 +138,10 @@
   function getFocusable(container) {
     if (!container || typeof container.querySelectorAll !== 'function') return [];
     return [...container.querySelectorAll(dialogFocusableSelector)].filter(element => {
-      if (element.hidden || element.closest('[hidden]') || element.getAttribute('aria-hidden') === 'true') return false;
+      if (element.hidden
+        || element.closest('[hidden]')
+        || element.getAttribute('aria-hidden') === 'true'
+        || element.closest('[aria-hidden="true"]')) return false;
       if (element.inert || element.closest('[inert]')) return false;
       const closedDetails = element.closest('details:not([open])');
       if (closedDetails && !element.matches('summary')) return false;
@@ -187,13 +191,32 @@
   function blurFocusedDescendant(element, doc = getDocument()) {
     const focused = doc?.activeElement;
     if (!element || !focused || focused === doc.body || !element.contains(focused)) return;
-    focused.blur?.();
+    // Move focus before either aria-hidden or inert changes. Chromium can
+    // retain activeElement for one turn after blur and report an intervention.
+    // First blur the control, then use body as an explicit temporary target;
+    // this also handles controls nested in a workspace nav button.
+    try { focused.blur?.(); } catch {}
+    const body = doc.body;
+    const hadTabIndex = body?.hasAttribute('tabindex');
+    const previousTabIndex = body?.getAttribute('tabindex');
+    if (body && element.contains(doc.activeElement)) {
+      body.setAttribute('tabindex', '-1');
+      body.focus?.({ preventScroll: true });
+    }
     if (element.contains(doc.activeElement)) {
-      const root = doc.documentElement;
-      const hadTabIndex = root.hasAttribute('tabindex');
-      if (!hadTabIndex) root.tabIndex = -1;
-      root.focus?.({ preventScroll: true });
-      if (!hadTabIndex) root.removeAttribute('tabindex');
+      doc.activeElement?.blur?.();
+      try { focused.blur?.(); } catch {}
+    }
+    if (body) {
+      // Keep the temporary focus target stable for one frame. Removing its
+      // tabindex synchronously can make Chromium restore focus to the old
+      // workspace just as aria-hidden is applied.
+      const restore = () => {
+        if (!body.isConnected) return;
+        if (!hadTabIndex) body.removeAttribute('tabindex');
+        else if (previousTabIndex !== null) body.setAttribute('tabindex', previousTabIndex);
+      };
+      (global.requestAnimationFrame || global.setTimeout || setTimeout)(restore, 0);
     }
   }
 
@@ -218,8 +241,13 @@
 
   function focusWorkspaceAfterChange(doc, workspace, options = {}) {
     if (options.initial || options.restoreFocus === false) return;
+    if (workspaceFocusTimer) {
+      clearTimeout(workspaceFocusTimer);
+      workspaceFocusTimer = null;
+    }
     const schedule = global.setTimeout || setTimeout;
-    schedule(() => {
+    workspaceFocusTimer = schedule(() => {
+      workspaceFocusTimer = null;
       const target = getWorkspaceTargets(doc).find(item => item.id === workspace)?.element;
       const focused = doc.activeElement;
       if (!target || target.hidden || (focused && focused !== doc.body && target.contains(focused))) return;
@@ -229,11 +257,30 @@
   }
 
   function applyWorkspaceVisibility(doc, activeWorkspace) {
-    getWorkspaceTargets(doc).forEach(target => {
+    const targets = getWorkspaceTargets(doc);
+    const activeTarget = targets.find(target => target.id === activeWorkspace);
+    const focused = doc.activeElement;
+    if (activeTarget?.element && focused && focused !== doc.body && !activeTarget.element.contains(focused)) {
+      if (activeTarget.id === 'studio' || activeTarget.id === 'prompts' || activeTarget.id === 'canvas') {
+        activeTarget.element.hidden = false;
+      }
+      setElementInert(activeTarget.element, false);
+      activeTarget.element.removeAttribute('aria-hidden');
+      // Move focus into the destination before hiding the old workspace. This
+      // matters for nav buttons nested inside the Studio shell: focusing body
+      // alone is not reliable when the shell is hidden in the same task.
+      const destination = getWorkspaceFocusTarget(doc, activeWorkspace);
+      if (destination && typeof destination.focus === 'function') {
+        destination.focus({ preventScroll: true });
+      }
+    }
+    targets.forEach(target => {
       const active = target.id === activeWorkspace;
       if (!active) {
-        setElementInert(target.element, true);
+        // Move focus before changing aria-hidden/inert. Chromium warns when a
+        // focused descendant becomes hidden from the accessibility tree.
         blurFocusedDescendant(target.element, doc);
+        setElementInert(target.element, true);
       }
       if (target.id === 'studio' || target.id === 'prompts' || target.id === 'canvas') {
         target.element.hidden = !active;
@@ -281,7 +328,6 @@
     if (!doc) return;
     clearDialogIsolation();
     applyWorkspaceVisibility(doc, doc.body?.dataset.activeWorkspace || 'studio');
-    doc.querySelectorAll('.app-dialog-overlay[inert]').forEach(element => setElementInert(element, false));
   }
 
   function ensureDialogLabel(surface, options = {}) {
@@ -335,7 +381,6 @@
     const { surface, container } = record;
     const openClass = options.openClass || 'is-open';
     const closeClass = options.closeClass || openClass;
-    const wasHidden = container.hidden;
     record.close = function closeDialog(reason = 'programmatic', closeOptions = {}) {
       if (record.closed) return;
       const topIndex = dialogStack.lastIndexOf(record);
@@ -344,11 +389,14 @@
       dialogStack.splice(topIndex, 1);
       doc.removeEventListener('keydown', record.keydown, true);
       container.removeEventListener('click', record.click, true);
-      setElementInert(container, true);
+      // Blur first so closing a dialog never hides the focused control before
+      // the browser has moved focus away from it.
       blurFocusedDescendant(container, doc);
+      setElementInert(container, true);
       if (container !== surface) {
         container.classList.remove(closeClass);
-        if (options.hideOnClose !== false && (wasHidden || options.forceHidden)) container.hidden = true;
+        if (options.hideOnClose !== false) container.hidden = true;
+        surface.hidden = options.hideOnClose !== false;
         container.setAttribute('aria-hidden', 'true');
       } else {
         surface.classList.remove(closeClass);
@@ -425,7 +473,10 @@
       }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && doc.activeElement === first) {
+      if (!surface.contains(doc.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && doc.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && doc.activeElement === last) {
@@ -446,7 +497,13 @@
       ? options.initialFocus(record)
       : options.initialFocus;
     const focusTarget = initialFocus || getFocusable(surface)[0] || surface;
-    window.setTimeout(() => focusTarget?.focus?.({ preventScroll: true }), 0);
+    window.setTimeout(() => {
+      if (record.closed || !surface.isConnected) return;
+      const blockedByAncestor = focusTarget?.closest?.('[hidden], [aria-hidden="true"], [inert]');
+      if (focusTarget && !focusTarget.hidden && !focusTarget.inert && !blockedByAncestor) {
+        focusTarget.focus?.({ preventScroll: true });
+      }
+    }, 0);
     return { close: record.close, element: surface, container, record };
   }
 
@@ -462,14 +519,19 @@
     const message = String(options.message || options.description || '确定继续吗？');
     const confirmLabel = String(options.confirmLabel || '确定');
     const cancelLabel = String(options.cancelLabel || '取消');
+    const messageId = `app-dialog-message-${Math.random().toString(36).slice(2, 9)}`;
+    const cancelMarkup = options.alert
+      ? ''
+      : `<button type="button" class="btn app-dialog-cancel">${escapeHtml(cancelLabel)}</button>`;
     surface.innerHTML = [
       `<h2 class="app-dialog-title">${escapeHtml(title)}</h2>`,
-      `<p class="app-dialog-message">${escapeHtml(message).replace(/\n/g, '<br>')}</p>`,
+      `<p class="app-dialog-message" id="${messageId}">${escapeHtml(message).replace(/\n/g, '<br>')}</p>`,
       '<div class="app-dialog-actions">',
-      `<button type="button" class="btn app-dialog-cancel">${escapeHtml(cancelLabel)}</button>`,
+      cancelMarkup,
       `<button type="button" class="btn ${options.danger ? 'btn-danger' : 'btn-primary'} app-dialog-confirm">${escapeHtml(confirmLabel)}</button>`,
       '</div>'
     ].join('');
+    surface.setAttribute('aria-describedby', messageId);
     overlay.appendChild(surface);
     doc.body.appendChild(overlay);
     return new Promise(resolve => {
@@ -499,6 +561,14 @@
       });
       surface.querySelector('.app-dialog-cancel')?.addEventListener('click', () => finish(false));
       surface.querySelector('.app-dialog-confirm')?.addEventListener('click', () => finish(true));
+    });
+  }
+
+  function dialogAlert(options = {}) {
+    return dialogConfirm({
+      ...options,
+      alert: true,
+      confirmLabel: options.confirmLabel || '知道了'
     });
   }
 
@@ -568,6 +638,7 @@
     dialog: {
       open: dialogOpen,
       confirm: dialogConfirm,
+      alert: dialogAlert,
       get stack() { return dialogStack.slice(); }
     }
   };

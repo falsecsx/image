@@ -3192,7 +3192,7 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
-    padding-bottom: 12px;
+    padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px));
   }
 
   /* Keep the action bar in the viewport layout instead of letting it cover
@@ -3206,10 +3206,11 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
   }
 
   body:not(.agent-mode-open) .mobile-generate-bar {
-    position: sticky !important;
-    inset: auto;
-    flex: 0 0 auto;
-    width: auto;
+    position: fixed !important;
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    z-index: var(--ui-z-overlay);
     margin: 0;
   }
 
@@ -3321,8 +3322,12 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
 
 /* Keep Canvas bottom chrome in separate vertical bands on narrow stages. */
 @media (max-width: 720px) {
+  :root {
+    --canvas-mobile-nav-reserve: 80px;
+  }
+
   .canvas-stage-coach {
-    bottom: 72px !important;
+    bottom: calc(var(--canvas-mobile-nav-reserve) + env(safe-area-inset-bottom, 0px)) !important;
     z-index: 12;
     max-height: min(30dvh, 220px);
     overflow: auto;
@@ -3335,7 +3340,7 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
   }
 
   .canvas-selection-toolbar {
-    bottom: 72px !important;
+    bottom: calc(var(--canvas-mobile-nav-reserve) + env(safe-area-inset-bottom, 0px)) !important;
     max-height: min(34dvh, 260px);
     overflow: auto;
   }
@@ -3369,6 +3374,26 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
 
   .studio-status-tag:first-child {
     grid-column: 1 / -1;
+  }
+}
+
+/* The final Studio mobile rules must keep prompt actions readable on narrow
+   phones.  This wins over the earlier two-column density rule at 420px. */
+@media (max-width: 420px) {
+  .prompt-buttons-container {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .prompt-editor-pane {
+    grid-template-rows: auto minmax(140px, auto) auto !important;
+  }
+
+  .prompt-editor-pane #prompt {
+    min-height: 140px !important;
+  }
+
+  .prompt-buttons-container > button {
+    width: 100%;
   }
 }
 
@@ -3407,4 +3432,17 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
 .history-grid {
   position: relative !important;
   z-index: 1 !important;
+}
+
+
+/* Touch targets: mobile primary controls stay at least 44px tall */
+@media (max-width: 760px) {
+  .workspace-nav-btn {
+    min-height: 44px;
+  }
+
+  .announcement-trigger,
+  .settings-open-btn {
+    min-height: 44px;
+  }
 }

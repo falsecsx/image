@@ -685,6 +685,10 @@ body.prompt-library-open {
   .prompt-library-card-meta { display: none; }
   .prompt-library-card-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .prompt-library-action { min-height: 44px; padding: 5px 3px; font-size: 10px; }
+  .prompt-library-tab { min-height: 44px; }
+  .prompt-library-search { min-height: 44px; }
+  .prompt-library-search input { height: 42px; }
+  .prompt-library-image-retry { min-height: 44px; }
   .prompt-library-detail-grid { grid-template-columns: 1fr; padding: 14px; }
   .prompt-library-detail-head { padding: 15px; }
   .prompt-library-detail h2 { font-size: 18px; }

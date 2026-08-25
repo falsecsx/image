@@ -2,7 +2,7 @@ import {
   buildCanvasNodeLabel,
   ensureCanvasProjectTimeline,
   getProjectTimelineClips
-} from './canvas-model.js?v=20260808-1';
+} from './canvas-model.js?v=20260813-4';
 
 function escapeHtml(value) {
   return String(value ?? '')

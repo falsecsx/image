@@ -66,6 +66,32 @@ function buildCommunityMediaRelayUrl(source) {
   }
 }
 
+function buildCommunityGithubMirrorUrl(source) {
+  const original = safeUrl(source, { allowData: false });
+  if (!/^https:\/\//i.test(original)) return '';
+  try {
+    const url = new URL(original);
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (url.hostname.toLowerCase() === 'cdn.jsdelivr.net' && segments[0] === 'gh' && segments.length >= 4) {
+      const repoRef = segments[2];
+      const separator = repoRef.indexOf('@');
+      if (separator > 0 && separator < repoRef.length - 1) {
+        const owner = segments[1];
+        const repo = repoRef.slice(0, separator);
+        const ref = repoRef.slice(separator + 1);
+        const filePath = segments.slice(3).join('/');
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}${url.search}`;
+      }
+    }
+    if (url.hostname.toLowerCase() === 'raw.githubusercontent.com' && segments.length >= 4) {
+      const [owner, repo, ref] = segments;
+      const filePath = segments.slice(3).join('/');
+      return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${ref}/${filePath}${url.search}`;
+    }
+  } catch {}
+  return '';
+}
+
 function getPromptImageCandidates(source, { preferProxy = false, useRelay = true, fallbackSources = [] } = {}) {
   const original = safeUrl(source);
   if (!original) return [];
@@ -82,10 +108,12 @@ function getPromptImageCandidates(source, { preferProxy = false, useRelay = true
 
     const proxy = buildCommunityMediaProxyUrl(item);
     const relay = useRelay ? buildCommunityMediaRelayUrl(item) : '';
+    const githubMirror = buildCommunityGithubMirrorUrl(item);
     if (index === 0 && preferProxy && proxy) candidates.push(proxy);
     candidates.push(item);
     if (proxy) candidates.push(proxy);
     if (relay) candidates.push(relay);
+    if (githubMirror) candidates.push(githubMirror);
   });
 
   return [...new Set(candidates.filter(Boolean))];
@@ -875,12 +903,15 @@ function bindImageErrors(root) {
       const retry = frame.querySelector('[data-action="retry-image"]')
         || image.closest('.prompt-library-detail-image')?.querySelector('[data-action="retry-image"]')
         || image.closest('[data-prompt-card]')?.querySelector('[data-action="retry-image"]');
+      // Keep a manual retry available as soon as a remote candidate fails.
+      // Automatic mirrors may still recover the preview, and handleLoad will
+      // hide this control again when one of them succeeds.
+      if (retry) retry.hidden = false;
       if (nextStage) {
         image.dataset.imageAttempt = String(nextAttempt);
         image.hidden = false;
         frame.classList.remove('is-broken');
         if (status) status.hidden = true;
-        if (retry) retry.hidden = true;
         image.src = addImageCacheBust(nextStage.url);
         scheduleImageFallback(image);
         return;
@@ -1005,7 +1036,7 @@ function closeOverlay(state, selector) {
   if (!overlay) return;
   state.dialogHandles = (state.dialogHandles || []).filter(handle => {
     if (handle?._overlayEl === overlay) {
-      try { handle.close('overlay-close', { restoreFocus: false }); } catch {}
+      try { handle.close('overlay-close'); } catch {}
       return false;
     }
     return true;
@@ -1028,8 +1059,14 @@ function mountPromptDialogs(state) {
       container: overlay,
       closeOnBackdrop: options.closeOnBackdrop !== false,
       closeOnEscape: options.closeOnEscape !== false,
-      restoreFocus: false,
-      onClose: options.onClose,
+      restoreFocus: options.restoreFocus !== false,
+      onClose: (reason, record) => {
+        options.onClose?.(reason, record);
+        // Prompt-library overlays are created dynamically and do not carry a
+        // hidden state of their own. Remove them when the shared dialog closes
+        // so Escape cannot leave a visible, aria-hidden surface behind.
+        if (overlay.isConnected) overlay.remove();
+      },
       role: options.role || 'dialog'
     });
     if (handle) handle._overlayEl = overlay;
@@ -1171,7 +1208,7 @@ function chooseFillMode(state) {
       if (finished) return;
       finished = true;
       if (state.fillChoice?.overlay === overlay) state.fillChoice = null;
-      dialogHandle?.close?.('choice', { restoreFocus: false });
+      dialogHandle?.close?.('choice');
       overlay.remove();
       resolve(value);
     };
@@ -1187,8 +1224,9 @@ function chooseFillMode(state) {
       element: surface,
       container: overlay,
       closeOnBackdrop: false,
-      closeOnEscape: false,
-      restoreFocus: false
+      closeOnEscape: true,
+      restoreFocus: true,
+      onClose: () => finish('cancel')
     }) || null;
     if (!dialogHandle) {
       const escapeHandler = event => {
@@ -1624,6 +1662,7 @@ function closePromptLibraryState(state, options = {}) {
   state.fillChoice?.finish?.('cancel');
   closePromptDialogHandles(state);
   stopLoadMoreObservation();
+  state.root.scrollTop = 0;
   state.root.hidden = true;
   state.root.classList.remove('is-open');
   document.body.classList.remove('prompt-library-open');
@@ -1925,6 +1964,7 @@ export function openPromptLibrary(options = {}) {
     state.localEditor = createLocalEditor('create', normalizeEntry({ ...options.draft, origin: 'local' }));
   }
   activeState = state;
+  root.scrollTop = 0;
   root.hidden = false;
   root.classList.add('is-open');
   document.body.classList.add('prompt-library-open');
