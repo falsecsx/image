@@ -45,11 +45,85 @@
     return div.innerHTML;
   }
 
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+
+    if (!copied) {
+      throw new Error('浏览器未允许复制，请手动选择文本复制');
+    }
+  }
+
+  async function copyPromptFromElement(el) {
+    const originalText = String(el.textContent || '').trim();
+    if (!originalText || originalText === '✓ 已复制' || originalText === '复制失败') return;
+    try {
+      await copyTextToClipboard(originalText);
+      el.textContent = '✓ 已复制';
+      el.classList.add('is-copied');
+      el.classList.remove('is-copy-error');
+      setTimeout(() => {
+        el.textContent = originalText;
+        el.classList.remove('is-copied');
+      }, 1500);
+    } catch (err) {
+      console.error('复制失败:', err);
+      el.textContent = '复制失败';
+      el.classList.add('is-copy-error');
+      el.classList.remove('is-copied');
+      setTimeout(() => {
+        el.textContent = originalText;
+        el.classList.remove('is-copy-error');
+      }, 1500);
+    }
+  }
+
   function formatSize(bytes) {
     bytes = Number(bytes) || 0;
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / 1048576).toFixed(2) + ' MB';
+  }
+
+  function formatCloudParams(params) {
+    if (!params || typeof params !== 'object') return '';
+    const labels = {
+      aspect: '比例',
+      resolution: '清晰度',
+      quality: '质量',
+      model: '模型',
+      protocol: '协议',
+      videoDuration: '时长',
+      runtimeMs: '耗时'
+    };
+    return Object.keys(labels)
+      .map(key => {
+        const value = params[key];
+        return value != null && String(value).trim() !== '' ? labels[key] + ' ' + String(value).trim() : '';
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  function buildCloudDownloadUrl(imageUrl, filename, storagePath) {
+    if (/^https?:/i.test(imageUrl || '')) {
+      const key = String(storagePath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+      if (key) return '/cloud-images/' + key + '?download=1';
+    }
+    return imageUrl || '';
   }
 
   function getCloudImageUrl(image) {
@@ -161,13 +235,10 @@
     try {
       const stats = await apiCall('/api/cloud/stats');
       const quota = window.AuthGate?.getQuotaStatus?.();
-      const countLimit = quota?.storage?.count_limit || 0;
       const sizeLimit = quota?.storage?.size_limit_mb || 0;
-      const count = Number(stats.count) || 0;
       const totalSize = Number(stats.size_bytes ?? stats.total_size) || ((Number(stats.size_mb) || 0) * 1048576);
       const warrantyCount = Number(stats.in_warranty ?? stats.warranty_active_count) || 0;
       statsEl.innerHTML =
-        '<span class="cloud-stat-item">' + count + '/' + (countLimit || '∞') + ' 张</span>' +
         '<span class="cloud-stat-item">' + formatSize(totalSize) + '/' + (sizeLimit > 0 ? sizeLimit + 'MB' : '∞') + '</span>' +
         '<span class="cloud-stat-item">质保: ' + warrantyCount + ' 有效</span>';
     } catch (e) {
@@ -185,7 +256,8 @@
       var warrantyText = warrantyActive
         ? '质保至 ' + formatDate(img.warranty_expires_at)
         : '质保已过期';
-      var publicBadge = img.is_public ? '<span class="cloud-badge cloud-badge-public">公开</span>' : '';
+      var promptText = String(img.source_prompt || '').trim();
+      var paramsText = formatCloudParams(img.params);
       var imageUrl = getCloudImageUrl(img);
       var imageMarkup = imageUrl
         ? '<img src="' + escapeHtml(imageUrl) + '" loading="lazy" decoding="async" alt="' + escapeHtml(img.filename) + '">'
@@ -197,13 +269,14 @@
         '</div>' +
         '<div class="cloud-image-info">' +
         '<div class="cloud-image-name" title="' + escapeHtml(img.filename) + '">' + escapeHtml(img.filename) + '</div>' +
+        (promptText ? '<button type="button" class="cloud-image-prompt" title="点击复制提示词" aria-label="复制提示词">' + escapeHtml(promptText) + '</button>' : '<div class="cloud-image-prompt is-empty">无提示词</div>') +
+        '<div class="cloud-image-params' + (paramsText ? '' : ' is-empty') + '" title="' + (paramsText ? '生成参数：' + escapeHtml(paramsText) : '暂无生成参数') + '">' + (paramsText ? escapeHtml(paramsText) : '暂无生成参数') + '</div>' +
         '<div class="cloud-image-meta">' +
-        '<span class="cloud-image-size">' + formatSize(img.file_size) + '</span>' +
+        '<span class="cloud-image-size" title="文件大小">' + formatSize(img.file_size) + '</span>' +
         '<span class="cloud-image-date ' + warrantyClass + '">' + warrantyText + '</span>' +
         '</div>' +
         '<div class="cloud-image-actions">' +
-        (imageUrl ? '<a class="cloud-action-btn cloud-download-btn" href="' + escapeHtml(imageUrl) + '" download="' + escapeHtml(img.filename) + '" title="下载">下载</a>' : '') +
-        '<button class="cloud-action-btn cloud-toggle-btn" data-id="' + escapeHtml(img.id) + '" data-public="' + (img.is_public ? '0' : '1') + '" title="' + (img.is_public ? '设为私有' : '设为公开') + '" aria-label="' + (img.is_public ? '设为私有' : '设为公开') + '">' + (img.is_public ? '私有' : '公开') + '</button>' +
+        (imageUrl ? '<a class="cloud-action-btn cloud-download-btn" href="' + escapeHtml(buildCloudDownloadUrl(imageUrl, img.filename, img.storage_path)) + '" download="' + escapeHtml(img.filename) + '" title="下载">下载</a>' : '') +
         '<button class="cloud-action-btn cloud-delete-btn" data-id="' + escapeHtml(img.id) + '" title="删除" aria-label="删除 ' + escapeHtml(img.filename) + '">删除</button>' +
         '</div>' +
         '</div>' +
@@ -214,8 +287,12 @@
     grid.querySelectorAll('.cloud-delete-btn').forEach(function (btn) {
       btn.addEventListener('click', function () { handleDelete(parseInt(btn.dataset.id)); });
     });
-    grid.querySelectorAll('.cloud-toggle-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () { handleTogglePublic(parseInt(btn.dataset.id), parseInt(btn.dataset.public)); });
+
+    // Click prompt to copy
+    grid.querySelectorAll('.cloud-image-prompt:not(.is-empty)').forEach(function (el) {
+      el.addEventListener('click', function () {
+        copyPromptFromElement(el);
+      });
     });
   }
 
@@ -266,25 +343,11 @@
     }
   }
 
-  async function handleTogglePublic(imageId, isPublic) {
-    try {
-      const res = await apiCall('/api/cloud/toggle-public', {
-        method: 'POST',
-        body: { id: imageId, is_public: !!isPublic }
-      });
-      if (res.success) {
-        loadImages();
-      } else {
-        showCloudMessage(res.error || '操作失败');
-      }
-    } catch (e) {
-      showCloudMessage('网络错误：' + e.message);
-    }
-  }
+
 
   // ===== Upload from external (called by app.js) =====
 
-  window.CloudGallery.uploadImage = async function (base64Data, filename, prompt, originalUrl) {
+  window.CloudGallery.uploadImage = async function (base64Data, filename, prompt, originalUrl, params) {
     if (!window.AuthGate?.isAuthenticated?.()) {
       return { success: false, error: '请先登录' };
     }
@@ -295,7 +358,8 @@
           image: base64Data,
           filename: filename || 'image.png',
           prompt: prompt || '',
-          original_url: originalUrl || ''
+          original_url: originalUrl || '',
+          params: params && typeof params === 'object' ? params : null
         }
       });
       return res;

@@ -110,6 +110,65 @@
   color: var(--settings-text, #e6edf3);
 }
 
+.cloud-image-prompt {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--settings-muted, #9aa7ad);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.cloud-image-prompt.is-empty {
+  font-style: italic;
+  opacity: 0.65;
+}
+
+button.cloud-image-prompt {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.cloud-image-prompt:hover,
+button.cloud-image-prompt:focus-visible {
+  color: var(--settings-text, #e6edf3);
+  text-decoration: underline;
+  text-decoration-color: var(--settings-accent, #5eead4);
+  text-underline-offset: 2px;
+}
+
+.cloud-image-prompt.is-copied {
+  color: var(--settings-accent, #5eead4);
+}
+
+.cloud-image-prompt.is-copy-error {
+  color: var(--settings-danger, #f87171);
+}
+
+.cloud-image-params {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--settings-accent, #5eead4);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.cloud-image-params.is-empty {
+  color: var(--settings-muted, #9aa7ad);
+  font-style: italic;
+  opacity: 0.65;
+}
+
 .cloud-image-meta {
   display: flex;
   justify-content: space-between;
@@ -153,17 +212,6 @@
   color: var(--settings-danger, #f87171);
 }
 
-.cloud-badge {
-  display: inline-block;
-  font-size: 9px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-weight: 600;
-}
-.cloud-badge-public {
-  background: var(--settings-accent, #5eead4);
-  color: var(--settings-bg, #1a1a2e);
-}
 
 .cloud-gallery-pagination {
   display: flex;

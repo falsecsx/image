@@ -3446,3 +3446,10 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
     min-height: 44px;
   }
 }
+/* History image cards with the cloud upload action use 2x2 columns. */
+.history-panel .history-card .history-actions.history-actions-upload,
+.history-grid .history-card .history-actions.history-actions-upload,
+.history-card .history-actions.history-actions-upload,
+.history-actions.history-actions-upload {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}

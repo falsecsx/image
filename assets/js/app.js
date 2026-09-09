@@ -6954,7 +6954,7 @@
       function getImageModelFamily(modelName = getImageModel()) {
         const model = String(modelName || '').trim().toLowerCase();
         if (/^dall[-_]?e[-_]?/.test(model) || /^dalle[-_]?/.test(model)) return 'dalle';
-        if (/^gpt[-_]?image[-_]?/.test(model)) return 'gpt-image';
+        if (/^gpt[-_]?image[-_]?/.test(model) || /^chatgpt[-_]?image/.test(model)) return 'gpt-image';
         return 'unknown';
       }
 
@@ -6971,6 +6971,10 @@
           return ['standard', 'hd'].includes(quality) ? quality : '';
         }
         if (family === 'gpt-image') {
+          // gpt-image-2.5 系列 (sunburst/flare) 额外支持 xhigh 与 max；其余 GPT image 模型选了不支持的档位时静默降级为不发送
+          if (quality === 'xhigh' || quality === 'max') {
+            return /gpt-image-2\.5/.test(modelName.toLowerCase()) ? quality : '';
+          }
           return ['auto', 'low', 'medium', 'high'].includes(quality) ? quality : '';
         }
         return quality;
@@ -6990,8 +6994,35 @@
         else target[key] = value;
       }
 
+      // OpenAI gpt-image 系列: 任意 WIDTHxHEIGHT, 16 倍数, 比例 1:3~3:1, 最大 3840x2160
+      // 超限时等比收敛（1K/2K 与 dall-e 枚举尺寸不受影响）
+      function normalizeOpenAIImageSize(size) {
+        const match = /^(\d+)x(\d+)$/.exec(String(size || '').trim());
+        if (!match) return size;
+        let width = parseInt(match[1], 10);
+        let height = parseInt(match[2], 10);
+        const MAX_EDGE = 3840;
+        const MAX_PIXELS = 3840 * 2160;
+        let scale = 1;
+        const maxEdge = Math.max(width, height);
+        if (maxEdge > MAX_EDGE) scale = Math.min(scale, MAX_EDGE / maxEdge);
+        if (width * height > MAX_PIXELS) scale = Math.min(scale, Math.sqrt(MAX_PIXELS / (width * height)));
+        width = Math.floor(width * scale);
+        height = Math.floor(height * scale);
+        const to16 = (v) => Math.max(16, Math.floor(v / 16) * 16);
+        width = to16(width);
+        height = to16(height);
+        let guard = 0;
+        while (width * height > MAX_PIXELS && guard < 16) {
+          width = to16(width - 16);
+          height = to16(height - 16);
+          guard++;
+        }
+        return `${width}x${height}`;
+      }
+
       function applyOpenAIImageOptions(target, modelName = getImageModel(), asFormData = false) {
-        setImageOption(target, 'size', getImageSize(modelName), asFormData);
+        setImageOption(target, 'size', normalizeOpenAIImageSize(getImageSize(modelName)), asFormData);
         setImageOption(target, 'quality', getOpenAIImageQuality(modelName), asFormData);
         if (shouldSendImageResponseFormat(modelName)) {
           setImageOption(target, 'response_format', 'b64_json', asFormData);
@@ -7068,6 +7099,49 @@
       // 协议: sensenova-images
       // 端点: token.sensenova.cn/v1/images/generations (文生图) / /v1/images/edits (图生图, 仅 U1.5 Lite)
       // 认证: Authorization: Bearer; 响应 OpenAI images 兼容 { data: [{ b64_json }] }
+      // 尺寸规范: WIDTHxHEIGHT, 32 倍数, [512,4096], 比例 ≤ 3:1
+      const SENSENOVA_SUGGESTED_SIZES = {
+        '1:1': { '2K': '2048x2048', '4K': '4096x4096' },
+        '16:9': { '2K': '2720x1536' },
+        '9:16': { '2K': '1536x2720' },
+        '2:3': { '2K': '1664x2496' },
+        '3:2': { '2K': '2496x1664' }
+      };
+
+      function normalizeSenseNovaSize(size) {
+        const match = /^(\d+)x(\d+)$/.exec(String(size || '').trim());
+        if (!match) return '2048x2048';
+        let width = parseInt(match[1], 10);
+        let height = parseInt(match[2], 10);
+        // 范围 clamp [512, 4096]
+        width = Math.min(4096, Math.max(512, width));
+        height = Math.min(4096, Math.max(512, height));
+        // 比例 ≤ 3:1：短边至少为长边/3
+        const maxSide = Math.max(width, height);
+        const minSide = Math.max(512, Math.round(maxSide / 3));
+        if (width > height) height = Math.max(height, minSide);
+        else if (height > width) width = Math.max(width, minSide);
+        // 向下取整到 32 倍数（只减不增，避免破坏比例约束）
+        const to32 = (v) => Math.max(512, Math.floor(v / 32) * 32);
+        width = to32(width);
+        height = to32(height);
+        // 保险：取整后比例仍 > 3:1 时抬升短边到 ceil(长边/3/32)*32
+        if (Math.max(width, height) / Math.min(width, height) > 3) {
+          const longSide = Math.max(width, height);
+          const shortSide = Math.max(512, Math.ceil(longSide / 3 / 32) * 32);
+          if (width > height) height = shortSide; else width = shortSide;
+        }
+        return `${width}x${height}`;
+      }
+
+      function getSenseNovaSize(model) {
+        const aspect = String(aspectSelect?.value || 'auto');
+        const resolution = String(resolutionSelect?.value || '1K').toUpperCase();
+        const suggested = SENSENOVA_SUGGESTED_SIZES[aspect]?.[resolution];
+        if (suggested) return suggested;
+        return normalizeSenseNovaSize(getImageSize(model, aspect, resolution));
+      }
+
       function buildSenseNovaImagePayload(prompt, imgs, imageModel = getImageModel()) {
         const model = imageModel || 'sensenova-u1.5-lite';
         const isFastModel = String(model).toLowerCase().includes('u1-fast');
@@ -7075,7 +7149,7 @@
         const base = {
           model,
           prompt,
-          size: getImageSize(model),
+          size: getSenseNovaSize(model),
           output_format: 'png',
           response_format: 'b64_json',
           watermark: false
@@ -7403,7 +7477,7 @@
         if (imgs.length > 0) {
           payload.image = imgs.map(img => img.dataUrl).filter(Boolean);
         }
-        setImageOption(payload, 'size', getImageSize(imageModel));
+        setImageOption(payload, 'size', normalizeOpenAIImageSize(getImageSize(imageModel)));
         return {
           endpoint: buildApiUrl('/v1/images/generations'),
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
@@ -9703,6 +9777,8 @@ ${chinesePrompt}
                       <label class="gif-field">模型
                         <select class="gif-grid-model">
                           <option value="gpt-image-2" selected>gpt-image-2</option>
+                          <option value="gpt-image-2.5-sunburst">gpt-image-2.5-sunburst</option>
+                          <option value="gpt-image-2.5-flare">gpt-image-2.5-flare</option>
                         </select>
                       </label>
                       <label class="gif-field">每帧时长

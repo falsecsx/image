@@ -8,7 +8,7 @@
 ## 许可边界
 
 这些社区数据不是项目作者原创代码的一部分，不自动适用根目录的
-[PolyForm Noncommercial License 1.0.0](./LICENSE)。项目公开这些数据不代表项目
+[GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE)。项目公开这些数据不代表项目
 取得第三方文字、图片、作者名称、商标或网站内容的再授权权利，也不向使用者
 授予超出适用法律、原作者许可或原网站条款范围的权利。
 

@@ -61,6 +61,13 @@ function resolve_host_ips(string $host): array
     return array_values(array_unique($ips));
 }
 
+function assert_public_host(string $host, string $errorMessage): void
+{
+    if (!is_public_host($host)) {
+        send_json(400, ['error' => $errorMessage]);
+    }
+}
+
 function is_public_host(string $host): bool
 {
     $ips = resolve_host_ips($host);
