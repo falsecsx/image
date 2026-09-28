@@ -834,9 +834,9 @@ function renderEditor(state) {
 
   state.root.innerHTML = `
     <section class="prompt-library-workspace" aria-label="提示词库">
-      <header class="prompt-library-header">
+      <header class="workspace-return-nav prompt-library-header">
         <div class="prompt-library-header-main">
-          <button type="button" class="prompt-library-back" data-action="close" aria-label="返回上一级界面" title="返回上一级界面"><i data-lucide="arrow-left" aria-hidden="true"></i><span>${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}</span></button>
+          <button type="button" class="prompt-library-back" data-workspace-back data-action="close" aria-label="${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}" title="${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}"><i data-lucide="arrow-left" aria-hidden="true"></i><span>${state.returnWorkspace === 'canvas' ? '返回画布' : '返回 Studio'}</span></button>
           <div><span class="prompt-library-eyebrow">Prompt library</span><h1>提示词库</h1></div>
           <span class="prompt-library-count" aria-live="polite">${state.loading ? '加载中' : `${filtered.length} 条`}</span>
         </div>

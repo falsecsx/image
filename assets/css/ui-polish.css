@@ -3454,8 +3454,68 @@ body.agent-mode-open .agent-recent-canvas-btn:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
 
+/* Shared geometry keeps workspace return targets in the same location. */
+.workspace-return-nav.workspace-return-nav {
+  box-sizing: border-box;
+  height: calc(56px + env(safe-area-inset-top, 0px));
+  min-height: calc(56px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.workspace-return-nav.workspace-return-nav [data-workspace-back] {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  width: auto;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 11px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  font: 600 13px/1.2 system-ui, sans-serif;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+
+.workspace-return-nav.workspace-return-nav [data-workspace-back] svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke-width: 2;
+}
+
+.workspace-return-nav [data-workspace-back]:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.workspace-return-nav [data-workspace-back]:active { transform: translateY(1px); }
+
+@media (max-width: 900px) {
+  .workspace-return-nav.workspace-return-nav {
+    padding-right: max(8px, env(safe-area-inset-right, 0px));
+    padding-left: max(8px, env(safe-area-inset-left, 0px));
+  }
+
+  .workspace-return-nav.workspace-return-nav [data-workspace-back] {
+    width: 44px;
+    padding: 0;
+  }
+
+  .workspace-return-nav [data-workspace-back] span { display: none; }
+}
+
 /* ============================================================
-   Agent workspace shell (20260928-1)
+   Agent workspace shell
    Final ownership for the Agent shell. Keep the existing feature styles
    above, but give navigation, sizing, and responsive behavior one explicit
    source of truth so older overrides cannot create drift.
@@ -3477,6 +3537,7 @@ body.agent-mode-open .agent-workspace {
   z-index: var(--ui-z-workspace, 1000);
   display: grid !important;
   grid-template-columns: 236px minmax(0, 1fr) !important;
+  grid-template-rows: calc(56px + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
   width: 100vw !important;
   max-width: none !important;
   height: 100dvh !important;
@@ -3487,8 +3548,43 @@ body.agent-mode-open .agent-workspace {
   color: #e7edf0;
 }
 
+body.agent-mode-open .agent-workspace-nav {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  background: #111819;
+  border-bottom: 1px solid rgba(183, 206, 214, 0.13);
+}
+
+body.agent-mode-open .agent-workspace-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+body.agent-mode-open .agent-workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+body.agent-mode-open .agent-workspace-actions .agent-icon-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
 body.agent-mode-open .agent-sidebar {
   grid-column: 1;
+  grid-row: 2;
   width: auto;
   min-width: 0;
   height: 100%;
@@ -3532,6 +3628,7 @@ body.agent-mode-open .agent-btn-primary:hover {
 
 body.agent-mode-open .agent-shell {
   grid-column: 2;
+  grid-row: 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px !important;
   min-width: 0;
@@ -3570,30 +3667,15 @@ body.agent-mode-open .agent-mobile-tools {
   display: inline-grid !important;
 }
 
-body.agent-mode-open .agent-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  width: auto;
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0 11px;
+body.agent-mode-open .agent-workspace-nav .agent-close {
   border: 1px solid rgba(183, 206, 214, 0.18);
-  border-radius: 8px;
   background: #1a2426;
   color: #dce7ea;
-  font-size: 12px;
-  font-weight: 650;
 }
 
-body.agent-mode-open .agent-close:hover {
+body.agent-mode-open .agent-workspace-nav .agent-close:hover {
   border-color: rgba(96, 165, 250, 0.62);
   background: #202f33;
-}
-
-body.agent-mode-open .agent-close-label {
-  white-space: nowrap;
 }
 
 body.agent-mode-open .agent-status {
@@ -3747,38 +3829,40 @@ body.agent-mode-open :focus-visible {
 
 @media (max-width: 900px) {
   body.agent-mode-open .agent-workspace {
-    display: block !important;
+    grid-template-columns: minmax(0, 1fr) !important;
     width: 100vw !important;
     height: 100dvh !important;
   }
 
-  body.agent-mode-open .agent-shell,
-  body.agent-mode-open .agent-main {
+  body.agent-mode-open .agent-shell {
+    grid-column: 1;
     display: block;
     width: 100%;
     height: 100%;
   }
 
+  body.agent-mode-open .agent-main {
+    display: flex;
+    width: 100%;
+    height: 100%;
+  }
+
   body.agent-mode-open .agent-main-header {
-    min-height: 98px;
-    padding: calc(9px + env(safe-area-inset-top, 0px)) 10px 9px;
-    grid-template-columns: auto minmax(0, 1fr) auto !important;
-    grid-template-areas: "sessions heading actions" "toolbar toolbar toolbar";
+    min-height: 88px;
+    padding: 7px 10px;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas: "heading actions" "toolbar toolbar";
     grid-template-rows: 36px 36px;
   }
 
+  body.agent-mode-open .agent-workspace-nav { gap: 10px; }
+
+  body.agent-mode-open .agent-workspace-actions { gap: 4px; }
+
+  body.agent-mode-open .agent-workspace-actions .agent-mobile-sessions { grid-area: auto; }
+
   body.agent-mode-open .agent-main-title {
     font-size: 16px;
-  }
-
-  body.agent-mode-open .agent-close {
-    width: 36px;
-    min-width: 36px;
-    padding: 0;
-  }
-
-  body.agent-mode-open .agent-close-label {
-    display: none;
   }
 
   body.agent-mode-open .agent-main-actions {
@@ -3806,7 +3890,11 @@ body.agent-mode-open :focus-visible {
   }
 
   body.agent-mode-open .agent-sidepane {
-    padding: 10px 12px max(12px, env(safe-area-inset-bottom, 0px));
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
+  }
+
+  body.agent-mode-open .agent-sidebar {
+    padding-top: calc(16px + env(safe-area-inset-top, 0px));
   }
 
   body.agent-mode-open .agent-mobile-backdrop:not([hidden]) {

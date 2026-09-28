@@ -69,8 +69,8 @@
 
       const _appScriptSrc = document.currentScript?.src || '';
       const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
-      const _assetVersion = '20260928-1';
-      const _canvasWorkspaceModulePath = 'canvas/canvas-next-host.js?v=20260928-1';
+      const _assetVersion = '20260928-2';
+      const _canvasWorkspaceModulePath = 'canvas/canvas-next-host.js?v=20260928-2';
       const _agentUiUrl = new URL(`agent/agent-ui.js?v=${_assetVersion}`, _appBase).href;
 
       function showUiError(message) {

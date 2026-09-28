@@ -7,7 +7,7 @@
  *  - 页面导航网络优先，离线回退缓存首页
  * 更新：修改本文件后浏览器自动安装新版本，activate 阶段清理旧缓存。
  */
-const CACHE_NAME = 'ai-draw-20260928-1';
+const CACHE_NAME = 'ai-draw-20260928-2';
 const PRECACHE = [
   '/',
   '/manifest.json'

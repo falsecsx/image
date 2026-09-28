@@ -1,7 +1,7 @@
 import { loadCanvasProjects } from './canvas-store.js?v=20260928-1';
 import { getCanvasResourceStore } from './canvas-resources.js?v=20260928-1';
 
-const FRAME_URL = '/assets/canvas-app/index.html?v=20260928-1#/canvas';
+const FRAME_URL = '/assets/canvas-app/index.html?v=20260928-2#/canvas';
 const MIRROR_KEY = 'image_app:canvas_v2_project_index';
 const activeRequests = new Map();
 const pendingImports = [];
@@ -202,8 +202,8 @@ export function openCanvasWorkspace(options = {}) {
   if (!frame) {
     container.innerHTML = `
       <div class="canvas-next-shell">
-        <nav class="canvas-next-hostbar" aria-label="工作区导航">
-          <button type="button" class="canvas-next-hostbar-back" data-canvas-next-close aria-label="返回 Studio" title="返回 Studio">
+        <nav class="workspace-return-nav canvas-next-hostbar" aria-label="工作区导航">
+          <button type="button" class="canvas-next-hostbar-back" data-workspace-back data-canvas-next-close aria-label="返回 Studio" title="返回 Studio">
             <i data-lucide="arrow-left" aria-hidden="true"></i><span>返回 Studio</span>
           </button>
           <div class="canvas-next-hostbar-title"><span class="canvas-next-hostbar-kicker">工作区</span><strong>无限画布</strong></div>

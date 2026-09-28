@@ -528,11 +528,18 @@ export function openAgentWorkspace() {
   root.tabIndex = -1;
   root.innerHTML = `
     <div class="agent-mobile-backdrop" hidden></div>
-    <aside class="agent-sidebar">
+    <nav class="workspace-return-nav agent-workspace-nav" aria-label="工作区导航">
+      <button class="agent-btn agent-close" data-workspace-back type="button" aria-label="返回 Studio" title="返回 Studio"><i data-lucide="arrow-left" aria-hidden="true"></i><span>返回 Studio</span></button>
+      <strong class="agent-workspace-title">Agent 创作台</strong>
+      <div class="agent-workspace-actions">
+        <button class="agent-icon-btn agent-mobile-sessions" type="button" title="会话列表" aria-label="打开会话列表" aria-controls="agent-sidebar" aria-expanded="false"><i data-lucide="panel-left" aria-hidden="true"></i></button>
+        <button class="agent-icon-btn agent-mobile-tools" data-agent-tools-toggle type="button" aria-label="收起工具面板" title="工具面板" aria-controls="agent-sidepane" aria-expanded="true"><i data-lucide="panel-right" aria-hidden="true"></i></button>
+      </div>
+    </nav>
+    <aside class="agent-sidebar" id="agent-sidebar" aria-label="会话列表">
       <div class="agent-sidebar-head">
         <div>
-          <strong>Agent 创作台</strong>
-          <div class="agent-sidebar-copy">创作会话</div>
+          <strong>创作会话</strong>
         </div>
         <button class="agent-icon-btn agent-sidebar-close" type="button" title="关闭会话列表" aria-label="关闭会话列表"><i data-lucide="x"></i></button>
       </div>
@@ -546,7 +553,6 @@ export function openAgentWorkspace() {
     <section class="agent-shell">
       <section class="agent-main">
         <div class="agent-main-header">
-          <button class="agent-icon-btn agent-mobile-sessions" type="button" title="会话列表" aria-label="打开会话列表"><i data-lucide="panel-left"></i></button>
           <div class="agent-main-heading">
             <div class="agent-main-kicker">创作对话</div>
             <div class="agent-main-title"></div>
@@ -565,9 +571,7 @@ export function openAgentWorkspace() {
             </label>
           </div>
           <div class="agent-main-actions">
-            <button class="agent-icon-btn agent-mobile-tools" data-agent-tools-toggle type="button" aria-label="收起工具面板" title="工具面板" aria-controls="agent-sidepane" aria-expanded="true"><i data-lucide="panel-right"></i></button>
             <button class="agent-icon-btn agent-export" type="button" aria-label="导出 Markdown" title="导出 Markdown"><i data-lucide="download"></i></button>
-            <button class="agent-btn agent-close" type="button" aria-label="返回 Studio" title="返回 Studio"><i data-lucide="arrow-left"></i><span class="agent-close-label">返回 Studio</span></button>
           </div>
         </div>
         <div class="agent-status" aria-live="polite">空闲</div>
@@ -684,6 +688,7 @@ export function openAgentWorkspace() {
   }
 
   const $sidebar = root.querySelector('.agent-sidebar');
+  const $workspaceNav = root.querySelector('.agent-workspace-nav');
   const $main = root.querySelector('.agent-main');
   const $agentList = root.querySelector('.agent-agent-list');
   const $sessionSearch = root.querySelector('.agent-session-search input');
@@ -776,7 +781,12 @@ export function openAgentWorkspace() {
       $mobileBackdrop.hidden = !name;
       $mobileBackdrop.setAttribute('aria-hidden', String(!name));
     }
-    if (name) blurPanelFocus($main);
+    if (name) {
+      blurPanelFocus($main);
+      blurPanelFocus($workspaceNav);
+    }
+    setAgentPanelInert($workspaceNav, !!name);
+    $workspaceNav?.setAttribute('aria-hidden', String(Boolean(name)));
     setAgentPanelInert($main, !!name);
     if ($main) {
       $main.setAttribute('aria-hidden', String(Boolean(name)));
@@ -809,6 +819,11 @@ export function openAgentWorkspace() {
     }
     $mobileSessions?.setAttribute('aria-expanded', String(name === 'sessions'));
     $mobileTools?.setAttribute('aria-expanded', String(name === 'tools'));
+    if (isMobile) {
+      const label = name === 'tools' ? '关闭工具面板' : '打开工具面板';
+      $mobileTools?.setAttribute('aria-label', label);
+      $mobileTools?.setAttribute('title', label);
+    }
     if (name) {
       requestAnimationFrame(() => (name === 'sessions' ? $sidebarClose : $sidepaneClose)?.focus());
     } else if (mobilePanelReturnFocus && root.contains(mobilePanelReturnFocus)) {

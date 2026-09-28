@@ -16,6 +16,20 @@ try {
             if (message.type() === 'error') errors.push(`${viewport.width}: ${message.text()}`);
         });
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        const returnPositions = [];
+        async function checkWorkspaceBack(selector, label) {
+            const back = page.locator(selector);
+            assert.equal(await back.getAttribute('aria-label'), '返回 Studio', `${label}: return target is accessible`);
+            assert.equal(await back.getAttribute('title'), '返回 Studio', `${label}: return target has a tooltip`);
+            assert.equal(await back.getAttribute('data-workspace-back'), '', `${label}: return uses the shared DOM contract`);
+            const position = await back.boundingBox();
+            assert.ok(position && position.width >= 44 && position.height >= 44, `${label}: return touch target is at least 44px`);
+            assert.ok(Math.abs(position.x - (viewport.width <= 900 ? 8 : 16)) <= 2 && position.y < 8, `${label}: return is at the workspace top-left`);
+            returnPositions.push({ label, ...position });
+            for (const other of returnPositions) {
+                assert.ok(Math.abs(other.x - position.x) <= 2 && Math.abs(other.y - position.y) <= 2, `${label}: return aligns with ${other.label} within 2px`);
+            }
+        }
         await page.evaluate(() => { void window.CanvasBridge.openCanvasWorkspace(); });
         console.log(JSON.stringify({ afterClick: {
             rootHtml: (await page.locator('#canvas-workspace-root').innerHTML()).slice(0, 400),
@@ -28,6 +42,7 @@ try {
         assert.equal(await page.locator('[data-canvas-next-close]').getAttribute('aria-label'), '返回 Studio');
         assert.equal(await page.locator('[data-canvas-next-more]').count(), 1);
         assert.equal(await page.locator('[data-canvas-next-close]').isVisible(), true);
+        await checkWorkspaceBack('[data-canvas-next-close]', 'Canvas');
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, `${viewport.width}: host has no horizontal overflow`);
         const canvasFrame = page.frames().find((item) => item.url().includes('/assets/canvas-app/'));
         assert.ok(canvasFrame, `${viewport.width}: canvas iframe is available`);
@@ -96,6 +111,7 @@ try {
         await page.locator('[data-open-agent]').first().click();
         await page.locator('.agent-workspace').waitFor();
         assert.equal(await page.locator('.agent-close').getAttribute('aria-label'), '返回 Studio');
+        await checkWorkspaceBack('.agent-close', 'Agent');
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, `${viewport.width}: Agent has no horizontal overflow`);
         assert.equal(await page.locator('.agent-workspace').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, `${viewport.width}: Agent shell has no horizontal overflow`);
         const tools = page.locator('[data-agent-tools-toggle]');
@@ -111,8 +127,12 @@ try {
             await page.locator('.agent-mobile-sessions').click();
             await page.locator('.agent-sidebar').waitFor({ state: 'visible' });
             assert.equal(await page.locator('.agent-mobile-backdrop').isVisible(), true);
+            assert.equal(await page.locator('.agent-workspace-nav').evaluate(element => element.inert), true, 'mobile drawer isolates workspace navigation');
+            await page.waitForFunction(() => document.activeElement?.classList.contains('agent-sidebar-close'));
             await page.keyboard.press('Escape');
             assert.equal(await page.locator('.agent-mobile-backdrop').isVisible(), false);
+            assert.equal(await page.locator('.agent-workspace-nav').evaluate(element => element.inert), false, 'closing mobile drawer restores workspace navigation');
+            await page.waitForFunction(() => document.activeElement?.classList.contains('agent-mobile-sessions'));
             await page.locator('.agent-mobile-sessions').click();
             await page.locator('.agent-mobile-backdrop').click({ position: { x: viewport.width - 5, y: 120 } });
             assert.equal(await page.locator('.agent-mobile-backdrop').isVisible(), false);
@@ -122,6 +142,7 @@ try {
             await page.screenshot({ path: `../tmp/agent-tools-${viewport.width}.png`, fullPage: true });
             await page.locator('.agent-sidepane-close').click();
             assert.equal(await tools.getAttribute('aria-expanded'), 'false');
+            await page.waitForFunction(() => document.activeElement?.hasAttribute('data-agent-tools-toggle'));
         }
         await page.screenshot({ path: `../tmp/agent-release-${viewport.width}.png`, fullPage: true });
         await page.locator('.agent-close').click();
@@ -132,7 +153,41 @@ try {
         assert.equal(await page.locator('.app.studio-layout').isVisible(), true);
         assert.equal(await page.locator('#canvas-workspace-root').isVisible(), false);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, `${viewport.width}: Studio has no horizontal overflow`);
-        console.log(`PASS ${viewport.width}: canvas navigation, Agent panels and Studio return`);
+        await page.evaluate(() => window.PromptLibraryBridge.open({ context: 'studio', tab: 'mine' }));
+        await page.locator('#prompt-library-root [data-workspace-back]').waitFor();
+        await checkWorkspaceBack('#prompt-library-root [data-workspace-back]', 'Prompt library');
+        assert.equal(await page.locator('#prompt-library-root').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, `${viewport.width}: prompt library has no horizontal overflow`);
+        await page.screenshot({ path: `../tmp/prompt-navigation-${viewport.width}.png`, fullPage: true });
+        await page.locator('#prompt-library-root [data-workspace-back]').click();
+        await page.waitForFunction(() => document.body.dataset.activeWorkspace === 'studio');
+        assert.equal(await page.locator('.app.studio-layout').isVisible(), true, 'prompt return restores Studio');
+        console.log(JSON.stringify({ returnPositions }));
+
+        // Synthetic login verifies the standalone page without real credentials.
+        let loginPosts = 0;
+        let confirmedSession = false;
+        await page.route('**/api/auth/login', route => {
+            ++loginPosts;
+            return route.fulfill({ json: { success: true } });
+        });
+        await page.route('**/api/auth/me', route => route.fulfill({ json: confirmedSession
+            ? { authenticated: true, user: { id: 42, username: 'fixture-user' }, membership: null, quota: { daily_remaining: 7 } }
+            : { authenticated: false, user: null, quota: { daily_remaining: 2 } }
+        }));
+        await page.evaluate(() => window.AuthGate.requireAuth());
+        await page.locator('#auth-username').fill('fixture-user');
+        await page.locator('#auth-password').fill('fixture-password');
+        await page.locator('#auth-submit').click();
+        await page.getByRole('button', { name: '重新确认', exact: true }).waitFor();
+        assert.ok((await page.locator('#auth-error').innerText()).includes('Cookie'), 'standalone ineffective session explains cookies');
+        assert.equal(await page.locator('#auth-standalone-link').count(), 0, 'standalone page does not offer a redundant external-page link');
+        await page.screenshot({ path: `../tmp/login-confirmation-${viewport.width}.png`, fullPage: true });
+        confirmedSession = true;
+        await page.getByRole('button', { name: '重新确认', exact: true }).click();
+        await page.locator('#auth-modal').waitFor({ state: 'hidden' });
+        assert.equal(await page.evaluate(() => window.AuthGate.getUser()?.id), 42, 'standalone confirmation updates the account without refresh');
+        assert.equal(loginPosts, 1, 'standalone retry never repeats the login POST');
+        console.log(`PASS ${viewport.width}: aligned workspace navigation, Agent panels, Studio return and synthetic login`);
         await context.close();
     }
     console.log(JSON.stringify({ errors: errors.slice(0, 20) }));
