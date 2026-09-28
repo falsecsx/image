@@ -8,7 +8,7 @@
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: data: blob:; font-src 'self' data: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Ai 绘图助手</title>
-  <link rel="icon" href="assets/icons/favicon.ico?v=20260816-1" type="image/x-icon">
+  <link rel="icon" href="assets/icons/favicon.ico?v=20260928-1" type="image/x-icon">
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#0d1117">
   <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
@@ -16,11 +16,11 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="AI绘图">
-  <link rel="stylesheet" href="assets/css/main.css?v=20260813-4">
-  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260813-6" data-app-stylesheet="ui-polish">
-  <link rel="stylesheet" href="assets/css/settings.css?v=20260813-4" data-app-stylesheet="settings">
-  <link rel="stylesheet" href="assets/css/auth.css?v=20260814-3" data-app-stylesheet="auth">
-  <link rel="stylesheet" href="assets/css/cloud-gallery.css?v=20260813-9" data-app-stylesheet="cloud-gallery">
+  <link rel="stylesheet" href="assets/css/main.css?v=20260928-1">
+  <link rel="stylesheet" href="assets/css/ui-polish.css?v=20260928-1" data-app-stylesheet="ui-polish">
+  <link rel="stylesheet" href="assets/css/settings.css?v=20260928-1" data-app-stylesheet="settings">
+  <link rel="stylesheet" href="assets/css/auth.css?v=20260928-1" data-app-stylesheet="auth">
+  <link rel="stylesheet" href="assets/css/cloud-gallery.css?v=20260928-1" data-app-stylesheet="cloud-gallery">
 
   <script>
     window.APP_CONFIG = window.APP_CONFIG || {
@@ -28,19 +28,19 @@
       defaultBaseUrl: 'https://api.openai.com',
       apiHomeUrl: 'https://api.openai.com',
       promptApiUrl: false,
-      communityPromptStaticUrl: 'data/community-prompts.json?v=20260813-4',
-      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260813-4',
+      communityPromptStaticUrl: 'data/community-prompts.json?v=20260928-1',
+      communityImageHostsUrl: 'data/community-image-hosts.json?v=20260928-1',
       forceDefaultBaseUrl: false,
       apiProxyEndpoint: 'api-proxy.php'
     };
   </script>
   <!-- Platform config must load before app.js so registry exists when builders register -->
-  <script src="assets/js/core/utils.js?v=20260813-4"></script>
-  <script src="assets/js/core/image-compress.js?v=20260813-4"></script>
-  <script src="assets/js/core/history-store.js?v=20260813-4"></script>
-  <script src="assets/js/core/image-ratio.js?v=20260813-4"></script>
-  <script src="assets/js/core/image-upscaler.js?v=20260813-4"></script>
-  <script src="assets/js/platform-config.js?v=20260813-4"></script>
+  <script src="assets/js/core/utils.js?v=20260928-1"></script>
+  <script src="assets/js/core/image-compress.js?v=20260928-1"></script>
+  <script src="assets/js/core/history-store.js?v=20260928-1"></script>
+  <script src="assets/js/core/image-ratio.js?v=20260928-1"></script>
+  <script src="assets/js/core/image-upscaler.js?v=20260928-1"></script>
+  <script src="assets/js/platform-config.js?v=20260928-1"></script>
 </head>
 
 <body>
@@ -127,7 +127,14 @@
                 <span class="section-kicker">Generation</span>
                 <h2>平台参数</h2>
               </div>
-              <p id="platform-params-summary"></p>
+              <div class="studio-heading-side">
+                <p id="platform-params-summary"></p>
+                <label class="auto-upscale-toggle" title="生成图片分辨率不足时自动用 AI 超分放大">
+                  <input id="auto-upscale" type="checkbox">
+                  <span class="auto-upscale-switch" aria-hidden="true"></span>
+                  <span>AI 超分</span>
+                </label>
+              </div>
             </div>
 
             <div class="platform-params-stack">
@@ -532,18 +539,6 @@
               <button type="button" class="history-retention-option active" data-value="thumbnail" aria-pressed="true" title="仅保留预览图，节省空间">缩略图</button>
             </div>
           </section>
-          <section class="settings-group storage-section">
-            <div class="settings-group-heading">
-              <h3>AI 超分</h3>
-              <span class="settings-group-note">图片增强</span>
-            </div>
-            <label class="settings-check-row settings-switch-row" title="生成图片分辨率低于设定值时自动AI超分放大，首次使用需下载约5MB模型，完全免费">
-              <input id="auto-upscale" type="checkbox">
-              <span class="settings-switch" aria-hidden="true"></span>
-              <span>自动超分放大</span>
-            </label>
-            <p class="settings-hint" style="font-size:12px;color:var(--text-muted);margin-top:4px;">开启后，生成图分辨率不足时自动用AI放大到设定清晰度。模型仅首次加载，之后浏览器缓存。</p>
-          </section>
         </div>
         <p class="settings-note" id="folder-support-note">支持 File System Access 的浏览器可选择文件夹；其他环境使用浏览器默认下载位置。</p>
       </section>
@@ -746,9 +741,9 @@
     </div>
   </div>
   <script src="assets/vendor/lucide.min.js?v=1.27.0"></script>
-  <script src="assets/js/auth.js?v=20260814-4"></script>
-  <script src="assets/js/cloud-gallery.js?v=20260813-11"></script>
-  <script src="assets/js/app.js?v=20260816-4"></script>
+  <script src="assets/js/auth.js?v=20260928-1"></script>
+  <script src="assets/js/cloud-gallery.js?v=20260928-1"></script>
+  <script src="assets/js/app.js?v=20260928-1"></script>
   <script>
     // 诊断：捕获加载错误，弹窗告诉你
     window.addEventListener('error', (e) => {

@@ -8,3 +8,11 @@ License: GNU Affero General Public License v3.0
 
 The adapted implementation keeps this project's native JavaScript architecture and
 existing canvas data model. React-specific code and dependencies were not imported.
+
+The new isolated canvas frontend in canvas-next/ is adapted from the upstream
+repository at commit dab19adc0847e32e39b7fc8ff90cb392561fb826.
+That snapshot is distributed under the MIT License, Copyright (c) 2026
+basketikun. Its complete license text is retained in
+canvas-next/UPSTREAM-LICENSE.txt. This does not change the license of the
+existing project or the older AGPL-derived implementation retained for
+legacy data access.

@@ -76,7 +76,6 @@ function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
-
 function compareAgentText(left, right) {
   return String(left ?? '').trim().localeCompare(String(right ?? '').trim(), 'zh-CN', {
     numeric: true,
@@ -566,9 +565,9 @@ export function openAgentWorkspace() {
             </label>
           </div>
           <div class="agent-main-actions">
-            <button class="agent-icon-btn agent-mobile-tools" type="button" aria-label="打开工具面板" title="工具面板"><i data-lucide="panel-bottom"></i></button>
+            <button class="agent-icon-btn agent-mobile-tools" data-agent-tools-toggle type="button" aria-label="收起工具面板" title="工具面板" aria-controls="agent-sidepane" aria-expanded="true"><i data-lucide="panel-right"></i></button>
             <button class="agent-icon-btn agent-export" type="button" aria-label="导出 Markdown" title="导出 Markdown"><i data-lucide="download"></i></button>
-            <button class="agent-icon-btn agent-close" type="button" aria-label="返回工作台" title="返回工作台"><i data-lucide="x"></i></button>
+            <button class="agent-btn agent-close" type="button" aria-label="返回 Studio" title="返回 Studio"><i data-lucide="arrow-left"></i><span class="agent-close-label">返回 Studio</span></button>
           </div>
         </div>
         <div class="agent-status" aria-live="polite">空闲</div>
@@ -586,7 +585,7 @@ export function openAgentWorkspace() {
           <button class="agent-icon-btn agent-abort" type="button" title="停止回答" aria-label="停止回答" hidden><i data-lucide="square"></i></button>
         </div>
       </section>
-      <aside class="agent-sidepane" aria-label="创作工具">
+      <aside class="agent-sidepane" id="agent-sidepane" aria-label="创作工具">
         <div class="agent-sidepane-mobile-head"><strong>创作工具</strong><button class="agent-icon-btn agent-sidepane-close" type="button" title="关闭工具面板" aria-label="关闭工具面板"><i data-lucide="x"></i></button></div>
         <div class="agent-sidepane-tabs" role="tablist" aria-label="辅助面板">
           <button class="agent-side-tab is-active" id="agent-reference-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-reference-card" data-agent-pane="reference">参考</button>
@@ -797,13 +796,15 @@ export function openAgentWorkspace() {
     if ($sidePane) {
       const open = name === 'tools';
       if (isMobile && !open) blurPanelFocus($sidePane);
-      setAgentPanelInert($sidePane, isMobile ? name !== 'tools' : name === 'sessions');
+      const collapsed = !isMobile && root.classList.contains('is-sidepane-collapsed');
+      setAgentPanelInert($sidePane, isMobile ? name !== 'tools' : name === 'sessions' || collapsed);
       if (isMobile) {
         $sidePane.hidden = !open;
         $sidePane.setAttribute('aria-hidden', String(!open));
       } else {
         $sidePane.hidden = false;
-        $sidePane.removeAttribute('aria-hidden');
+        if (collapsed) $sidePane.setAttribute('aria-hidden', 'true');
+        else $sidePane.removeAttribute('aria-hidden');
       }
     }
     $mobileSessions?.setAttribute('aria-expanded', String(name === 'sessions'));
@@ -2245,7 +2246,25 @@ export function openAgentWorkspace() {
   });
 
   $mobileSessions?.addEventListener('click', () => setMobilePanel('sessions'));
-  $mobileTools?.addEventListener('click', () => setMobilePanel('tools'));
+  function setToolsCollapsed(collapsed, shouldFocus = false) {
+    const isMobile = window.matchMedia?.('(max-width: 900px)').matches === true;
+    if (isMobile) {
+      setMobilePanel(root.classList.contains('is-sidepane-open') ? '' : 'tools');
+      return;
+    }
+    const next = Boolean(collapsed);
+    root.classList.toggle('is-sidepane-collapsed', next);
+    if ($sidePane) {
+      $sidePane.hidden = false;
+      $sidePane.setAttribute('aria-hidden', String(next));
+      setAgentPanelInert($sidePane, next || root.classList.contains('is-sidebar-open'));
+    }
+    $mobileTools?.setAttribute('aria-expanded', String(!next));
+    $mobileTools?.setAttribute('aria-label', next ? '展开工具面板' : '收起工具面板');
+    $mobileTools?.setAttribute('title', next ? '展开工具面板' : '收起工具面板');
+    if (shouldFocus) $mobileTools?.focus();
+  }
+  $mobileTools?.addEventListener('click', () => setToolsCollapsed(!root.classList.contains('is-sidepane-collapsed')));
   $sidebarClose?.addEventListener('click', () => setMobilePanel(''));
   $sidepaneClose?.addEventListener('click', () => setMobilePanel(''));
   $mobileBackdrop?.addEventListener('click', () => setMobilePanel(''));
@@ -2259,8 +2278,8 @@ export function openAgentWorkspace() {
   }).catch(() => {});
   setSidePaneTab('reference');
   setMobilePanel('');
+  if (window.matchMedia?.('(min-width: 901px)').matches === true) setToolsCollapsed(false);
   root.__agentClose = close;
   if (!$input.disabled) $input.focus();
   return { close };
 }
-

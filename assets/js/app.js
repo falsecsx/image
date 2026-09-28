@@ -38,6 +38,9 @@
         runGeneration: (mediaType, prompt, options = {}) => typeof runAgentGeneration === 'function'
           ? runAgentGeneration(mediaType, prompt, options)
           : Promise.reject(new Error('runAgentGeneration not available')),
+        callText: (messages, signal) => typeof callTextAPI === 'function'
+          ? callTextAPI('', { extraPayload: { messages }, signal })
+          : Promise.reject(new Error('Text capability is not available')),
         flashStatus: (message, tone) => typeof flashStatus === 'function' ? flashStatus(message, tone) : undefined,
         getPromptLibraryEntries: async (options = {}) => loadPromptLibraryEntries(options),
         getPromptLibraryTitles: async () => (await loadPromptLibraryEntries()).map(p => p?.title || p?.content || '').filter(Boolean),
@@ -66,8 +69,8 @@
 
       const _appScriptSrc = document.currentScript?.src || '';
       const _appBase = _appScriptSrc ? new URL('./', _appScriptSrc).href : new URL('./', location.href).href;
-      const _assetVersion = '20260813-4';
-      const _canvasWorkspaceModulePath = 'canvas/canvas-workspace.js?v=20260813-4';
+      const _assetVersion = '20260928-1';
+      const _canvasWorkspaceModulePath = 'canvas/canvas-next-host.js?v=20260928-1';
       const _agentUiUrl = new URL(`agent/agent-ui.js?v=${_assetVersion}`, _appBase).href;
 
       function showUiError(message) {
@@ -6019,7 +6022,7 @@
       function openCanvasTool(options = {}) {
         if (!CANVAS_FEATURE_ENABLED) return showCanvasDevelopmentNotice();
         const canvasUrl = new URL(_canvasWorkspaceModulePath, _appBase).href;
-        return ensureWorkspaceStylesheet('canvas', 'canvas.css')
+        return ensureWorkspaceStylesheet('canvas', 'canvas-next.css')
           .then(() => import(canvasUrl))
           .then(module => {
             const result = module.openCanvasWorkspace(options);
@@ -8705,7 +8708,8 @@
         const res = await fetch(capability.endpoint, {
           method: 'POST',
           headers: buildRequestHeaders(key, 'openai-chat'),
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: options.signal
         });
 
         const raw = await res.text();

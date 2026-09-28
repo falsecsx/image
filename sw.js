@@ -7,7 +7,7 @@
  *  - 页面导航网络优先，离线回退缓存首页
  * 更新：修改本文件后浏览器自动安装新版本，activate 阶段清理旧缓存。
  */
-const CACHE_NAME = 'ai-draw-v2';
+const CACHE_NAME = 'ai-draw-20260928-1';
 const PRECACHE = [
   '/',
   '/manifest.json'
@@ -51,10 +51,10 @@ self.addEventListener('fetch', (event) => {
       fetch(request)
         .then((response) => {
           const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
           return response;
         })
-        .catch(() => caches.match('/'))
+        .catch(() => caches.match(request).then((cached) => cached || (url.pathname === '/' ? caches.match('/') : Response.error())))
     );
     return;
   }
